@@ -258,7 +258,7 @@ const VideoLightbox: React.FC<{ src: string; onClose: () => void }> = ({ src, on
                 controls
                 autoPlay
                 className="fade-pop-enter"
-                style={{ maxWidth: '90vw', maxHeight: '85vh', borderRadius: 14, outline: 'none', boxShadow: '0 24px 64px rgba(0,0,0,.6)' }}
+                style={{ maxWidth: '90vw', maxHeight: '85vh', borderRadius: 14, outline: 'none', boxShadow: '0 24px 64px rgb(var(--cl-shade-rgb) / .6)' }}
             />
             <div style={{ position: 'fixed', top: 44, right: 16, zIndex: 10004 }}>
                 <ClButton icon variant="ghost" size="sm" onClick={onClose} tooltip="Close">
@@ -369,7 +369,7 @@ const MediaCell: React.FC<{
                     <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
                         <span
                             className="flex items-center justify-center rounded-full transition-transform duration-150 group-hover:scale-110"
-                            style={{ width: 34, height: 34, background: 'rgba(5,8,18,.68)', border: '1px solid rgba(255,255,255,.18)' }}
+                            style={{ width: 34, height: 34, background: 'rgba(5,8,18,.68)', border: '1px solid rgb(var(--cl-bright-rgb) / .18)' }}
                         >
                             <Play size={14} className="text-white" style={{ marginLeft: 2 }} fill="currentColor" />
                         </span>
@@ -385,7 +385,7 @@ const MediaCell: React.FC<{
                     aria-label="Show in chat"
                     className="absolute top-1.5 right-1.5 z-10 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer border-none"
                     style={{ width: 24, height: 24, background: 'rgba(5,8,18,.72)', color: 'var(--cl-muted)' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = 'var(--cl-lume)')}
+                    onMouseEnter={e => (e.currentTarget.style.color = 'var(--cl-lume-text)')}
                     onMouseLeave={e => (e.currentTarget.style.color = 'var(--cl-muted)')}
                 >
                     <MessageSquare size={12} />
@@ -438,10 +438,10 @@ const FileRow: React.FC<{
             title={onJump ? 'Show in chat' : undefined}
         >
             <span className="flex items-center gap-2.5 min-w-0">
-                <span className="shrink-0 text-cl-lume flex">{kind.icon}</span>
+                <span className="shrink-0 text-cl-lume-text flex">{kind.icon}</span>
                 <span className="text-[13px] font-semibold text-cl-text truncate">
                     {safeDisplayFilename(item.filename)}
-                    {failed && <span className="text-cl-flash font-normal"> — couldn’t decrypt</span>}
+                    {failed && <span className="text-cl-flash-text font-normal"> — couldn’t decrypt</span>}
                 </span>
             </span>
             <span className="text-[11.5px] text-cl-faint text-right" style={{ fontFamily: 'var(--cl-font-mono)' }}>{fmtBytes(item.byteSize) || '—'}</span>
@@ -645,7 +645,7 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
                                                 openUrl(l.url);
                                             }}
                                         >
-                                            <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-cl-lume/10 text-cl-lume">
+                                            <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-cl-lume/10 text-cl-lume-text">
                                                 <LinkIcon size={15} />
                                             </span>
                                             <span className="flex-1 min-w-0">
@@ -660,13 +660,13 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
                                                     onClick={() => onJumpToMessage(l.msgId)}
                                                     title="Show in chat"
                                                     aria-label="Show in chat"
-                                                    className="shrink-0 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer border-none bg-transparent text-cl-faint hover:text-cl-lume"
+                                                    className="shrink-0 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer border-none bg-transparent text-cl-faint hover:text-cl-lume-text"
                                                     style={{ width: 26, height: 26 }}
                                                 >
                                                     <MessageSquare size={13} />
                                                 </button>
                                             )}
-                                            <ExternalLink size={13} className="text-cl-faint shrink-0 group-hover:text-cl-lume transition-colors" />
+                                            <ExternalLink size={13} className="text-cl-faint shrink-0 group-hover:text-cl-lume-text transition-colors" />
                                         </div>
                                     );
                                 })}

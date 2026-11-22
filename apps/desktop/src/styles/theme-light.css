@@ -1,0 +1,206 @@
+/* ============================================================
+   Light theme: the places where Light differs in KIND from Dark, not just
+   in colour (colours come from the theme data, src/theme/themes.ts). Every
+   rule is scoped to :root[data-scheme="light"] (the engine sets it for every
+   light-scheme theme: Light and High contrast light), so nothing here can
+   reach a dark theme or the website (which never sets data-scheme on <html>). Dark islands
+   (D4: profile card, celebrations, Firewall, call console) re-declare the
+   Dark tokens; rules that must not reach into one use :not(.cl-island-dark *)
+   style guards where it matters.
+
+   Reference: apps/website/src/styles/light.css and portal-light.css: cream
+   ground, white cards with a soft warm edge, ink text, the brand teal as a
+   fill only (the darker --cl-lume-text for text and rings), warm brown shadows instead
+   of glows. The kit block below is ported from portal-light.css (.pl), which
+   restyles the very same cl-kit primitives for the website's account portal.
+
+   Colour literals here are only the website's own light values that have no
+   token (the warm hairlines and shadow tints); everything else is a token.
+   ============================================================ */
+
+:root[data-scheme="light"] {
+  /* Variables a few components read with a Dark fallback (see each use). */
+  --cl-title-halo: 0 1px 8px rgb(var(--cl-deep-rgb) / .9);   /* server name over its masthead */
+  --cl-offline-name-alpha: .55;                               /* offline members: dim, still readable */
+  --cl-composer-bg: var(--cl-deep);                           /* the message box: a white field, like the site's inputs */
+  --cl-composer-edge: var(--cl-border-strong);                /* ... with a 3:1 edge */
+  --cl-auth-vignette: .1;                                     /* sign-in vignette: a warm hint, not a brown pool */
+  --lt-line: #EADCC6;                                         /* website --lt-line */
+  --lt-line-soft: #F0E4D2;                                    /* website --lt-line-soft */
+  --lt-step: #D9CBB4;                                         /* the portal's 3-D step under toggles / checkboxes */
+  --lt-mint: #EAF7F2;                                         /* disabled button well ... */
+  --lt-mint-edge: #BFE9DD;
+  --lt-mint-ink: #2F6F65;                                     /* ... and its ink (5.3:1 on the well) */
+  --lt-ring: 0 0 0 3px rgb(var(--cl-lume-text-rgb) / .22);    /* website --pl-ring */
+  scrollbar-color: rgb(var(--cl-shade-rgb) / .22) transparent;
+}
+
+/* ---- Scrollbars (index.css paints dark thumbs) ---- */
+:root[data-scheme="light"] ::-webkit-scrollbar-thumb { background: rgb(var(--cl-shade-rgb) / .22); }
+:root[data-scheme="light"] ::-webkit-scrollbar-thumb:hover { background: rgb(var(--cl-shade-rgb) / .34); }
+
+/* ---- Focus: the readable teal ring (the kit's lume ring is 1.6:1 on white) ---- */
+:root[data-scheme="light"] :focus-visible { outline-color: var(--cl-lume-text); }
+
+/* ---- Text selection: the website's mint ---- */
+:root[data-scheme="light"] ::selection { background: rgb(var(--cl-lume-rgb) / .35); color: var(--cl-text); }
+
+/* ============ App shell ============ */
+/* Rail decks: a white card on the cream page instead of a sunk navy well. */
+:root[data-scheme="light"] .cl-rail-track {
+  background: var(--cl-deep);
+  box-shadow: inset 0 0 0 1px var(--lt-line-soft), var(--cl-elev-2);
+}
+/* Server tiles in the rail: Dark gives each idle tile a hairline ring
+   (`ring-white/[0.08]`) and a sunk inset shade (`.cl-rail-tile-sink`) so it
+   reads as a bead in the sunk well. On a white deck both turn into a grey
+   outline around every tile (the ring + a soft shade just outside it), so
+   Light and custom light themes draw neither. High contrast keeps its own
+   control edges; keyboard focus (outline) and the active halo are untouched. */
+:root[data-scheme="light"]:not([data-contrast="high"]) .cl-rail-tile-ring { box-shadow: none; }
+:root[data-scheme="light"]:not([data-contrast="high"]) .cl-rail-tile-sink { display: none; }
+/* Member-list role groups: a whisper of sand, not a grey wash. */
+:root[data-scheme="light"] .bg-black\/\[0\.12\] { background-color: var(--cl-sink); }
+/* The loading screen follows the boot backdrop (index.html) into cream. */
+:root[data-scheme="light"] .lo-root { background: linear-gradient(180deg, var(--cl-deep) 0%, var(--cl-abyss) 45%, var(--cl-sink) 100%); }
+
+/* ============ Chat ============ */
+/* Code blocks: the sand well (syntax colours are theme tokens, --cl-code-*). */
+:root[data-scheme="light"] .cl-fmt-pre code,
+:root[data-scheme="light"] .cl-fmt-pre { color: var(--cl-text); }
+:root[data-scheme="light"] .cl-fmt-pre { background: var(--cl-sink); border-color: var(--lt-line); }
+:root[data-scheme="light"] .cl-hl-add { background: rgb(var(--cl-ok-rgb) / .16); }
+:root[data-scheme="light"] .cl-hl-del { background: rgb(var(--cl-danger-rgb) / .12); }
+/* Spoilers: a solid ink bar until revealed. */
+:root[data-scheme="light"] .cl-fmt-spoiler:not([data-revealed]) { background: rgb(var(--cl-text-rgb) / .78); }
+:root[data-scheme="light"] .cl-fmt-spoiler:not([data-revealed]):hover { background: rgb(var(--cl-text-rgb) / .62); }
+
+/* ============ The cl-kit (ported from the website's portal-light.css) ============ */
+/* Ghost buttons: a white cap with a warm edge; hover in the readable teal. */
+:root[data-scheme="light"] .clb--ghost .cap {
+  background-color: var(--cl-deep);
+  color: var(--cl-text);
+  box-shadow: inset 0 0 0 1.5px var(--lt-line), 0 6px 16px -10px rgb(var(--cl-shade-rgb) / .3);
+}
+:root[data-scheme="light"] .clb--ghost .cap:hover {
+  color: var(--cl-lume-text);
+  box-shadow: inset 0 0 0 1.5px var(--cl-lume), 0 6px 16px -10px rgb(var(--cl-shade-rgb) / .3);
+}
+:root[data-scheme="light"] .clb--ghost .cap:active { box-shadow: inset 0 0 0 1.5px var(--cl-lume), inset 0 4px 10px rgb(var(--cl-shade-rgb) / .16); }
+/* Disabled: a pale mint well with readable ink (the portal's; 5.3:1). */
+:root[data-scheme="light"] .clb.dis .cap {
+  background-color: var(--lt-mint);
+  box-shadow: inset 0 0 0 1.5px var(--lt-mint-edge), inset 0 3px 7px rgb(var(--cl-lume-deep-rgb) / .10);
+  color: var(--lt-mint-ink);
+}
+:root[data-scheme="light"] .clb.dis .l1 { background: rgb(var(--cl-lume-deep-rgb) / .08); }
+:root[data-scheme="light"] .clb.dis .l2 { background: rgb(var(--cl-lume-deep-rgb) / .05); }
+:root[data-scheme="light"] .clb--ghost.dis .cap { background-color: var(--cl-sink); box-shadow: inset 0 0 0 1.5px var(--lt-line); color: var(--cl-muted); }
+/* Tooltips */
+:root[data-scheme="light"] .clb .tip,
+:root[data-scheme="light"] .clb .tip2 {
+  background: var(--cl-deep); border-color: var(--lt-line); color: var(--cl-text);
+  box-shadow: 0 10px 24px -14px rgb(var(--cl-shade-rgb) / .4);
+}
+/* Fields */
+:root[data-scheme="light"] .inp,
+:root[data-scheme="light"] .field { background: var(--cl-deep); border-color: var(--cl-border-strong); color: var(--cl-text); }
+:root[data-scheme="light"] .inp::placeholder { color: var(--cl-faint); opacity: 1; }
+:root[data-scheme="light"] .inp:focus,
+:root[data-scheme="light"] .field:focus { border-color: var(--cl-lume-text); box-shadow: var(--lt-ring); animation: none; }
+:root[data-scheme="light"] .fld:focus-within > label { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .srch:focus-within > svg { stroke: var(--cl-lume-text); }
+:root[data-scheme="light"] .fmsg { color: var(--cl-flash-text); }
+:root[data-scheme="light"] .fmsg.note { color: var(--cl-lume-text); }
+/* The 3-D "shadow" layers under toggles / checkboxes / radios / sliders are a
+   fixed near-black in the kit; on cream they become a warm sand step. */
+:root[data-scheme="light"] .clt .tsh,
+:root[data-scheme="light"] .clc .csh,
+:root[data-scheme="light"] .clr .rsh { background: var(--lt-step); }
+:root[data-scheme="light"] .clt.on .tsh,
+:root[data-scheme="light"] .clc.on .csh,
+:root[data-scheme="light"] .clr.on .rsh { background: var(--cl-lume-deep); }
+:root[data-scheme="light"] .clt .trk,
+:root[data-scheme="light"] .clc .cbox,
+:root[data-scheme="light"] .clr .rbox { background: var(--cl-deep); box-shadow: inset 0 0 0 1.5px var(--cl-border-strong); }
+:root[data-scheme="light"] .clt .knob { background: var(--cl-border-strong); }
+:root[data-scheme="light"] .clt.on .trk { background: var(--cl-lume); box-shadow: inset 0 0 0 1.5px var(--cl-lume-ui); }
+:root[data-scheme="light"] .clt.on .knob { background: var(--cl-deep); box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .3); }
+:root[data-scheme="light"] .clc.on .cbox,
+:root[data-scheme="light"] .clr.on .rbox { background: var(--cl-lume); box-shadow: inset 0 0 0 1.5px var(--cl-lume-ui); }
+:root[data-scheme="light"] .clc:hover .cbox,
+:root[data-scheme="light"] .clr:hover .rbox { box-shadow: inset 0 0 0 1.5px var(--cl-lume-text); }
+:root[data-scheme="light"] .clc:focus-visible .cbox,
+:root[data-scheme="light"] .clr:focus-visible .rbox { box-shadow: inset 0 0 0 1.5px var(--cl-lume-text), var(--lt-ring); }
+:root[data-scheme="light"] .cls .strk,
+:root[data-scheme="light"] .prog { background: var(--lt-line); box-shadow: inset 0 1px 2px rgb(var(--cl-shade-rgb) / .18); }
+:root[data-scheme="light"] .cls .sbub { color: var(--cl-lume-text); }
+/* Select menus, role tags, mentions */
+:root[data-scheme="light"] .selm { box-shadow: var(--cl-shadow-menu); border-color: var(--lt-line); }
+:root[data-scheme="light"] .selm button:hover { background: rgb(var(--cl-lume-rgb) / .16); }
+:root[data-scheme="light"] .rolet { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .rolet.gold { color: var(--cl-glow-text); }
+:root[data-scheme="light"] .rolet.coral { color: var(--cl-flash-text); }
+:root[data-scheme="light"] .mention { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .dot.dnd { background: radial-gradient(circle closest-side, var(--cl-dot-hole) 0 36%, var(--cl-dnd-dot) 42%); }
+/* ClModal: the portal's softer ink scrim and a white card with a warm edge. */
+:root[data-scheme="light"] .mod { background: var(--cl-scrim); }
+:root[data-scheme="light"] .mcard { border-color: var(--lt-line-soft); box-shadow: 0 40px 80px -30px rgb(var(--cl-shade-rgb) / .45), 0 4px 14px -6px rgb(var(--cl-shade-rgb) / .18); }
+
+/* ============ Theme coverage audit (2026-11-20) ============
+   Translucent text utilities that read on navy but drop under 4.5:1 on a
+   light ground: the full-strength token colour in every light-scheme theme. */
+/* The "joined the server" system pill. */
+:root[data-scheme="light"] .text-blue-400\/80 { color: var(--cl-info-text); }
+/* "Saved" at the top of the message menu; the call / pin notices. */
+:root[data-scheme="light"] .text-cl-lume-text\/70 { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .text-cl-glow-text\/70 { color: var(--cl-glow-text); }
+/* Sunk wells written as a black wash (the Safety number cards, the role
+   preview's chip, the backup-file hint's code) turn a dirty grey-brown on a
+   light ground: the sand well instead, as the member list's role groups. */
+:root[data-scheme="light"] .bg-black\/30,
+:root[data-scheme="light"] .bg-black\/25,
+:root[data-scheme="light"] code.bg-black\/40 { background-color: var(--cl-sink); }
+/* Update required / suspended / back screens (client-block.css): the navy
+   pool at the bottom becomes sand, and the tone colour (teal / gold / green
+   fills) uses its readable text shade where it is TEXT. */
+:root[data-scheme="light"] .cb-root {
+  background:
+    radial-gradient(90% 70% at 50% 0%, rgba(var(--cb-tone-rgb), .10) 0%, transparent 60%),
+    radial-gradient(120% 100% at 50% 110%, var(--cl-sink) 0%, var(--cl-abyss) 70%);
+  --cb-tone-text: var(--cl-lume-text);
+}
+:root[data-scheme="light"] .cb-root[data-tone='glow'] { --cb-tone-text: var(--cl-glow-text); }
+:root[data-scheme="light"] .cb-root[data-tone='ok'] { --cb-tone-text: var(--cl-ok-text); }
+:root[data-scheme="light"] .cb-emblem-core,
+:root[data-scheme="light"] .cb-eyebrow,
+:root[data-scheme="light"] .cb-chip.is-target b { color: var(--cb-tone-text); }
+/* Quiet text actions in dialogs ("Edit link settings"), the people picker's
+   offline names and coral used as TEXT (bulk emoji "Fix this", errors). */
+:root[data-scheme="light"] .dlg-linkbtn { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .pp-row.is-offline .pp-name { color: var(--cl-faint); }
+:root[data-scheme="light"] .text-cl-flash { color: var(--cl-flash-text); }
+/* Dialog callouts ("This cannot be undone...") paint the raw amber / coral /
+   green as their TEXT: 1.4-2.7:1 on white. The readable shades instead. */
+:root[data-scheme="light"] .dlg-callout { color: var(--cl-glow-text); }
+:root[data-scheme="light"] .dlg-callout--danger { color: var(--cl-flash-text); }
+:root[data-scheme="light"] .dlg-callout--ok { color: var(--cl-ok-text); }
+/* The reply quote above a message is dimmed to 80%: on white that takes the
+   author's teal under 4.5:1. Full strength (its wash already marks it). */
+:root[data-scheme="light"] .opacity-80:has([data-testid="reply-quote-author"]) { opacity: 1; }
+/* The call control bar (.cl-console, a D4 dark island) is a 5% white glass
+   wash: over video or a navy panel that reads, over a cream / white panel it
+   is white-on-white and the controls vanish. Docked in the right panel it
+   gets a solid navy capsule (the island's own tokens, so it is Dark's navy);
+   over the fullscreen stage (video behind it) it stays glass. */
+:root[data-scheme="light"] .cl-console-inner:not(#call-fullscreen-controls-root *) {
+  background: rgb(var(--cl-deep-rgb) / .96);
+  box-shadow: inset 0 0 0 1px rgb(var(--cl-bright-rgb) / .10), 0 8px 24px -10px rgb(var(--cl-shade-rgb) / .55);
+}
+/* A disabled control (Fullscreen with no video up, a moderator-locked mic)
+   keeps its icon at 28% (inline style, ControlBar.tsx): ~2.5:1 on that
+   capsule. The docked pill is the only call UI a light theme shows, so its
+   disabled icons stay findable at ~4:1 (still well below the live ones). */
+:root[data-scheme="light"] .cl-console-inner:not(#call-fullscreen-controls-root *) .cl-ctrlbtn:disabled {
+  color: rgb(var(--cl-bright-rgb) / .5) !important;
+}

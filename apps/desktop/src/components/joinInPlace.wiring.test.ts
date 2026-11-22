@@ -36,7 +36,7 @@ describe('the joining view mirrors SidebarConference exactly (drift guard)', () 
         'relative z-10 rounded-full overflow-hidden flex items-center justify-center transition-all p-0 border-none ring-1 ring-white/10',
         'absolute inset-0 z-0 bg-cl-lume/20 rounded-full animate-ping pointer-events-none',
         "animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]",
-        'text-cl-lume tracking-widest uppercase animate-pulse',
+        'text-cl-lume-text tracking-widest uppercase animate-pulse',
     ];
     for (const s of shared) {
         it(`shares: ${s.slice(0, 60)}`, () => {

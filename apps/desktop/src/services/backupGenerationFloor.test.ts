@@ -40,6 +40,11 @@ const store = vi.hoisted(() => {
             setItem: (k: string, v: string) => { if (broken) throw new Error('keystore locked'); map.set(k, v); },
             removeItem: (k: string) => { map.delete(k); },
             whenAccountReady: async () => {},
+            // A loaded, ready account: runBackup refuses otherwise (backupStoreGuard.ts,
+            // covered in backupStoreGuard.test.ts).
+            isLocked: () => false,
+            hasLoadFailure: () => false,
+            isAccountReady: () => true,
         },
     };
 });

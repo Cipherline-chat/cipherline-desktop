@@ -17,7 +17,7 @@ const form = src.slice(formStart, src.indexOf('<input type="file" multiple', for
 
 /** The !canSend fill must be stacked on a solid cl-* surface token. */
 function disabledFillIsOpaque(formSrc: string): boolean {
-    const m = formSrc.match(/background:\s*!canSend\s*\?\s*([^:]+?)\s*:\s*'var\(--cl-surface\)'/s);
+    const m = formSrc.match(/background:\s*!canSend\s*\?\s*([^:]+?)\s*:\s*'var\(--cl-composer-bg, var\(--cl-surface\)\)'/s);
     if (!m) return false;
     return /var\(--cl-(deep|surface|abyss|sink)\)/.test(m[1]);
 }
@@ -33,7 +33,7 @@ describe('composer disabled state does not let the feed show through', () => {
     });
 
     it('does not use a bare translucent rgba as the disabled fill', () => {
-        expect(form).not.toMatch(/background:\s*!canSend\s*\?\s*'rgba\(255,255,255,\.02\)'/);
+        expect(form).not.toMatch(/background:\s*!canSend\s*\?\s*'(rgba\(255,255,255,\.02\)|rgb\(var\(--cl-bright-rgb\) \/ \.02\))'/);
     });
 
     it('key-wait, cooling-off and no-permission all ride the same !canSend fill', () => {
@@ -43,7 +43,7 @@ describe('composer disabled state does not let the feed show through', () => {
     });
 
     it('positive control: the checker rejects the old translucent-only fill', () => {
-        const old = "background: !canSend ? 'rgba(255,255,255,.02)' : 'var(--cl-surface)',";
+        const old = "background: !canSend ? 'rgba(255,255,255,.02)' : 'var(--cl-composer-bg, var(--cl-surface))',";
         expect(disabledFillIsOpaque(old)).toBe(false);
     });
 });

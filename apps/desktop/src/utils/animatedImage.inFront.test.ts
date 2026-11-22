@@ -34,13 +34,13 @@ describe('useAppInFront', () => {
 
     it('the rule lives in the gate, so no caller decides it (owner 2026-10-31: nothing plays unfocused)', () => {
         const gate = readFileSync(join(here, 'animatedImage.ts'), 'utf8');
-        expect(gate).toContain('pickDisplayUrl(url, mime, animate && inFront,');
+        expect(gate).toContain('pickDisplayUrl(url, mime, animate && allowed && inFront,');
         const avatar = readFileSync(join(here, '../components/EncryptedAvatar.tsx'), 'utf8');
         expect(avatar).toContain('animate || hovered || playing || talking');
         expect(avatar).not.toContain('useAppInFront');
         const banner = readFileSync(join(here, '../components/Banner.tsx'), 'utf8');
         expect(banner).not.toContain('useAppInFront');
         const emoji = readFileSync(join(here, '../components/server/EmojiImage.tsx'), 'utf8');
-        expect(emoji).toContain('useFrozenWhenAway(url)');
+        expect(emoji).toContain('useFrozenWhenAway(url, hovered)');
     });
 });

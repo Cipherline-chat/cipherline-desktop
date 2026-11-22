@@ -1,0 +1,225 @@
+/* ============================================================
+   High contrast (High contrast dark, High contrast light), and Windows
+   High Contrast (forced colours).
+
+   1. :root[data-contrast="high"] — the engine sets it for a theme whose data
+      says `contrast: 'high'` (src/theme/themes.ts HC_DARK_THEME /
+      HC_LIGHT_THEME). Colours already clear 7:1 for text in the theme data
+      (themeContrast.test.ts); this file adds what colour alone cannot:
+        - 2px edges on every control and on the panels,
+        - edges that never depend on transparency (a translucent white/black
+          border is replaced with the strong hairline),
+        - a 3px focus ring on everything focusable,
+        - underlined links,
+        - no glows, no warm halos, hover fills that are actually visible.
+      Light-scheme kind rules (theme-light*.css) still apply to HC light
+      through data-scheme="light"; the warm website hairlines they use are
+      re-pointed at the strong edge here.
+
+   2. @media (forced-colors: active) — Windows High Contrast replaces every
+      colour with the system palette whatever theme is picked. Edges that
+      were only a background step become real borders, and the art keeps its
+      own colours (avatars, emoji, images, video, the mascot, presence dots,
+      the theme previews).
+
+   Token-only: no colour literals (colorLiteralRatchet.test.ts).
+   ============================================================ */
+
+:root[data-contrast="high"] {
+  --cl-offline-name-alpha: .8;                                  /* offline members: dimmer, still >= 7:1 */
+  --cl-title-halo: none;
+  --cl-composer-edge: var(--cl-border-strong);
+  /* Light kind's warm hairlines / steps / ring -> the strong edge. */
+  --lt-line: var(--cl-border);
+  --lt-line-soft: var(--cl-border);
+  --lt-step: var(--cl-border-strong);
+  --lt-mint: var(--cl-raise);
+  --lt-mint-edge: var(--cl-border);
+  --lt-mint-ink: var(--cl-text);
+  --lt-ring: 0 0 0 3px var(--cl-lume-text);
+  scrollbar-color: var(--cl-border) transparent;
+}
+
+/* ---- Focus: one strong ring, everywhere ---- */
+:root[data-contrast="high"] :focus-visible {
+  outline: 3px solid var(--cl-lume-text) !important;
+  outline-offset: 2px !important;
+}
+
+/* ---- Links: underlined, not colour alone ---- */
+:root[data-contrast="high"] a[href],
+:root[data-contrast="high"] [role="link"],
+:root[data-contrast="high"] .cl-fmt-link,
+:root[data-contrast="high"] .gif-link {
+  color: var(--cl-lume-text);
+  text-decoration: underline !important;
+  text-decoration-thickness: 1.5px !important;
+  text-underline-offset: 2px;
+}
+
+/* ---- Accent colours used as TEXT -> the >= 7:1 text roles (the fills stay fills).
+   Keys (the mascot) is art, not text: he keeps the brand teal. ---- */
+:root[data-contrast="high"] .text-cl-lume:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] .text-primary:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style^="color: var(--cl-lume)"]:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style*="; color: var(--cl-lume)"]:not(.k2-root, .k2-root *, .hkg-stage *) { color: var(--cl-lume-text) !important; }
+:root[data-contrast="high"] .text-cl-flash:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style^="color: var(--cl-flash)"]:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style*="; color: var(--cl-flash)"]:not(.k2-root, .k2-root *, .hkg-stage *) { color: var(--cl-flash-text) !important; }
+:root[data-contrast="high"] .text-cl-glow:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style^="color: var(--cl-glow)"]:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style*="; color: var(--cl-glow)"]:not(.k2-root, .k2-root *, .hkg-stage *) { color: var(--cl-glow-text) !important; }
+:root[data-contrast="high"] .text-cl-ok:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style^="color: var(--cl-ok)"]:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style*="; color: var(--cl-ok)"]:not(.k2-root, .k2-root *, .hkg-stage *) { color: var(--cl-ok-text) !important; }
+:root[data-contrast="high"] .text-cl-danger:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style^="color: var(--cl-danger)"]:not(.k2-root, .k2-root *, .hkg-stage *),
+:root[data-contrast="high"] [style*="; color: var(--cl-danger)"]:not(.k2-root, .k2-root *, .hkg-stage *) { color: var(--cl-danger-text) !important; }
+/* Labels on a coral fill (unread-mention counts): the dark on-flash ink. */
+:root[data-contrast="high"] .bg-cl-flash.text-cl-text,
+:root[data-contrast="high"] .bg-cl-flash.text-white,
+:root[data-contrast="high"] .hd-pill--named { color: var(--cl-on-flash) !important; }
+/* Text that is dimmed with opacity for looks: full strength here. */
+:root[data-contrast="high"] [data-testid="reply-quote"] { opacity: 1 !important; }
+/* The title-bar wordmark is muted at 55% for looks (index.css): ~3:1. Here the
+   window's own name reads at full strength like every other text. */
+:root[data-contrast="high"] .cl-titlebar-wordmark { opacity: 1; color: var(--cl-text); }
+/* A channel divider's pill: its label is the (readable) divider colour; drop
+   the colour's own 14% tint behind it, which pulled it under 7:1. */
+:root[data-contrast="high"] .cl-divider-pill { background: transparent !important; }
+
+/* ---- Panels: a 2px edge on every card of the drift shell ---- */
+:root[data-contrast="high"] [data-layout="drift"] .app-pane2-sheet,
+:root[data-contrast="high"] [data-layout="drift"] .app-pane3-sheet,
+:root[data-contrast="high"] [data-layout="drift"] .app-pane4,
+:root[data-contrast="high"] [data-layout="drift"] .app-pane-solo {
+  border-width: 2px !important;
+  border-color: var(--cl-border) !important;
+}
+:root[data-contrast="high"] [data-layout="drift"] .app-mainrow { background: var(--cl-abyss); }
+:root[data-contrast="high"] .cl-rail-track { background: var(--cl-deep); box-shadow: inset 0 0 0 2px var(--cl-border); }
+:root[data-contrast="high"] .cl-rail-indicator { box-shadow: 0 0 0 2px var(--cl-lume-ui); }
+:root[data-contrast="high"] .lo-root { background: var(--cl-abyss); }
+:root[data-contrast="high"] .sd-sea-grad { background: var(--cl-abyss); }
+:root[data-contrast="high"] .sd-sea-vignette { display: none; }
+:root[data-contrast="high"] .sd-card { border: 2px solid var(--cl-border); box-shadow: none; }
+
+/* ---- No transparency-dependent edges: translucent borders -> the strong hairline ---- */
+:root[data-contrast="high"] [class*="border-white/"],
+:root[data-contrast="high"] [class*="border-black/"],
+:root[data-contrast="high"] [class*="border-cl-border/"],
+:root[data-contrast="high"] [class*="border-cl-border "],
+:root[data-contrast="high"] [class$="border-cl-border"] {
+  border-color: var(--cl-border) !important;
+}
+/* A selected option drawn with the brand-teal edge (1.6:1 on white): the 3:1+ indicator teal, 2px. */
+:root[data-contrast="high"] [class*="border-cl-lume"] { border-color: var(--cl-lume-ui) !important; }
+:root[data-contrast="high"] [role="radio"][aria-checked="true"][class*="border"],
+:root[data-contrast="high"] [role="tab"][aria-selected="true"][class*="border"] { box-shadow: 0 0 0 2px var(--cl-lume-ui) !important; }
+/* Tailwind rings tinted at 30% (toasts, chips): the strong edge. */
+:root[data-contrast="high"] [class*="ring-cl-"],
+:root[data-contrast="high"] [class*="ring-white/"] { --tw-ring-color: var(--cl-border-strong) !important; }
+/* Hover lifts built on a few % of white/ink are invisible on black/white: use the hover fill. */
+:root[data-contrast="high"] [class*="hover:bg-white/"]:hover,
+:root[data-contrast="high"] [class*="hover:bg-black/"]:hover {
+  background-color: var(--cl-raise) !important;
+}
+
+/* ---- Controls: 2px edges ---- */
+:root[data-contrast="high"] .inp,
+:root[data-contrast="high"] .field,
+:root[data-contrast="high"] textarea,
+:root[data-contrast="high"] select,
+:root[data-contrast="high"] input[type="text"],
+:root[data-contrast="high"] input[type="search"],
+:root[data-contrast="high"] input[type="email"],
+:root[data-contrast="high"] input[type="password"],
+:root[data-contrast="high"] input[type="number"] {
+  border: 2px solid var(--cl-border-strong) !important;
+}
+:root[data-contrast="high"] .clb .cap { outline: 2px solid var(--cl-border-strong); outline-offset: -2px; }
+:root[data-contrast="high"] .clb .l { display: none; }
+/* Filled buttons (a fill alone is a 1.6:1 edge for teal on white): a 2px edge. */
+:root[data-contrast="high"] .hd-btn,
+:root[data-contrast="high"] :is(button, [role="button"])[class*="bg-cl-lume"],
+:root[data-contrast="high"] :is(button, [role="button"])[class*="bg-cl-flash"],
+:root[data-contrast="high"] :is(button, [role="button"])[class*="bg-primary"] { box-shadow: inset 0 0 0 2px var(--cl-border-strong) !important; }   /* the 3-D layers under a button read as a second, blurry edge */
+:root[data-contrast="high"] .clt .trk,
+:root[data-contrast="high"] .clc .cbox,
+:root[data-contrast="high"] .clr .rbox { box-shadow: inset 0 0 0 2px var(--cl-border-strong) !important; }
+:root[data-contrast="high"] .clt.on .trk,
+:root[data-contrast="high"] .clc.on .cbox,
+:root[data-contrast="high"] .clr.on .rbox { box-shadow: inset 0 0 0 2px var(--cl-lume-ui) !important; }
+:root[data-contrast="high"] .seg,
+:root[data-contrast="high"] .selt,
+:root[data-contrast="high"] .pill,
+:root[data-contrast="high"] .tp-opt { border: 2px solid var(--cl-border-strong) !important; }
+:root[data-contrast="high"] .tp-opt--on { border-color: var(--cl-lume-ui) !important; box-shadow: 0 0 0 2px var(--cl-lume-ui); }
+
+/* The message box: a 2px pill; its field draws no second box (the pill's own
+   edge turns teal while the field has focus). */
+:root[data-contrast="high"] .cl-composer { border-width: 2px !important; }
+:root[data-contrast="high"] .cl-composer textarea { border: none !important; }
+:root[data-contrast="high"] .cl-composer textarea:focus-visible,
+:root[data-contrast="high"] .cl-composer [contenteditable]:focus-visible,
+:root[data-contrast="high"] .cl-composer .rc-root:focus-visible { outline: none !important; }
+
+/* ---- Menus, popovers, tooltips, toasts, modals: a 2px edge, no glow ---- */
+:root[data-contrast="high"] .ctxm,
+:root[data-contrast="high"] .selm,
+:root[data-contrast="high"] [role="menu"],
+:root[data-contrast="high"] [role="listbox"],
+:root[data-contrast="high"] [role="tooltip"],
+:root[data-contrast="high"] .clb .tip,
+:root[data-contrast="high"] .clb .tip2,
+:root[data-contrast="high"] .mcard,
+:root[data-contrast="high"] [role="dialog"],
+:root[data-contrast="high"] .toast {
+  border: 2px solid var(--cl-border-strong) !important;
+}
+:root[data-contrast="high"] .ctxm-sep { background: var(--cl-border) !important; height: 2px; }
+
+/* ---- Emoji and GIF pickers (emoji-mart takes comma-separated channels) ---- */
+:root[data-contrast="high"] [data-cl-emoji-picker],
+:root[data-contrast="high"] [aria-label="GIF picker"] { background: var(--cl-deep) !important; border: 2px solid var(--cl-border-strong) !important; box-shadow: none !important; }
+:root[data-contrast="high"][data-scheme="dark"] em-emoji-picker { --rgb-background: 0, 0, 0; --rgb-color: 255, 255, 255; --rgb-accent: 61, 240, 217; }
+:root[data-contrast="high"][data-scheme="light"] em-emoji-picker { --rgb-background: 255, 255, 255; --rgb-color: 10, 14, 31; --rgb-accent: 0, 82, 72; }
+
+/* ---- Code blocks: a real edge around the well ---- */
+:root[data-contrast="high"] .cl-fmt-pre { border: 2px solid var(--cl-border) !important; }
+:root[data-contrast="high"] .cl-fmt-code { box-shadow: inset 0 0 0 1px var(--cl-border); }
+
+/* ---- Presence: the dot keeps its shape (userStatusModel.ts); give it a ring so it reads on any fill ---- */
+:root[data-contrast="high"] [data-status-shape] { box-shadow: 0 0 0 2px var(--status-backing, var(--cl-deep)); }
+
+/* ---- Text selection: solid, not a translucent wash ---- */
+:root[data-contrast="high"] ::selection { background: var(--cl-lume-text); color: var(--cl-deep); }
+
+/* ============================================================
+   Windows High Contrast / forced colours (any theme).
+   ============================================================ */
+@media (forced-colors: active) {
+  /* Art keeps its own colours (else avatars, emoji and the mascot become flat system shapes). */
+  img, video, canvas, picture,
+  .k2-root, .hkg-stage,
+  [data-status-shape],
+  .tp-pic,
+  .cl-tile-hover { forced-color-adjust: none; }
+
+  /* Edges that were only a background step become real borders. */
+  [data-layout="drift"] .app-pane2-sheet,
+  [data-layout="drift"] .app-pane3-sheet,
+  [data-layout="drift"] .app-pane4,
+  [data-layout="drift"] .app-pane-solo,
+  .cl-rail-track,
+  .ctxm, .selm, [role="menu"], [role="listbox"], [role="dialog"], [role="tooltip"],
+  .mcard, .toast, .sd-card, .cl-fmt-pre {
+    border: 1px solid CanvasText !important;
+  }
+  .clb .cap, .clt .trk, .clc .cbox, .clr .rbox, .seg, .selt, .pill, .tp-opt { border: 1px solid ButtonText; }
+  .clt.on .trk, .clc.on .cbox, .clr.on .rbox, .tp-opt--on { background: Highlight; border-color: Highlight; }
+  :focus-visible { outline: 3px solid Highlight !important; outline-offset: 2px !important; }
+  a[href], .cl-fmt-link { color: LinkText; text-decoration: underline; }
+  /* Decorative backdrops would only become a flat Canvas block. */
+  .sd-sea-grad, .sd-sea-vignette, .cl-rail-indicator { display: none; }
+}

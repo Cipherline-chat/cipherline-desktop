@@ -16,7 +16,8 @@ describe('message right-click menu — KLIPY GIFs', () => {
     });
 
     it('does not offer "Copy Text" for a GIF (it has no text)', () => {
-        expect(menu).toContain('if (isTextLike && !isKlipyGif) {');
+        // A sticker (a text message) is excluded the same way (utils/stickers/wire.ts).
+        expect(menu).toContain('if (isTextLike && !isKlipyGif && !isStickerMsg) {');
     });
 
     it('keeps Save for me / Save to server for a GIF — the message saves and expires like text', () => {

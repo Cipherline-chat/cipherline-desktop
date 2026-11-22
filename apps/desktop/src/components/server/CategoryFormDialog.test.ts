@@ -23,6 +23,8 @@ const MOD = '00000000-0000-4000-8000-000000000002';
 const CAT = '10000000-0000-4000-8000-000000000009';
 let calls: [string, string, unknown?][] = [];
 let catOverrides: unknown[] = [];
+/** An API that predates `permission_overrides` (forbidNonWhitelisted refuses the property). */
+let legacyApi = false;
 
 vi.mock('axios', () => ({
     default: {
@@ -42,7 +44,11 @@ vi.mock('axios', () => ({
         }),
         post: vi.fn(async (url: string, body: Record<string, unknown>) => {
             calls.push(['POST', url.replace(/^.*\/v1/, ''), body]);
-            return { data: { category_id: 'new-cat', server_id: 's1', position: 1000, icon_name: null, ...body } };
+            if (legacyApi && 'permission_overrides' in body) {
+                throw { response: { status: 400, data: { message: ['property permission_overrides should not exist'] } } };
+            }
+            const { permission_overrides: _applied, ...row } = body;
+            return { data: { category_id: 'new-cat', server_id: 's1', position: 1000, icon_name: null, ...row } };
         }),
         patch: vi.fn(async (url: string, body: unknown) => { calls.push(['PATCH', url.replace(/^.*\/v1/, ''), body]); return { data: { ok: true } }; }),
         delete: vi.fn(async (url: string) => { calls.push(['DELETE', url.replace(/^.*\/v1/, '')]); return { data: { ok: true } }; }),
@@ -56,6 +62,7 @@ let host: HTMLDivElement;
 beforeEach(() => {
     calls = [];
     catOverrides = [];
+    legacyApi = false;
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -81,7 +88,7 @@ async function click(el: Element | undefined | null) {
 const radio = (t: string) => [...document.querySelectorAll('[role="radio"]')].find(b => b.textContent?.trim() === t);
 
 describe('CategoryFormDialog', () => {
-    it('create + Staff only → POST category, then the @everyone deny on the CATEGORY route', async () => {
+    it('create + Staff only → ONE POST carrying the overrides (@everyone deny first), no override PATCH', async () => {
         const h = await mount({});
         const input = document.querySelector('input[aria-label="Category name"]') as HTMLInputElement;
         await act(async () => {
@@ -91,7 +98,31 @@ describe('CategoryFormDialog', () => {
         await click(radio('Staff only'));
         await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
         await flush(30);
-        expect(calls.filter(c => c[0] === 'POST')).toEqual([['POST', '/servers/s1/categories', { name: 'Staff', kind: 'text', icon_name: null }]]);
+        expect(calls.filter(c => c[0] === 'POST')).toEqual([['POST', '/servers/s1/categories', {
+            name: 'Staff', kind: 'text', icon_name: null,
+            permission_overrides: [
+                { target_kind: 'role', target_id: EV, allow_bits: '0', deny_bits: s(P.VIEW_CHANNEL) },
+                { target_kind: 'role', target_id: MOD, allow_bits: s(P.VIEW_CHANNEL), deny_bits: '0' },
+            ],
+        }]]);
+        expect(calls.filter(c => c[0] === 'PATCH')).toHaveLength(0);
+        expect(h.onSaved).toHaveBeenCalledTimes(1);
+    });
+
+    it('create + Staff only on an API that predates permission_overrides → retry plain, then the @everyone deny on the CATEGORY route', async () => {
+        legacyApi = true;
+        const h = await mount({});
+        const input = document.querySelector('input[aria-label="Category name"]') as HTMLInputElement;
+        await act(async () => {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Staff');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await click(radio('Staff only'));
+        await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+        await flush(30);
+        const posts = calls.filter(c => c[0] === 'POST');
+        expect(posts).toHaveLength(2);
+        expect(posts[1]).toEqual(['POST', '/servers/s1/categories', { name: 'Staff', kind: 'text', icon_name: null }]);
         const patches = calls.filter(c => c[0] === 'PATCH');
         expect(patches[0]).toEqual(['PATCH', '/servers/s1/categories/new-cat/overrides',
             { target_kind: 'role', target_id: EV, allow_bits: '0', deny_bits: s(P.VIEW_CHANNEL) }]);

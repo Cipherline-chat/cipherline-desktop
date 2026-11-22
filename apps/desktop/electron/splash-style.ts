@@ -13,22 +13,26 @@
  *
  * No `electron` import and no import from ../src (the rootDir trap).
  */
+import { bootPalette } from './theme-boot';
 
-/** The :root design tokens (desktop src/index.css values, inlined). */
+/** The default theme's colours (theme-boot.ts, pinned to src/theme/themes.ts). */
+const P = bootPalette();
+
+/** The :root design tokens (theme data values, inlined; layout byte-identical to before). */
 export const SPLASH_TOKENS_CSS = `  :root {
-    --cl-abyss:   #0B0F1E;
-    --cl-deep:    #131A30;
-    --cl-surface: #1C2542;
-    --cl-border:  #2A3558;
-    --cl-sink:    #0A1120;
-    --cl-lume:        #25E0C8;
-    --cl-lume-hi:     #3BEAD6;
-    --cl-lume-deep:   #0E8F7C;
-    --cl-glow:    #FFC94D;
-    --cl-ok:      #4ADE80;
-    --cl-text:  #F4F7FF;
-    --cl-muted: #A7B3D4;
-    --cl-faint: #5E6B8F;
+    --cl-abyss:   ${P.abyss};
+    --cl-deep:    ${P.deep};
+    --cl-surface: ${P.surface};
+    --cl-border:  ${P.border};
+    --cl-sink:    ${P.sink};
+    --cl-lume:        ${P.lume};
+    --cl-lume-hi:     ${P.lumeHi};
+    --cl-lume-deep:   ${P.lumeDeep};
+    --cl-glow:    ${P.glow};
+    --cl-ok:      ${P.ok};
+    --cl-text:  ${P.text};
+    --cl-muted: ${P.muted};
+    --cl-faint: ${P.faint};
     --cl-font-display: 'Fredoka', system-ui, sans-serif;
     --cl-font-body:    'Nunito', system-ui, sans-serif;
     --cl-font-mono:    'JetBrains Mono', ui-monospace, monospace;

@@ -52,14 +52,14 @@ export const EMOJI_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const emptyLibrary = (): EmojiLibState => ({ entries: [], tombstones: {} });
 
-export function isValidEntry(e: unknown): e is EmojiEntry {
+export function isValidEntry(e: unknown, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES): e is EmojiEntry {
     if (!e || typeof e !== 'object') return false;
     const c = e as Partial<EmojiEntry>;
     return isPersonalEmojiId(c.id)
         && isPersonalEmojiName(c.name)
         && typeof c.mime === 'string' && (PERSONAL_EMOJI_MIMES as readonly string[]).includes(c.mime)
         && typeof c.animated === 'boolean'
-        && typeof c.size === 'number' && Number.isFinite(c.size) && c.size > 0 && c.size <= PERSONAL_EMOJI_MAX_BYTES
+        && typeof c.size === 'number' && Number.isFinite(c.size) && c.size > 0 && c.size <= maxBytes
         && typeof c.order === 'number' && Number.isFinite(c.order)
         && typeof c.at === 'number' && Number.isFinite(c.at)
         && typeof c.addedAt === 'number' && Number.isFinite(c.addedAt);
@@ -74,7 +74,7 @@ function repairLegacyName(e: unknown): unknown {
 
 /** Coerce an untrusted state (a snapshot from the other device, or the
  *  persisted blob) to one the merge can trust. Invalid entries are dropped. */
-export function sanitizeLibrary(raw: unknown): EmojiLibState {
+export function sanitizeLibrary(raw: unknown, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES): EmojiLibState {
     const out = emptyLibrary();
     if (!raw || typeof raw !== 'object') return out;
     const r = raw as { entries?: unknown; tombstones?: unknown };
@@ -87,7 +87,7 @@ export function sanitizeLibrary(raw: unknown): EmojiLibState {
             // below makes any collision unique (_2, _3). Deterministic, so two
             // devices repair to the same name and still converge.
             const e = repairLegacyName(raw);
-            if (isValidEntry(e) && !seen.has(e.id)) {
+            if (isValidEntry(e, maxBytes) && !seen.has(e.id)) {
                 seen.add(e.id);
                 out.entries.push({ id: e.id, name: e.name, mime: e.mime, animated: e.animated, size: e.size, order: e.order, at: e.at, addedAt: e.addedAt });
             }
@@ -146,8 +146,8 @@ function sameState(a: EmojiLibState, b: EmojiLibState): boolean {
  * Merge a remote snapshot into the local one. Commutative and idempotent;
  * returns `local` itself when nothing changed.
  */
-export function mergeLibraries(local: EmojiLibState, remoteRaw: EmojiLibState): EmojiLibState {
-    const remote = sanitizeLibrary(remoteRaw);
+export function mergeLibraries(local: EmojiLibState, remoteRaw: EmojiLibState, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES): EmojiLibState {
+    const remote = sanitizeLibrary(remoteRaw, maxBytes);
     const lMap = new Map(local.entries.map(e => [e.id, e]));
     const rMap = new Map(remote.entries.map(e => [e.id, e]));
     const ids = new Set<string>([

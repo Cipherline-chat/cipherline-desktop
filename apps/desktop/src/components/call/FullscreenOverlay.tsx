@@ -4,7 +4,8 @@ import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { PresenceEnter } from './presenceMotion';
 import { currentCallPresenceTracker } from '../../utils/callPresenceLifecycle';
-import { useParticipants, useLocalParticipant } from '@livekit/components-react';
+import { useLocalParticipant } from '@livekit/components-react';
+import { useCallParticipants } from '../../hooks/useCallParticipants';
 import { useElementSize } from '../../hooks/useElementSize';
 import { Track, RemoteParticipant, Participant } from 'livekit-client';
 import { useCallContext } from '../../contexts/CallContext';
@@ -276,7 +277,7 @@ export const FullscreenOverlay = ({
 }: FullscreenOverlayProps) => {
     const callCtx = useCallContext();
     const { focusedStream, isFullscreen } = callCtx;
-    const participants = useParticipants(ROSTER_ONLY); // see utils/callRosterEvents.ts
+    const participants = useCallParticipants(ROSTER_ONLY); // see utils/callRosterEvents.ts
     const { localParticipant } = useLocalParticipant();
     // The OS window's OWN fullscreen state — NOT `isFullscreen` above, which
     // is this component's cinema overlay and says nothing about the window.
@@ -1217,7 +1218,7 @@ export const FullscreenOverlay = ({
                                     const el = stripRowRef.current;
                                     el?.scrollBy({ left: Math.round(el.clientWidth * 0.8), behavior: 'smooth' });
                                 }}
-                                className="absolute top-1/2 -translate-y-1/2 z-20 rounded-full bg-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-white/90 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
+                                className="absolute top-1/2 -translate-y-1/2 z-20 rounded-full bg-pure-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-pure-white/90 hover:bg-pure-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
                                 style={{ right: (stripLaneReservationPx ?? 0) + 8 }}
                             >
                                 +{stripHiddenCount}

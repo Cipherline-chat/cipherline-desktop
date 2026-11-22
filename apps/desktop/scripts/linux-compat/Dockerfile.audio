@@ -1,0 +1,7 @@
+# Build image for the native audio engine addon (crates/cl-audio-node, Rust): same Ubuntu 20.04 base (glibc 2.31 floor) as ./Dockerfile,
+# plus curl so rustup can install the toolchain into a mounted cache on first use (scripts/build-audio-engine.sh).
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends gcc libc6-dev make curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*

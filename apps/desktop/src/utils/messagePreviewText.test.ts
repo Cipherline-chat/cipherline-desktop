@@ -125,7 +125,7 @@ describe('call sites use the display transform', () => {
 
     it('notifications already render the display text', () => {
         expect(read('hooks/useNotificationDispatch.ts')).toMatch(/const displayText = toPlainText\(text\);/);
-        expect(read('utils/messagePreviewText.ts')).toContain('const plain = stripFormatting(clipForPreview(text, opts.max));');
+        expect(read('utils/messagePreviewText.ts')).toContain('const plain = labelThemeLinks(stripFormatting(clipForPreview(text, opts.max)));');
         expect(read('utils/messagePreviewText.ts')).toContain("return opts.tokens === 'keep' ? plain : mentionsToDisplayText(plain);");
     });
 });

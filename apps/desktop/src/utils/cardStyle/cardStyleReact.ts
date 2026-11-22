@@ -18,7 +18,10 @@ import {
     type CardRenderMode, type CardStyle, type CardTheme, type ResolvedCardStyle,
     type ServerMessageStyles, type UserCardStyleMode,
 } from '@cipherline/shared';
-import { MESSAGE_BODY_LINE_HEIGHT, MESSAGE_BODY_PX } from '../formatting/messageSize';
+import { MESSAGE_BODY_LINE_HEIGHT } from '../formatting/messageSize';
+import { LIGHT_THEME, type Theme } from '../../theme/themes';
+import { getTheme } from '../../theme/engine';
+import { messageBodyFontSize } from '../a11y/messageTextSize';
 
 /**
  * The desktop's theme for card resolution: the chat row background and text
@@ -26,6 +29,22 @@ import { MESSAGE_BODY_LINE_HEIGHT, MESSAGE_BODY_PX } from '../formatting/message
  * tokens (index.css), which CARD_THEMES.dark mirrors.
  */
 export const DESKTOP_CARD_THEME: CardTheme = CARD_THEMES.dark;
+
+/**
+ * Light: the shared light card theme's colour meanings (the darker accent / status text colours,
+ * the same text tokens as the desktop Light palette) on the app's own cream
+ * page and ink text.
+ */
+export const DESKTOP_LIGHT_CARD_THEME: CardTheme = {
+    ...CARD_THEMES.light,
+    background: LIGHT_THEME.palette.abyss.toLowerCase(),
+    text: LIGHT_THEME.palette.text.toLowerCase(),
+};
+
+/** The card theme for the active app theme: `theme(accent)` and friends resolve per READER. */
+export function desktopCardTheme(theme: Theme = getTheme()): CardTheme {
+    return theme.scheme === 'light' ? DESKTOP_LIGHT_CARD_THEME : DESKTOP_CARD_THEME;
+}
 
 /** Everything that decides how a message's card renders for THIS reader. */
 export interface CardRenderContext {
@@ -54,12 +73,12 @@ export function composerCardMode(ctx: CardRenderContext): CardRenderMode {
 }
 
 /** The resolved card for a message's content (any sender kind), or null for plain. */
-export function resolveMessageCard(content: unknown, mode: CardRenderMode, theme: CardTheme = DESKTOP_CARD_THEME): ResolvedCardStyle | null {
+export function resolveMessageCard(content: unknown, mode: CardRenderMode, theme: CardTheme = desktopCardTheme()): ResolvedCardStyle | null {
     return resolveCardStyle(cardStyleOfContent(content), mode, theme);
 }
 
 /** Same, for a style object the editor / composer already holds. */
-export function resolveCard(style: CardStyle | null | undefined, mode: CardRenderMode, theme: CardTheme = DESKTOP_CARD_THEME): ResolvedCardStyle | null {
+export function resolveCard(style: CardStyle | null | undefined, mode: CardRenderMode, theme: CardTheme = desktopCardTheme()): ResolvedCardStyle | null {
     return resolveCardStyle(style ?? null, mode, theme);
 }
 
@@ -76,8 +95,12 @@ export type CardElementProps = {
  * (the editor preview, the swatch, the composer).
  */
 export function cardElementProps(r: ResolvedCardStyle, extraClass?: string): CardElementProps {
+    // A card the sender painted dark (a literal navy, not theme()) stays dark in
+    // Light, and so does everything the APP draws inside it (headings, code,
+    // spoilers, links): it becomes a dark island (src/theme/themes.ts).
+    const island = getTheme().scheme === 'light' && cardSurfaceIsDark(r) ? ' cl-island-dark' : '';
     return {
-        className: extraClass ? `cl-msg-card ${extraClass}` : 'cl-msg-card',
+        className: (extraClass ? `cl-msg-card ${extraClass}` : 'cl-msg-card') + island,
         'data-card-style': '',
         'data-card-anim': r.animation?.name,
         'data-card-stripe': r.stripe ? '' : undefined,
@@ -89,6 +112,35 @@ export function cardElementProps(r: ResolvedCardStyle, extraClass?: string): Car
         'data-card-heading-align': r.headingAlign,
         style: cardInlineStyle(r),
     };
+}
+
+/** Every opaque-enough colour in a CSS colour / gradient string, as [r, g, b] 0-255. */
+function cssColours(s: string): Array<[number, number, number]> {
+    const out: Array<[number, number, number]> = [];
+    for (const m of s.matchAll(/#([0-9a-f]{6})([0-9a-f]{2})?\b/gi)) {
+        if (m[2] && parseInt(m[2], 16) < 128) continue;
+        const n = parseInt(m[1], 16);
+        out.push([(n >> 16) & 255, (n >> 8) & 255, n & 255]);
+    }
+    for (const m of s.matchAll(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/gi)) {
+        const a = m[4] === undefined ? 1 : m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+        if (a < 0.5) continue;
+        out.push([+m[1], +m[2], +m[3]]);
+    }
+    return out;
+}
+
+/** Is the card's own surface dark (mean relative luminance of its background colours below 0.18)? */
+export function cardSurfaceIsDark(r: Pick<ResolvedCardStyle, 'backgroundColor' | 'backgroundImage' | 'backgroundClip'>): boolean {
+    // A gradient border is painted as extra image layers under the fill
+    // (backgroundClip set): only the first layer is the card's surface.
+    const layers = (r.backgroundImage ?? '').split(/,\s*(?=(?:repeating-)?(?:linear|radial|conic)-gradient\()/);
+    const image = r.backgroundClip ? layers[0] : layers.join(',');
+    const cols = [...cssColours(r.backgroundColor ?? ''), ...cssColours(image)];
+    if (!cols.length) return false;
+    const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const lum = cols.reduce((s, [R, G, B]) => s + 0.2126 * lin(R) + 0.7152 * lin(G) + 0.0722 * lin(B), 0) / cols.length;
+    return lum < 0.18;
 }
 
 /** Inline style for the card element. Concrete values only: never a sender string, never var() of an app token. */
@@ -144,7 +196,8 @@ export function composerTextStyle(resolved: ResolvedCardStyle | null, base: Reac
         // caret at the end of a line is never clipped by the box's overflow.
         padding: '0 2px 0 0',
         marginRight: -2,
-        fontSize: `${MESSAGE_BODY_PX}px`,
+        // The row body's size, incl. Accessibility → Message text size (same CSS var the row reads).
+        fontSize: messageBodyFontSize(),
         lineHeight: MESSAGE_BODY_LINE_HEIGHT,
         ...(color ? { color } : {}),
     };

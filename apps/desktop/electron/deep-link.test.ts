@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseInviteUrl, parseReferralUrl, extractDeepLinkFromArgv, externalUrlToOpen } from './deep-link';
+import { parseInviteUrl, parseReferralUrl, parseThemeDeepLink, extractDeepLinkFromArgv, externalUrlToOpen, THEME_DEEP_LINK_CODE_MAX } from './deep-link';
 
 describe('deep links (E-11)', () => {
     it('refuses codes outside the invite charset, oversized links and decorated URLs', () => {
@@ -47,5 +47,33 @@ describe('deep links (E-11)', () => {
         const body = main.slice(i, i + 250);
         expect(body).toContain('externalUrlToOpen(url)');
         expect(body).toContain('shell.openExternal(href)');
+    });
+
+    it('theme links: shape only (prefix, base64url, length); main never decodes a theme', () => {
+        const code = 'clth1.eyJ2IjoxLCJuYW1lIjoiT2NlYW4ifQ';
+        expect(parseThemeDeepLink(`cipherline://theme#${code}`)).toBe(code);
+        expect(parseThemeDeepLink(`cipherline://theme/#${code}`)).toBe(code);
+        for (const bad of [
+            'cipherline://theme#', 'cipherline://theme#clth1.', 'cipherline://theme#clth2.abcd', 'cipherline://theme#CLTH1.abcd',
+            `cipherline://theme#${code}?x=1`, `cipherline://theme#${code} --x`, `cipherline://theme#${code}"`,
+            `cipherline://theme?c=${code}`, `cipherline://invite#${code}`, `https://cipherline.chat/theme#${code}`,
+            `cipherline://theme#clth1.${'A'.repeat(THEME_DEEP_LINK_CODE_MAX)}`, null, 7,
+        ]) expect(parseThemeDeepLink(bad), String(bad)).toBeNull();
+        // A theme link is not an invite / referral.
+        expect(parseInviteUrl(`cipherline://theme#${code}`)).toBeNull();
+    });
+
+    it('argv: a theme link longer than the invite cap is still taken, an oversized one is not', () => {
+        const long = `cipherline://theme#clth1.${'A'.repeat(600)}`;
+        expect(extractDeepLinkFromArgv(['Cipherline.exe', long])).toBe(long);
+        expect(extractDeepLinkFromArgv(['Cipherline.exe', `cipherline://theme#clth1.${'A'.repeat(1100)}`])).toBeNull();
+        expect(extractDeepLinkFromArgv(['Cipherline.exe', `cipherline://invite/${'a'.repeat(600)}`])).toBeNull();
+    });
+
+    it('main.ts routes theme links in all four places (cold start, open-url, second instance, handoff)', () => {
+        const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8');
+        expect(main.match(/parseThemeDeepLink\(/g)?.length).toBeGreaterThanOrEqual(4);
+        expect(main).toContain("ipcMain.handle('deep-link:get-pending-theme'");
+        expect(main).toContain("webContents.send('deep-link:theme', code)");
     });
 });

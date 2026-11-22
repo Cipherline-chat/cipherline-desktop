@@ -15,6 +15,7 @@ import { MomentHost } from './components/moments/MomentHost';
 import { MomentClock } from './components/moments/MomentClock';
 import { MilestoneWatch } from './components/moments/MilestoneWatch';
 import { LevelUpHost } from './components/levelUp/LevelUpHost';
+import { A11yRuntime } from './components/a11y/A11yRuntime';
 import { useSeasonalEffects } from './hooks/useSeasonalEffects';
 import { useNightDiveRuntime } from './hooks/useNightDive';
 import { NightDiveSea } from './components/NightDiveSea';
@@ -237,7 +238,7 @@ function AppInner() {
           key="entry-curtain"
           style={{
             position: 'fixed', inset: 0, zIndex: 200,
-            background: '#0B0F1E', pointerEvents: 'none',
+            background: 'var(--cl-abyss)', pointerEvents: 'none',
             animation: 'app-curtain-out 0.4s ease-out forwards',
           }}
           onAnimationEnd={() => setCurtain(false)}
@@ -276,6 +277,8 @@ function AppInner() {
 function App() {
   return (
     <ToastProvider>
+      {/* Message text size + the interface-size shortcut pill (Settings → Accessibility). */}
+      <A11yRuntime />
       <UpdateProvider>
         <HydrationProvider>
           <AppInner />

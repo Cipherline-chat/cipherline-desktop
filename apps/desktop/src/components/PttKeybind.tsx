@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { formatCombo } from '../hooks/useKeybinds';
 import { ClButton } from './cl';
 import { useEscape } from '../hooks/useEscape';
-import { createComboRecorder, setPttUiState } from '../utils/pushToTalk';
+import { setPttUiState } from '../utils/pushToTalk';
+import { createHoldKeyRecorder } from '../utils/holdKeys';
 
 /**
  * The push-to-talk key field. ONE component for both places the key is edited
@@ -32,13 +33,15 @@ export const PttKeybind: React.FC<{
         if (!recording) return;
         // The key being recorded must not also open the mic of a call in progress.
         setPttUiState({ recording: true });
-        const recorder = createComboRecorder((combo) => { onSetRef.current(combo); setRecording(false); });
+        // Physical keys (numpad, Caps Lock, Right Alt / AltGr, any layout) and Mouse 4 / 5 / middle: utils/holdKeys.
+        const recorder = createHoldKeyRecorder((combo) => { onSetRef.current(combo); setRecording(false); });
         const onDown = (e: KeyboardEvent) => {
             e.preventDefault();
             e.stopPropagation();
             // Escape (any modifiers) is handled entirely by the useEscape layer below:
             // Escape is never itself a bindable push-to-talk key.
             if (e.key === 'Escape') return;
+            if (e.repeat) return;
             recorder.keydown(e);
         };
         const onUp = (e: KeyboardEvent) => {
@@ -46,11 +49,34 @@ export const PttKeybind: React.FC<{
             e.stopPropagation();
             recorder.keyup(e);
         };
+        // Middle / back / forward bind the button; a left or right click is left alone (it is how the field is closed).
+        const onMouse = (e: MouseEvent) => {
+            if (!recorder.mousedown(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            // Recording ends on this press, so the listeners below are gone before its release:
+            // swallow that one release too (a "back" mouseup would otherwise navigate).
+            const once = (u: MouseEvent) => { if (u.button === e.button) { u.preventDefault(); u.stopPropagation(); } };
+            window.addEventListener('mouseup', once, { capture: true });
+            window.addEventListener('auxclick', once, { capture: true });
+            window.setTimeout(() => {
+                window.removeEventListener('mouseup', once, { capture: true });
+                window.removeEventListener('auxclick', once, { capture: true });
+            }, 1500);
+        };
+        // While recording, the back / forward buttons must not also act (navigate, close a panel).
+        const swallowAux = (e: MouseEvent) => { if (e.button === 1 || e.button === 3 || e.button === 4) { e.preventDefault(); e.stopPropagation(); } };
         window.addEventListener('keydown', onDown, { capture: true });
         window.addEventListener('keyup', onUp, { capture: true });
+        window.addEventListener('mousedown', onMouse, { capture: true });
+        window.addEventListener('mouseup', swallowAux, { capture: true });
+        window.addEventListener('auxclick', swallowAux, { capture: true });
         return () => {
             window.removeEventListener('keydown', onDown, { capture: true });
             window.removeEventListener('keyup', onUp, { capture: true });
+            window.removeEventListener('mousedown', onMouse, { capture: true });
+            window.removeEventListener('mouseup', swallowAux, { capture: true });
+            window.removeEventListener('auxclick', swallowAux, { capture: true });
             setPttUiState({ recording: false });
         };
     }, [recording]);
@@ -75,8 +101,8 @@ export const PttKeybind: React.FC<{
                 onClick={() => setRecording(r => !r)}
                 className={`sd-kbd vv-kbd${recording ? ' sd-rec' : ''}`}
                 style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
-                title={recording ? 'Press a key or combo, then let go. Esc cancels' : 'Click to rebind'}
-                aria-label={recording ? `Recording ${what} key, press a key or combo, Escape cancels` : value ? `${what} key: ${formatCombo(value)}. Click to change` : `Set ${what} key`}
+                title={recording ? 'Press a key, a combo or a mouse button (middle, 4, 5), then let go. Esc cancels' : 'Click to rebind'}
+                aria-label={recording ? `Recording ${what} key, press a key, combo or mouse button, Escape cancels` : value ? `${what} key: ${formatCombo(value)}. Click to change` : `Set ${what} key`}
             >
                 {recording ? (
                     <i>Press keys…</i>

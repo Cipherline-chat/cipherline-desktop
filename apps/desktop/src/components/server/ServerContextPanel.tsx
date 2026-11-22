@@ -53,6 +53,8 @@ import { StatusLine } from '../StatusLine';
 import { STATUS_CONFIG, type UserStatus, type FriendStatusEntry } from '../../hooks/useUserStatus';
 import { resolvePresence } from '../../utils/presenceState';
 import { useContextMenu } from '../../hooks/useContextMenu';
+import { useChannelMutes } from '../../contexts/ChannelMuteContext';
+import { buildMuteItems, MutedGlyph } from './muteMenu';
 import type { ContextMenuItem } from '../primitives/ContextMenu';
 import { ChannelIconRenderer } from './ChannelIconPicker';
 import { HuddleButton } from './HuddleButton';
@@ -73,7 +75,10 @@ import {
     requestDisconnect, type DisconnectTarget,
 } from '../../utils/callMemberDisconnect';
 import { Permissions, hasPermission } from '@cipherline/shared';
-import { getHighestRoleColor, getTopHoistedRole } from '../../utils/roleColor';
+import { getHighestRoleColor, getTopHoistedRole, readableNameColor } from '../../utils/roleColor';
+import { buildMemberRoleDecor, roleNameStyle } from '../../utils/roleStyle';
+import { RoleIconBadge } from './roles/RoleIconBadge';
+import { useTheme } from '../../theme/engine';
 import { useCallContextSafe, useCallTelemetrySafe } from '../../contexts/CallContext';
 import { SpeakingRing } from '../call/SpeakingRing';
 import { getEntrancePrefs, setEntranceMuted } from '../../utils/entrancePrefs';
@@ -519,6 +524,8 @@ export const ServerContextPanel: React.FC<Props> = ({
         [allChannels],
     );
 
+    // Re-render on a theme switch: member names are drawn through readableNameColor.
+    useTheme();
     // Compute userId→hex-color once and emit to parent whenever data changes.
     const memberRoleColors = useMemo<Record<string, string | null>>(() => {
         if (!serverRoles.length) return {};
@@ -528,6 +535,11 @@ export const ServerContextPanel: React.FC<Props> = ({
         }
         return map;
     }, [members, serverRoles]);
+    // Gradient end + role icon per member (only members that have either).
+    const memberRoleDecor = useMemo(
+        () => buildMemberRoleDecor(members, serverRoles, server.server_id),
+        [members, serverRoles, server.server_id],
+    );
     // Use a ref so the effects below only re-run when the DATA changes, not when
     // the parent provides a fresh function identity on every render. Both callbacks
     // are inline arrows in Dashboard JSX — using them directly as effect deps
@@ -652,6 +664,8 @@ export const ServerContextPanel: React.FC<Props> = ({
     };
     // Voice-channel-row context menu (right-click on a voice channel name).
     const voiceMenu = useContextMenu();
+    // Mute (utils/channelMute.ts) for Calls channels, voice channels and categories.
+    const mute = useChannelMutes();
     // Huddle / call right-click menu.
     const huddleMenu = useContextMenu();
     // Category header right-click menu.
@@ -1817,7 +1831,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         // wash (bg-black/[0.12], see below) is close enough in value to the
         // panel's own bg-cl-abyss that a single ring colour reads cleanly
         // against both — no separate "in a group" token needed.
-        const dotRing = 'border-cl-abyss';
+        const dotRing = 'border-[color:var(--status-backing,var(--cl-abyss))]';
         // Hoisted-role groups ("Display members separately") render as one
         // merged slab: every row gets the same subtle darker wash, and only
         // the group's outer top/bottom corners round — interior seams are
@@ -1825,13 +1839,13 @@ export const ServerContextPanel: React.FC<Props> = ({
         // Hover still reads clearly on top: hover:bg-white/[0.04] sets the
         // same CSS property, so it simply replaces the wash for that one row.
         const groupClasses = groupPos
-            ? `bg-black/[0.12] ${getGroupRowRoundingClass(groupPos)}`
+            ? `bg-black/[0.12] [--status-backing:color-mix(in_srgb,var(--cl-abyss),rgb(var(--cl-shade-rgb))_12%)] ${getGroupRowRoundingClass(groupPos)}`
             : 'rounded-lg';
 
         return (
             <HoverPlayRow
                 key={m.user_id}
-                className={`flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors relative group cursor-pointer ${groupClasses}`}
+                className={`flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] [--status-backing:var(--cl-abyss)] hover:[--status-backing:color-mix(in_srgb,var(--cl-abyss),rgb(var(--cl-bright-rgb))_4%)] transition-colors relative group cursor-pointer ${groupClasses}`}
                 onClick={(e) => {
                     if ((e.target as HTMLElement).closest('button')) return;
                     onOpenProfile(m.user_id, { x: e.clientX, y: e.clientY }, {
@@ -1879,8 +1893,27 @@ export const ServerContextPanel: React.FC<Props> = ({
                 {/* Name + activity */}
                 <div className="flex-1 min-w-0">
                     {/* div (not p) so overflow:hidden doesn't clip the Crown tooltip */}
-                    <div className={`flex items-center gap-1.5 font-semibold leading-tight min-w-0 ${showController ? 'text-[13px]' : 'text-[14px]'}`} style={{ color: status === 'offline' ? 'rgba(255,255,255,0.30)' : (memberRoleColors[m.user_id] ?? 'rgba(255,255,255,0.88)') }}>
-                        <span className="truncate">{displayName}</span>
+                    <div className={`flex items-center gap-1.5 font-semibold leading-tight min-w-0 ${showController ? 'text-[13px]' : 'text-[14px]'}`} style={{ color: status === 'offline' ? 'rgb(var(--cl-bright-rgb) / var(--cl-offline-name-alpha, 0.30))' : (readableNameColor(memberRoleColors[m.user_id]) ?? 'rgb(var(--cl-bright-rgb) / 0.88)') }}>
+                        {(() => {
+                            // Gradient on the NAME only (offline rows stay the dimmed solid).
+                            const decor = memberRoleDecor[m.user_id];
+                            const ns = status !== 'offline' && decor?.secondary
+                                ? roleNameStyle(memberRoleColors[m.user_id], decor.secondary, 'rgb(var(--cl-bright-rgb) / 0.88)')
+                                : null;
+                            return (
+                                <>
+                                    <span className={`truncate ${ns?.className ?? ''}`} style={ns?.style}>{displayName}</span>
+                                    {decor?.icon && (
+                                        <RoleIconBadge
+                                            icon={decor.icon}
+                                            token={token}
+                                            size={showController ? 14 : 16}
+                                            className={status === 'offline' ? 'opacity-40' : undefined}
+                                        />
+                                    )}
+                                </>
+                            );
+                        })()}
                         {isOwner && (
                             <span className="relative group/crown shrink-0 inline-flex items-center">
                                 <Crown size={11} className="text-amber-400" />
@@ -1996,6 +2029,7 @@ export const ServerContextPanel: React.FC<Props> = ({
 
     // Build category header context-menu items (only for canManage users).
     const buildCatMenu = (cat: CategoryInfo) => [
+        ...buildMuteItems(mute, cat.category_id, 'Category'),
         ...(canManage ? [
             {
                 icon: <Plus />, label: 'Create Calls channel here',
@@ -2084,6 +2118,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             <HuddleButton
                 key={h.channel_id}
                 name={h.name}
+                muted={mute.isMuted(h.channel_id) || mute.isMuted(h.parent_category_id) || mute.isMuted(server.server_id)}
                 iconName={h.icon_name ?? null}
                 iconEmoji={h.icon_emoji ?? null}
                 activeParticipantCount={aggregateParticipants}
@@ -2102,6 +2137,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                 onToggleExpanded={() => setHuddleExpanded(prev => ({ ...prev, [h.channel_id]: !expanded }))}
                 onSpawn={() => { if (canStartNewCall) onSpawnHuddleCall?.(h); }}
                 onContextMenu={(e) => huddleMenu.open(e, [
+                    ...buildMuteItems(mute, h.channel_id, 'Channel'),
                     ...(canStartNewCall ? [{
                         icon: <Radio />, label: 'Start a new call',
                         onSelect: () => onSpawnHuddleCall?.(h),
@@ -2301,7 +2337,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     </SpeakingRing>
                                                     <span
                                                         className="flex-1 text-[13px] truncate"
-                                                        style={{ color: roleColor ?? 'rgba(255,255,255,0.8)' }}
+                                                        style={{ color: readableNameColor(roleColor) ?? 'rgb(var(--cl-bright-rgb) / 0.8)' }}
                                                     >
                                                         {displayName}{isMe ? ' (you)' : ''}
                                                     </span>
@@ -2460,7 +2496,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                 >
                     <div className="flex flex-col" style={{ maxHeight: '40vh' }}>
                         <div className="flex items-center gap-2 px-3 py-2 shrink-0 border-b border-cl-border/40">
-                            <Pin className="w-3.5 h-3.5 text-cl-lume shrink-0" />
+                            <Pin className="w-3.5 h-3.5 text-cl-lume-text shrink-0" />
                             <span className="text-[12px] font-semibold text-cl-text flex-1 leading-tight">Pinned Messages</span>
                             <FlatIconBtn
                                 title="Close pinned messages"
@@ -2558,6 +2594,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     collapsed={collapsed}
                                                     iconSize={15}
                                                     fallbackIcon={<Radio size={15} className="text-cl-muted group-hover:text-cl-text transition-colors shrink-0" />}
+                                                    muted={mute.isMuted(cat.category_id)}
                                                 />
                                                 {canManage && (
                                                     <div className={`${CATEGORY_HEADER_ACTIONS_CLASS} items-center gap-0.5 shrink-0`}>
@@ -2740,7 +2777,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                     </div>
                                     <span
                                         className="cl-move-chip-name"
-                                        style={{ color: memberRoleColors[movingParticipant.userId] ?? 'var(--cl-text)' }}
+                                        style={{ color: readableNameColor(memberRoleColors[movingParticipant.userId]) ?? 'var(--cl-text)' }}
                                     >
                                         {name}
                                     </span>
@@ -2794,6 +2831,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                             `}
                                             onClick={() => { if (vcCanJoin) onJoinVoiceChannel?.(vc); else toast.push({ kind: 'error', message: VOICE_JOIN_DENIED_MESSAGE }); }}
                                             onContextMenu={(e) => voiceMenu.open(e, [
+                                                ...buildMuteItems(mute, vc.channel_id, 'Channel'),
                                                 ...(vcCanJoin ? [{
                                                     icon: isMine ? <LogOut /> : <Volume2 />,
                                                     label: isMine ? 'Disconnect' : 'Join Voice',
@@ -2821,6 +2859,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                             <span className={`flex-1 text-[12px] font-medium truncate ${isMine ? 'text-green-300' : isActive ? 'text-green-300/80' : 'text-cl-faint group-hover:text-cl-muted'}`}>
                                                 {vc.name}
                                             </span>
+                                            {(mute.isMuted(vc.channel_id) || mute.isMuted(vc.parent_category_id) || mute.isMuted(server.server_id)) && <MutedGlyph size={11} />}
                                             {isMine ? (
                                                 <span className="text-[10px] text-green-400 shrink-0 font-semibold">● Live</span>
                                             ) : isActive ? (
@@ -2883,7 +2922,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                             />
                                                                         )}
                                                                     </SpeakingRing>
-                                                                    <span className="absolute bottom-[-1px] right-[-2px] border border-cl-abyss rounded-full">
+                                                                    <span className="absolute bottom-[-1px] right-[-2px] border border-[color:var(--status-backing,var(--cl-abyss))] [--status-backing:var(--cl-abyss)] rounded-full">
                                                                         <StatusIcon status={pStatus} currentGame={null} onMobile={pOnMobile} size={7} />
                                                                     </span>
                                                                 </div>

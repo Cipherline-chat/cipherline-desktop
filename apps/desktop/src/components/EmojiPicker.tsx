@@ -4,6 +4,7 @@ import data from '@emoji-mart/data';
 import Picker from '@emoji-mart/react';
 import { init, Data, SearchIndex } from 'emoji-mart';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
+import { useTheme } from '../theme/engine';
 import { useEscape } from '../hooks/useEscape';
 import { useServerEmojiUrls } from '../hooks/useServerEmojiUrl';
 import type { ServerEmoji } from '../hooks/useServerEmojis';
@@ -124,29 +125,29 @@ export interface PickerProps {
 // covered by that surface at all, so those need real rule overrides
 // injected straight into the shadow root instead. This is also where
 // the emoji picker is brought in line with GifPicker's exact divider
-// treatment (border rgba(255,255,255,0.07) under the header, above the
+// treatment (border rgb(var(--cl-bright-rgb) / 0.07) under the header, above the
 // footer) so the two read as a matched set instead of one being a
 // generic bundled widget and the other custom-built chrome.
 const SHADOW_OVERRIDES = `
     input[type=search] {
-        background: rgba(255,255,255,0.07) !important;
-        border: 1px solid rgba(255,255,255,0.10) !important;
+        background: rgb(var(--cl-bright-rgb) / 0.07) !important;
+        border: 1px solid rgb(var(--cl-bright-rgb) / 0.10) !important;
         outline: none !important;
         box-shadow: none !important;
         transition: border-color 0.15s, box-shadow 0.15s !important;
         border-radius: 8px !important;
     }
     input[type=search]:focus {
-        background: rgba(255,255,255,0.07) !important;
-        border-color: rgba(37,224,200,0.65) !important;
-        box-shadow: 0 0 0 3px rgba(37,224,200,0.15) !important;
+        background: rgb(var(--cl-bright-rgb) / 0.07) !important;
+        border-color: rgb(var(--cl-lume-rgb) / 0.65) !important;
+        box-shadow: 0 0 0 3px rgb(var(--cl-lume-rgb) / 0.15) !important;
     }
     /* :has() scopes this to the specific .padding-lr wrapping the search
        row (there are several unrelated .padding-lr wrappers elsewhere in
        the picker, e.g. around category rows) — same header divider color/
        weight as GifPicker's header border-bottom. */
     .padding-lr:has(.search) {
-        border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+        border-bottom: 1px solid rgb(var(--cl-bright-rgb) / 0.07) !important;
         padding-bottom: 8px !important;
         margin-bottom: 4px !important;
     }
@@ -154,7 +155,7 @@ const SHADOW_OVERRIDES = `
        target directly, no collision risk. Same footer divider GifPicker
        uses above its GIF count text. */
     #nav {
-        border-top: 1px solid rgba(255,255,255,0.07) !important;
+        border-top: 1px solid rgb(var(--cl-bright-rgb) / 0.07) !important;
     }
     /* The placeholder that keeps an EMPTY Server emojis / My Emojis tab on the
        bar — see emojiPickerTabs.ts. */
@@ -384,12 +385,13 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         if (isEmptyPlaceholderId(e.id)) return;
         onSelectRef.current(e);
     }, []);
+    const themeScheme = useTheme().scheme;
     const pickerEl = useMemo(() => (
             <Picker
                 data={data}
                 custom={customCategories}
                 onEmojiSelect={stableOnSelect}
-                theme="dark"
+                theme={themeScheme}
                 set="native"
                 // Focus the search box as soon as the picker opens (from the message
                 // bar or a reaction) so typing searches immediately, like the GIF picker.
@@ -406,7 +408,7 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
                 // library widget" tell independent of color.
                 emojiButtonRadius="8px"
             />
-    ), [customCategories, stableOnSelect]);
+    ), [customCategories, stableOnSelect, themeScheme]);
 
     return createPortal(
         <>
@@ -416,9 +418,9 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
             style={{
                 ...style,
                 background:   '#1e2024',
-                border:       '1px solid rgba(255,255,255,0.08)',
+                border:       '1px solid rgb(var(--cl-bright-rgb) / 0.08)',
                 borderRadius: 12,
-                boxShadow:    '0 8px 32px rgba(0,0,0,0.6)',
+                boxShadow:    '0 8px 32px rgb(var(--cl-shade-rgb) / 0.6)',
                 overflow:     'hidden',
             }}
             onClick={e => e.stopPropagation()}
@@ -457,7 +459,7 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
                     --rgb-background: 30, 32, 36;
                     --rgb-color: 255, 255, 255;
                     --rgb-accent: 37, 224, 200;
-                    --color-border: rgba(255,255,255,0.07);
+                    --color-border: rgb(var(--cl-bright-rgb) / 0.07);
                     --font-family: var(--cl-font-body);
                     /* --category-icon-size has no --em- indirection layer —
                        :host hardcodes its own 18px default at the same
@@ -471,6 +473,10 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
                     box-shadow: none !important;
                     border-radius: 0 !important;
                 }
+                /* Light: white card, ink text. emoji-mart takes comma-separated channels. */
+                :root[data-scheme="light"] [data-cl-emoji-picker] { background: var(--cl-deep) !important; border-color: var(--cl-border) !important; box-shadow: var(--cl-shadow-pop) !important; }
+                :root[data-scheme="light"] [data-testid="emoji-picker-empty"] { background: var(--cl-deep) !important; }
+                :root[data-scheme="light"] em-emoji-picker { --rgb-background: 255, 255, 255; --rgb-color: 28, 34, 64; --rgb-accent: 10, 107, 96; }
             `}</style>
         </div>
         </>,

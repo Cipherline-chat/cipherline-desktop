@@ -44,7 +44,7 @@ const KeepFullQualityButton = ({ onKeep }: { onKeep: () => void }) => {
                 onMouseDown={stop}
                 onDoubleClick={stop}
                 onContextMenu={stop}
-                className="shrink-0 pointer-events-auto rounded-md px-2 py-0.5 bg-white/10 text-white text-[11px] font-semibold whitespace-nowrap hover:bg-white/20 active:bg-white/25 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume"
+                className="shrink-0 pointer-events-auto rounded-md px-2 py-0.5 bg-pure-white/10 text-pure-white text-[11px] font-semibold whitespace-nowrap hover:bg-pure-white/20 active:bg-pure-white/25 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume"
             >
                 Keep full quality
             </button>
@@ -76,11 +76,11 @@ export const ShareFallbackNote = ({ notice, insets, onKeep, onDismiss }: ShareFa
                     role="group"
                     aria-label="Stream quality"
                     data-share-fallback="lighter"
-                    className="cl-share-fallback-note flex items-center gap-2 max-w-full bg-black/55 backdrop-blur-sm rounded-lg pl-3 pr-1.5 py-1.5"
+                    className="cl-share-fallback-note flex items-center gap-2 max-w-full bg-pure-black/55 backdrop-blur-sm rounded-lg pl-3 pr-1.5 py-1.5"
                 >
-                    <Gauge className="w-3.5 h-3.5 text-cl-lume shrink-0" aria-hidden="true" />
-                    <span className="hidden @[560px]:inline text-white/90 text-xs font-medium leading-snug">{copy.full}</span>
-                    <span className="@[560px]:hidden text-white/90 text-xs font-medium truncate min-w-0">{copy.short}</span>
+                    <Gauge className="w-3.5 h-3.5 text-cl-lume-text shrink-0" aria-hidden="true" />
+                    <span className="hidden @[560px]:inline text-pure-white/90 text-xs font-medium leading-snug">{copy.full}</span>
+                    <span className="@[560px]:hidden text-pure-white/90 text-xs font-medium truncate min-w-0">{copy.short}</span>
                     <KeepFullQualityButton onKeep={onKeep} />
                     <button
                         type="button"
@@ -92,7 +92,7 @@ export const ShareFallbackNote = ({ notice, insets, onKeep, onDismiss }: ShareFa
                         onMouseDown={stop}
                         onDoubleClick={stop}
                         onContextMenu={stop}
-                        className="shrink-0 pointer-events-auto grid place-items-center w-5 h-5 rounded-md text-white/70 hover:text-white hover:bg-white/15 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume"
+                        className="shrink-0 pointer-events-auto grid place-items-center w-5 h-5 rounded-md text-pure-white/70 hover:text-pure-white hover:bg-pure-white/15 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume"
                     >
                         <X className="w-3 h-3" strokeWidth={2.5} aria-hidden="true" />
                     </button>
@@ -101,10 +101,10 @@ export const ShareFallbackNote = ({ notice, insets, onKeep, onDismiss }: ShareFa
             {notice?.kind === 'restored' && (
                 <div
                     data-share-fallback="restored"
-                    className="cl-share-fallback-restored flex items-center gap-2 bg-black/55 backdrop-blur-sm rounded-lg px-3 py-1.5"
+                    className="cl-share-fallback-restored flex items-center gap-2 bg-pure-black/55 backdrop-blur-sm rounded-lg px-3 py-1.5"
                 >
-                    <Check className="w-3.5 h-3.5 text-cl-lume shrink-0" aria-hidden="true" />
-                    <span className="text-white/90 text-xs font-medium whitespace-nowrap">Back to full quality</span>
+                    <Check className="w-3.5 h-3.5 text-cl-lume-text shrink-0" aria-hidden="true" />
+                    <span className="text-pure-white/90 text-xs font-medium whitespace-nowrap">Back to full quality</span>
                 </div>
             )}
         </div>

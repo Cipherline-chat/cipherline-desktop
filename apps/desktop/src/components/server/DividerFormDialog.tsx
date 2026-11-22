@@ -84,7 +84,7 @@ export const DividerFormDialog: React.FC<Props> = ({ divider, containerName, onC
                 onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
             >
                 <div className="flex items-center gap-3 px-5 py-3 border-b border-cl-border/40 shrink-0">
-                    <div className="w-8 h-8 rounded-xl bg-cl-glow/15 flex items-center justify-center text-cl-glow border border-solid border-cl-glow/25 shrink-0">
+                    <div className="w-8 h-8 rounded-xl bg-cl-glow/15 flex items-center justify-center text-cl-glow-text border border-solid border-cl-glow/25 shrink-0">
                         <Minus size={15} />
                     </div>
                     <div className="min-w-0 flex-1">
@@ -164,7 +164,7 @@ export const DividerFormDialog: React.FC<Props> = ({ divider, containerName, onC
                                         }}
                                     />
                                 </div>
-                                {!labelOk && <div className="text-[11px] text-cl-flash mt-1" role="alert">{labelError}</div>}
+                                {!labelOk && <div className="text-[11px] text-cl-flash-text mt-1" role="alert">{labelError}</div>}
                                 <div className="text-[11px] text-cl-faint mt-1">Shown exactly as typed. Paste in any symbols or emoji you like.</div>
                             </div>
                             <div>

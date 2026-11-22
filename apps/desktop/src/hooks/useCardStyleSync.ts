@@ -12,6 +12,7 @@
  * An API that does not know the slot answers 400: that silences sync for 30
  * minutes with no console noise and local styles keep working untouched.
  */
+import { useOwnSlotNudge } from './useOwnSlotNudge';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import secureLocalStore from '../utils/secureLocalStore';
 import { cardStylesRepublishReason, publishCardStyles, pullCardStyles, isSlotUnavailableError } from '../services/cardStyleSyncService';
@@ -153,5 +154,7 @@ export function useCardStyleSync({ userId, deviceId, token }: CardStyleSyncOptio
 
     useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
+    // Real time: another device wrote this slot (own_slot:changed) -> one coalesced pull.
+    useOwnSlotNudge('card_styles', enabled, () => { void run(); });
     return useMemo(() => ({ markDirty, syncNow: () => { void run(); } }), [markDirty, run]);
 }

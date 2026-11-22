@@ -188,6 +188,9 @@ export const ClSlider: React.FC<ClSliderProps> = ({
         if (disabled) return;
         if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { onChange(snap(value + step)); e.preventDefault(); }
         if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { onChange(snap(value - step)); e.preventDefault(); }
+        // WAI-ARIA slider pattern: Home / End jump to the ends.
+        if (e.key === 'Home') { onChange(min); e.preventDefault(); }
+        if (e.key === 'End') { onChange(max); e.preventDefault(); }
     };
 
     // A double-click is pointerdown/up, pointerdown/up, THEN dblclick — so by
@@ -235,7 +238,10 @@ export const ClSlider: React.FC<ClSliderProps> = ({
                 onKeyDown={onKeyDown}
                 onDoubleClick={onDoubleClick}
             >
-                <span ref={bodyRef} className="sbody">
+                {/* Visual only: the role="slider" root carries the value (aria-valuenow /
+                    aria-valuetext), so the track and the bubble's duplicate text are hidden
+                    from assistive tech instead of being read as stray content. */}
+                <span ref={bodyRef} className="sbody" aria-hidden="true">
                     <span className="strk" />
                     <span ref={fillRef} className="sfill" style={{ width: `${pct}%` }} />
                     <span ref={thumbWrapRef} className="sthw" style={{ left: `${pct}%` }}>
@@ -243,7 +249,7 @@ export const ClSlider: React.FC<ClSliderProps> = ({
                         <span ref={thumbRef} className="sth" />
                     </span>
                 </span>
-                <span ref={bubbleRef} className="sbub" style={{ left: `${pct}%` }}>{label}</span>
+                <span ref={bubbleRef} className="sbub" aria-hidden="true" style={{ left: `${pct}%` }}>{label}</span>
             </div>
             {hint.tip}
         </span>

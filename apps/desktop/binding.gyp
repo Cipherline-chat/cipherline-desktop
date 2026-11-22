@@ -17,6 +17,7 @@
               "-luuid.lib",
               "-lmmdevapi.lib",
               "-luser32.lib",
+              "-ladvapi32.lib",
               "-ldwmapi.lib",
               "-lwinmm.lib",
               "-lshell32.lib",

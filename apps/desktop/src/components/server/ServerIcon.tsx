@@ -24,6 +24,7 @@ import React, { useState } from 'react';
 import { useEncryptedAvatar, avatarUrlMime } from '../../hooks/useEncryptedAvatar';
 import { mayBeAnimated, useStillGate } from '../../utils/animatedImage';
 import { userColor } from '../../utils/avatarColor';
+import { serverAbbreviation } from '../../utils/serverAbbreviation';
 import { safeImageSrc } from '../../utils/safeMediaUrl';
 
 interface Props {
@@ -44,13 +45,6 @@ interface Props {
     /** A PARENT says "play now" (e.g. the pointer is over the rail tile around
      *  this icon). Transient, unlike `animate`. */
     playing?: boolean;
-}
-
-function abbreviate(name: string): string {
-    const words = name.trim().split(/\s+/).filter(Boolean);
-    if (words.length === 0) return '?';
-    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-    return (words[0][0] + words[1][0]).toUpperCase();
 }
 
 export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB64, nonceB64, token, className, animate = false, playing = false }) => {
@@ -79,7 +73,7 @@ export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB
             title={name}
             {...hover}
         >
-            {abbreviate(name)}
+            {serverAbbreviation(name)}
         </div>
     );
 };

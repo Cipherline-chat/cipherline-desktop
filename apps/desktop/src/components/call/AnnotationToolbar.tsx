@@ -40,7 +40,7 @@ export const AnnotationToolbar: React.FC = () => {
         <div
             role="toolbar"
             aria-label="Annotation"
-            className="flex items-center gap-1 bg-black/35 backdrop-blur-sm rounded-lg px-1.5 py-1 pointer-events-auto"
+            className="flex items-center gap-1 bg-pure-black/35 backdrop-blur-sm rounded-lg px-1.5 py-1 pointer-events-auto"
             // Stop the tile from treating clicks here as "focus / fullscreen".
             onClick={e => e.stopPropagation()}
             onDoubleClick={e => e.stopPropagation()}
@@ -56,7 +56,7 @@ export const AnnotationToolbar: React.FC = () => {
                             aria-label={`Colour ${c}`}
                             aria-pressed={color === c}
                             onClick={() => annotationStore.setColor(c)}
-                            className="rounded-full shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                            className="rounded-full shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-pure-white/80"
                             style={{
                                 width: 14, height: 14, background: c, border: 'none', padding: 0, cursor: 'pointer',
                                 boxShadow: color === c ? '0 0 0 2px rgba(255,255,255,0.95)' : '0 0 0 1px rgba(0,0,0,0.35)',
@@ -64,7 +64,7 @@ export const AnnotationToolbar: React.FC = () => {
                             }}
                         />
                     ))}
-                    <span className="w-px h-4 bg-white/15 mx-0.5" aria-hidden="true" />
+                    <span className="w-px h-4 bg-pure-white/15 mx-0.5" aria-hidden="true" />
                 </>
             )}
             <button
@@ -73,7 +73,7 @@ export const AnnotationToolbar: React.FC = () => {
                 aria-label={enabled ? 'Stop drawing' : 'Draw on this video'}
                 aria-pressed={enabled}
                 onClick={() => annotationStore.setEnabled(!enabled)}
-                className={`${btn} ${enabled ? 'bg-cl-lume text-cl-on-lume' : 'text-white/85 hover:text-white hover:bg-white/10'}`}
+                className={`${btn} ${enabled ? 'bg-cl-lume text-cl-on-lume' : 'text-white/85 hover:text-pure-white hover:bg-pure-white/10'}`}
                 style={size}
             >
                 {enabled ? <X size={14} /> : <Pencil size={14} />}

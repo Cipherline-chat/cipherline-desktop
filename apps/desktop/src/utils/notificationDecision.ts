@@ -175,6 +175,13 @@ export interface ChannelMessageDecisionInput
     mentionsEveryone?: boolean;
     /** Role ids the viewer holds in the channel's server. */
     myRoleIds: ReadonlySet<string>;
+    /**
+     * The channel is muted (its own mute, its category's or its server's; see
+     * utils/channelMute.ts). Forces mode 'none' AND narrows what still counts
+     * as a mention to a DIRECT @mention of the viewer: @everyone/@here, role
+     * pings and keyword hits are suppressed (Discord's semantics).
+     */
+    muted?: boolean;
 }
 
 /**
@@ -191,13 +198,21 @@ export interface ChannelMessageDecisionInput
  * whatever the level — see resolveNotification.
  */
 export function decideChannelMessage(input: ChannelMessageDecisionInput): NotifDecision | null {
-    const { content, senderUserId, userId, mentionsEveryone, myRoleIds, ...rest } = input;
+    const { content, senderUserId, userId, mentionsEveryone: everyoneFlag, myRoleIds: roleIds, muted, ...restIn } = input;
+    const mentionsEveryone = everyoneFlag;
+    const myRoleIds: ReadonlySet<string> = roleIds;
+    const rest = muted ? { ...restIn, mode: 'none' as const, keywords: [] as string[] } : restIn;
     if (!content?.type || CHANNEL_ACTION_TYPES.has(content.type)) return null;
     if (!senderUserId || senderUserId === userId) return null;
     const text = content.type === 'text' ? (content.text ?? '') : '';
     return resolveNotification({
         ...rest,
         text,
-        directMention: channelTextMentionsViewer({ text, userId, mentionsEveryone, myRoleIds }),
+        // Muted: only a token that names the viewer counts. The plain-text
+        // "@everyone"/"@here" test inside messageTextMentionsUser, the sender's
+        // everyone flag and role pings are all suppressed.
+        directMention: muted
+            ? !!userId && text.includes(`<@u:${userId}:`)
+            : channelTextMentionsViewer({ text, userId, mentionsEveryone, myRoleIds }),
     });
 }

@@ -116,7 +116,7 @@ export const StagingPasswordForm: React.FC<{
             <div
                 id={`${id}-err`}
                 role="alert"
-                style={{ minHeight: 18, marginTop: 6, fontSize: 12, fontWeight: 700, color: 'var(--cl-flash)' }}
+                style={{ minHeight: 18, marginTop: 6, fontSize: 12, fontWeight: 700, color: 'var(--cl-flash-text)' }}
             >
                 {shownError}
             </div>

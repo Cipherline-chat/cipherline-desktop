@@ -4,6 +4,7 @@ import type { KeysSignal } from './mascot/Keys';
 import { HomeKeys, type PlayVerdict } from './mascot/HomeKeys';
 import { HomeAmbient } from './HomeAmbient';
 import { useAmbientMotion } from '../hooks/useAmbientMotion';
+import { useEffectsEnabled } from '../utils/a11y/motionPrefs';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { HomeStatusDot } from './HomeStatusDot';
 import { resolvePresenceWithMobile } from '../utils/activeNow';
@@ -566,8 +567,13 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     onSelectConversation, onJoinVoiceChannel, onJoinHuddleCall, onSelectServer, onOpenChannel,
     onPin, onUnpin, onReorderPins, onOpenStorage,
 }) => {
-    // Ambient motion (rising motes + decorative micro-loops) — device pref.
-    const [ambientOn] = useAmbientMotion();
+    // Ambient motion (rising motes + decorative micro-loops) — device pref,
+    // under Settings -> Accessibility -> Celebrations and effects (the toggle
+    // is disabled there while effects are off, so the micro-loops stop too;
+    // reduced motion stops them in home-deck.css).
+    const [ambientPref] = useAmbientMotion();
+    const effectsOn = useEffectsEnabled();
+    const ambientOn = ambientPref && effectsOn;
 
     // Keys mascot state — the spoken line + a rotation counter (rule 3).
     const [keysSpeech, setKeysSpeech] = useState<string | null>(null);

@@ -73,8 +73,12 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
               description: 'Read the moderation history.' },
             { key: 'CREATE_INVITE',   label: 'Create Invite',   bit: Permissions.CREATE_INVITE,
               description: 'Generate invite links to this server.' },
-            { key: 'MANAGE_EMOJIS',   label: 'Manage Emojis',   bit: Permissions.MANAGE_EMOJIS,
-              description: 'Add, rename, and delete this server\'s custom emojis.' },
+            { key: 'MANAGE_EMOJIS',   label: 'Manage Emojis & Stickers', bit: Permissions.MANAGE_EMOJIS,
+              description: 'Add, rename, and delete this server\'s custom emojis and stickers.' },
+            // Server-wide (requireServerPermission); General Server has no
+            // channel editor, so no channel override is ever offered for it.
+            { key: 'IMPORT_HISTORY',  label: 'Import Message History', bit: Permissions.IMPORT_HISTORY, danger: true,
+              description: 'Copy messages from another app into this server under their original authors\' names. Off for everyone by default; the owner and administrators have it.' },
         ],
     },
     {

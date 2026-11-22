@@ -87,9 +87,11 @@ describe('wiring', () => {
         for (const l of direct) expect(l).toMatch(/callDevices|devs/);
     });
 
-    it('the quick-reply send in Dashboard is franked on both branches', () => {
-        expect(count(dash, 'await frankForSend(')).toBe(2);
-        expect(count(dash, 'frankingHeaders(franked)')).toBe(2);
+    it('the quick-reply send in Dashboard is franked on both branches, and so is a shared theme link', () => {
+        // 2 quick-reply branches + sendE2eeContent's `frank` option (the theme "Send to a friend" text).
+        expect(count(dash, 'await frankForSend(')).toBe(3);
+        expect(count(dash, 'frankingHeaders(franked)')).toBe(3);
+        expect(dash).toMatch(/type: 'text', text \}, \{ frank: true \}\)/);
     });
 
     it('all three decrypt-and-store paths lift the sealed key out before anything else', () => {

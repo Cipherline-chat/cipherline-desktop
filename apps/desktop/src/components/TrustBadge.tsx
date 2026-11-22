@@ -53,16 +53,16 @@ interface Props {
  * latter.
  */
 const PRESENTATION = {
-    verified:           { Icon: ShieldCheck,    color: 'var(--cl-ok)' },
+    verified:           { Icon: ShieldCheck,    color: 'var(--cl-ok-text)' },
     // Pre-v2 verification. Its own shape (ellipsis: "one more step") and the
     // brand accent rather than amber or red: nothing is known to be wrong, and
     // a colour that reads as a warning would teach every verified user to
     // ignore warnings on the day of the upgrade.
-    verified_legacy:    { Icon: ShieldEllipsis, color: 'var(--cl-lume)' },
-    partially_verified: { Icon: ShieldHalf,     color: 'var(--cl-glow)' },
-    unverified:         { Icon: ShieldQuestion, color: 'var(--cl-glow)' },
+    verified_legacy:    { Icon: ShieldEllipsis, color: 'var(--cl-lume-text)' },
+    partially_verified: { Icon: ShieldHalf,     color: 'var(--cl-glow-text)' },
+    unverified:         { Icon: ShieldQuestion, color: 'var(--cl-glow-text)' },
     unverifiable:       { Icon: ShieldOff,      color: 'var(--cl-muted)' },
-    compromised:        { Icon: ShieldAlert,    color: 'var(--cl-flash)' },
+    compromised:        { Icon: ShieldAlert,    color: 'var(--cl-flash-text)' },
 } as const;
 
 export const TrustBadge: React.FC<Props> = ({

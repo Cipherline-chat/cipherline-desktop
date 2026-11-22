@@ -1,13 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { SmilePlus, Pencil, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { SmilePlus, Pencil, Trash2, ChevronLeft, ChevronRight, Sticker as StickerIcon } from 'lucide-react';
+import { AddStickerDialog } from '../../stickers/AddStickerDialog';
+import { usePersonalStickerLibrary } from '../../../hooks/usePersonalStickers';
 import { ClButton, ClConfirm, ClInput } from '../../cl';
 import { PersonalEmojiImage } from '../../PersonalEmoji';
 import { AddEmojiDialog } from './AddEmojiDialog';
+import { MyEmojiBulkDialog } from '../../emoji/MyEmojiBulkDialog';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import '../../../styles/settings-ui.css';
 import { usePersonalEmojiLibrary } from '../../../hooks/usePersonalEmojis';
 import { useEscape } from '../../../hooks/useEscape';
-import { personalEmojis } from '../../../utils/personalEmoji/service';
+import { personalEmojis, personalStickers } from '../../../utils/personalEmoji/service';
 import { PERSONAL_EMOJI_LIBRARY_MAX, isPersonalEmojiName } from '../../../utils/personalEmoji/token';
 import { sanitizeEmojiNameInput } from '../../../utils/emojiNames';
 import { emojiFileProblem } from '../../../utils/personalEmoji/pickFile';
@@ -31,13 +34,33 @@ const ERROR_TEXT: Record<LibraryError, string> = {
     not_found: 'That emoji is gone.',
 };
 
-export const MyEmojisCard: React.FC = () => {
-    const { entries } = usePersonalEmojiLibrary();
-    const lib = personalEmojis();
+/** My stickers (2026-11-22) is the same card over the sticker library: same
+ *  keyboard model, reorder, rename, remove; bigger tiles, sticker wording. */
+const STICKER_ERROR_TEXT: Record<LibraryError, string> = {
+    full: `You can have ${PERSONAL_EMOJI_LIBRARY_MAX} stickers. Remove one first.`,
+    duplicate_name: 'You already have a sticker with that name.',
+    invalid_name: ERROR_TEXT.invalid_name,
+    not_found: 'That sticker is gone.',
+};
+
+export const MyStickersCard: React.FC = () => <MyEmojisCard kind="sticker" />;
+
+export const MyEmojisCard: React.FC<{ kind?: 'emoji' | 'sticker' }> = ({ kind = 'emoji' }) => {
+    const sticker = kind === 'sticker';
+    const { entries: emojiEntries } = usePersonalEmojiLibrary();
+    const stickerEntries = usePersonalStickerLibrary();
+    const entries = sticker ? stickerEntries : emojiEntries;
+    const lib = sticker ? personalStickers() : personalEmojis();
+    const errorText = sticker ? STICKER_ERROR_TEXT : ERROR_TEXT;
+    const noun = sticker ? 'sticker' : 'emoji';
+    const label = (n: string) => (sticker ? n : `:${n}:`);
+    const tile = sticker ? 112 : 76;
+    const img = sticker ? 88 : 44;
     const fileRef = useRef<HTMLInputElement>(null);
     const gridRef = useRef<HTMLDivElement>(null);
 
     const [pending, setPending] = useState<File | null>(null);
+    const [bulkFiles, setBulkFiles] = useState<File[] | null>(null);
     const [pickError, setPickError] = useState('');
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [activeId, setActiveId] = useState<string | null>(null);
@@ -63,20 +86,23 @@ export const MyEmojisCard: React.FC = () => {
     useEffect(() => {
         const el = gridRef.current;
         if (!el || typeof ResizeObserver === 'undefined') return;
-        const ro = new ResizeObserver(() => setCols(Math.max(1, Math.floor((el.clientWidth + 8) / (76 + 8)))));
+        const ro = new ResizeObserver(() => setCols(Math.max(1, Math.floor((el.clientWidth + 8) / (tile + 8)))));
         ro.observe(el);
         return () => ro.disconnect();
-    }, [hasEntries]);
+    }, [hasEntries, tile]);
     const limit = cols * 2;
     const visible = expanded ? entries : entries.slice(0, limit);
     const tabbableId = (visible.find(e => e.id === activeId) ?? visible[0])?.id;
 
-    const chooseFile = (f: File | null | undefined) => {
+    // One picture keeps the single dialog (shape, live preview); two or more open the review list.
+    const chooseFiles = (list: FileList | File[] | null | undefined) => {
         setPickError('');
-        if (!f) return;
-        const problem = emojiFileProblem(f);
+        const files = Array.from(list ?? []);
+        if (files.length === 0 || full) return;
+        if (files.length > 1) { setBulkFiles(files); return; }
+        const problem = emojiFileProblem(files[0]);
         if (problem) { setPickError(problem); return; }
-        setPending(f);
+        setPending(files[0]);
     };
 
     const startRename = (id: string) => {
@@ -88,7 +114,7 @@ export const MyEmojisCard: React.FC = () => {
         if (!renaming) return;
         const res = lib.rename(renaming, renameValue);
         if (res.ok) { setRenaming(null); setActionError(''); setAnnounce(`Renamed to ${renameValue}`); }
-        else setActionError(ERROR_TEXT[res.error]);
+        else setActionError(errorText[res.error]);
     };
 
     const move = (id: string, delta: number) => {
@@ -108,7 +134,7 @@ export const MyEmojisCard: React.FC = () => {
         setConfirmDelete(null); setSelectedId(null);
         const next = entries[idx + 1] ?? entries[idx - 1];
         setActiveId(next?.id ?? null);
-        setAnnounce(`Removed ${name ?? 'emoji'}`);
+        setAnnounce(`Removed ${name ?? noun}`);
         requestAnimationFrame(() => (next ? gridRef.current?.querySelector<HTMLElement>(`[data-emoji-id="${next.id}"]`) : fileRef.current)?.focus());
     };
 
@@ -148,12 +174,15 @@ export const MyEmojisCard: React.FC = () => {
 
     return (
         <SettingsDisclosure
-            id="personalize.emojis" variant="card" defaultOpen title="My Emojis"
-            summary={entries.length === 0 ? 'Your own emojis, free for everyone' : `${entries.length} of ${PERSONAL_EMOJI_LIBRARY_MAX}`}
-            labels={['My Emojis', 'Add emoji']}
+            id={sticker ? 'personalize.stickers' : 'personalize.emojis'} variant="card" defaultOpen title={sticker ? 'My stickers' : 'My Emojis'}
+            summary={entries.length === 0 ? (sticker ? 'Your own stickers, free for everyone' : 'Your own emojis, free for everyone') : `${entries.length} of ${PERSONAL_EMOJI_LIBRARY_MAX}`}
+            labels={sticker ? ['My stickers', 'Add sticker'] : ['My Emojis', 'Add emoji']}
             action={(
-                <ClButton size="sm" disabled={full} onClick={() => fileRef.current?.click()} tooltip={full ? 'Full. Remove an emoji to add another.' : undefined}>
-                    <SmilePlus size={14} className="mr-1.5" aria-hidden="true" /> Add emoji
+                <ClButton size="sm" disabled={full} onClick={() => fileRef.current?.click()} tooltip={full ? `Full. Remove ${sticker ? 'a sticker' : 'an emoji'} to add another.` : undefined}>
+                    {sticker
+                        ? <StickerIcon size={14} className="mr-1.5" aria-hidden="true" />
+                        : <SmilePlus size={14} className="mr-1.5" aria-hidden="true" />}
+                    {sticker ? 'Add sticker' : 'Add emoji'}
                 </ClButton>
             )}
         >
@@ -161,34 +190,37 @@ export const MyEmojisCard: React.FC = () => {
             className={`rounded-xl ${dropActive ? 'outline outline-1 outline-dashed outline-cl-lume' : ''}`}
             onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropActive(true); } }}
             onDragLeave={() => setDropActive(false)}
-            onDrop={e => { e.preventDefault(); setDropActive(false); if (e.dataTransfer.files[0]) chooseFile(e.dataTransfer.files[0]); }}
+            onDrop={e => { e.preventDefault(); setDropActive(false); chooseFiles(e.dataTransfer.files); }}
         >
             <p className="su-hint" style={{ margin: '0 0 8px' }}>
-                Use them in any chat and as reactions. Shrunk to 128 px here, sent inside end-to-end encrypted messages. GIFs and WebPs animate.
-                {' '}{full ? 'Full: remove one to add another.' : 'Drop a picture anywhere in this section.'}
+                {sticker
+                    ? 'Send them from the sticker button in any chat. Shrunk to 320 px here, sent inside end-to-end encrypted messages. GIFs and WebPs animate.'
+                    : 'Use them in any chat and as reactions. Shrunk to 128 px here, sent inside end-to-end encrypted messages. GIFs and WebPs animate.'}
+                {' '}{full ? 'Full: remove one to add another.' : 'Pick or drop as many pictures as you like.'}
             </p>
             <input
                 ref={fileRef}
                 type="file"
                 accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp"
+                multiple
                 className="hidden"
-                onChange={e => { chooseFile(e.target.files?.[0]); e.target.value = ''; }}
+                onChange={e => { chooseFiles(e.target.files); e.target.value = ''; }}
             />
-            {pickError && <div className="text-xs text-cl-flash mt-2" role="alert">{pickError}</div>}
+            {pickError && <div className="text-xs text-cl-flash-text mt-2" role="alert">{pickError}</div>}
 
             {entries.length === 0 ? (
                 <div className="mt-4 text-center text-[13px] text-cl-faint py-6">
-                    No emojis yet. Add a picture and it is ready to use everywhere.
+                    {sticker ? 'No stickers yet. Add a picture and it is ready to send anywhere.' : 'No emojis yet. Add a picture and it is ready to use everywhere.'}
                 </div>
             ) : (
                 <>
                     <div
                         ref={gridRef}
                         role="listbox"
-                        aria-label="My Emojis"
+                        aria-label={sticker ? 'My stickers' : 'My Emojis'}
                         aria-orientation="horizontal"
                         className="grid gap-2"
-                        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(76px, 1fr))' }}
+                        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${tile}px, 1fr))` }}
                     >
                         {visible.map((e, i) => {
                             const isSel = e.id === selectedId;
@@ -206,7 +238,7 @@ export const MyEmojisCard: React.FC = () => {
                                         type="button"
                                         role="option"
                                         aria-selected={isSel}
-                                        aria-label={`:${e.name}:${e.animated ? ', animated' : ''}, position ${i + 1} of ${entries.length}`}
+                                        aria-label={`${label(e.name)}${e.animated ? ', animated' : ''}, position ${i + 1} of ${entries.length}`}
                                         data-emoji-id={e.id}
                                         tabIndex={e.id === tabbableId ? 0 : -1}
                                         draggable
@@ -217,8 +249,8 @@ export const MyEmojisCard: React.FC = () => {
                                         onKeyDown={ev => onTileKeyDown(ev, e.id, i)}
                                         className={`w-full flex flex-col items-center gap-1 rounded-xl px-1 py-2 border transition-colors ${isSel ? 'border-cl-lume bg-cl-lume/10' : 'border-transparent hover:bg-white/5'} ${dragId === e.id ? 'opacity-40' : ''}`}
                                     >
-                                        <PersonalEmojiImage id={e.id} name={e.name} saveable={false} style={{ width: 44, height: 44 }} />
-                                        <span className="text-[11px] text-cl-faint truncate w-full text-center">:{e.name}:</span>
+                                        <PersonalEmojiImage id={e.id} name={e.name} saveable={false} style={{ width: img, height: img }} />
+                                        <span className="text-[11px] text-cl-faint truncate w-full text-center">{label(e.name)}</span>
                                     </button>
                                 </div>
                             );
@@ -241,7 +273,7 @@ export const MyEmojisCard: React.FC = () => {
                 <div className="mt-3 rounded-xl bg-cl-raise/40 px-3 py-2.5 flex flex-wrap items-center gap-2" role="group" aria-label={`Actions for ${selected.name}`}>
                     {renaming === selected.id ? (
                         <>
-                            <span className="text-cl-faint">:</span>
+                            {!sticker && <span className="text-cl-faint">:</span>}
                             <ClInput
                                 autoFocus
                                 value={renameValue}
@@ -249,19 +281,19 @@ export const MyEmojisCard: React.FC = () => {
                                 spellCheck={false}
                                 style={{ width: 200 }}
                                 error={!isPersonalEmojiName(renameValue)}
-                                aria-label="Emoji name"
+                                aria-label={sticker ? 'Sticker name' : 'Emoji name'}
                                 onChange={ev => { setRenameValue(sanitizeEmojiNameInput(ev.target.value)); setActionError(''); }}
                                 onKeyDown={ev => {
                                     if (ev.key === 'Enter') { ev.preventDefault(); commitRename(); }
                                 }}
                             />
-                            <span className="text-cl-faint">:</span>
+                            {!sticker && <span className="text-cl-faint">:</span>}
                             <ClButton size="sm" onClick={commitRename} disabled={!isPersonalEmojiName(renameValue)}>Save</ClButton>
                             <ClButton size="sm" variant="ghost" onClick={() => { setRenaming(null); setActionError(''); }}>Cancel</ClButton>
                         </>
                     ) : (
                         <>
-                            <span className="text-[13px] mr-auto truncate">:{selected.name}:{selected.animated ? ' (animated)' : ''}</span>
+                            <span className="text-[13px] mr-auto truncate">{label(selected.name)}{selected.animated ? ' (animated)' : ''}</span>
                             <ClButton size="sm" variant="ghost" onClick={() => startRename(selected.id)}><Pencil size={14} className="mr-1.5" aria-hidden="true" />Rename</ClButton>
                             <ClButton size="sm" variant="ghost" disabled={entries[0]?.id === selected.id} onClick={() => move(selected.id, -1)}><ChevronLeft size={14} className="mr-1" aria-hidden="true" />Earlier</ClButton>
                             <ClButton size="sm" variant="ghost" disabled={entries[entries.length - 1]?.id === selected.id} onClick={() => move(selected.id, 1)}>Later<ChevronRight size={14} className="ml-1" aria-hidden="true" /></ClButton>
@@ -270,19 +302,27 @@ export const MyEmojisCard: React.FC = () => {
                     )}
                 </div>
             )}
-            {actionError && <div className="text-xs text-cl-flash mt-2" role="alert">{actionError}</div>}
+            {actionError && <div className="text-xs text-cl-flash-text mt-2" role="alert">{actionError}</div>}
 
             <div className="sr-only" role="status" aria-live="polite">{announce}</div>
 
-            {pending && <AddEmojiDialog file={pending} onClose={() => setPending(null)} onAdded={e => { setSelectedId(e.id); setActiveId(e.id); setAnnounce(`Added ${e.name}`); }} />}
+            {bulkFiles && (
+                <MyEmojiBulkDialog
+                    files={bulkFiles}
+                    kind={kind}
+                    onClose={({ added }) => { setBulkFiles(null); if (added > 0) setAnnounce(`Added ${added} ${noun}${added === 1 ? '' : 's'}`); }}
+                />
+            )}
+            {pending && !sticker && <AddEmojiDialog file={pending} onClose={() => setPending(null)} onAdded={e => { setSelectedId(e.id); setActiveId(e.id); setAnnounce(`Added ${e.name}`); }} />}
+            {pending && sticker && <AddStickerDialog file={pending} onClose={() => setPending(null)} onAdded={e => { setSelectedId(e.id); setActiveId(e.id); setAnnounce(`Added ${e.name}`); }} />}
 
             <ClConfirm
                 open={!!confirmDelete}
                 onClose={() => setConfirmDelete(null)}
                 onConfirm={() => confirmDelete && doDelete(confirmDelete)}
                 danger
-                title="Remove this emoji?"
-                message="It disappears from your picker and your other devices. Messages that already used it keep showing it for the people who got them."
+                title={sticker ? 'Remove this sticker?' : 'Remove this emoji?'}
+                message={`It disappears from your picker and your other devices. Messages that already used it keep showing it for the people who got them.`}
                 confirmLabel="Remove"
             />
         </div>

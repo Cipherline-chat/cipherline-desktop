@@ -25,6 +25,7 @@ import { ServerIcon } from './ServerIcon';
 import { EncryptedAvatar } from '../EncryptedAvatar';
 import { useAuth } from '../../contexts/AuthContext';
 import { useModalExit } from '../../hooks/useModalExit';
+import { formatHourMinute } from '../../utils/messageTimeFormat';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -267,7 +268,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
     // messages: server nickname if set, else your account username.
     const previewName = nickname.trim() || user?.username || 'You';
     // ChatPane's smartTimestamp for a message sent just now.
-    const previewTimestamp = `Today at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const previewTimestamp = `Today at ${formatHourMinute(new Date())}`;
 
     const msgRetentionOptions = (Object.entries(MESSAGE_RETENTION_LABELS) as [MessageRetention, string][]).map(
         ([val, label]) => ({ value: val, label }),
@@ -340,7 +341,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
                                     <span
                                         className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-200 ${
                                             active
-                                                ? 'bg-cl-lume/20 text-cl-lume'
+                                                ? 'bg-cl-lume/20 text-cl-lume-text'
                                                 : 'bg-white/[0.04] text-cl-faint'
                                         }`}
                                     >
@@ -456,7 +457,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
                         </div>
 
                         {nicknameError && (
-                            <div className="text-[11px] text-cl-flash mt-2">{nicknameError}</div>
+                            <div className="text-[11px] text-cl-flash-text mt-2">{nicknameError}</div>
                         )}
                     </div>
                 )}
@@ -507,7 +508,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
                             <div className="mt-3 rounded-xl border border-cl-lume/25 bg-cl-lume/[0.05] p-3 fade-drop-enter">
                                 <div className="flex items-start gap-2.5 mb-3">
                                     <div className="w-6 h-6 rounded-md bg-cl-lume/15 border border-cl-lume/25 flex items-center justify-center shrink-0 mt-0.5">
-                                        <Clock size={11} className="text-cl-lume" />
+                                        <Clock size={11} className="text-cl-lume-text" />
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <div className="text-[12px] text-cl-text font-semibold leading-snug">

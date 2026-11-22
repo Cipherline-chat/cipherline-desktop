@@ -1,12 +1,22 @@
 import React, { useEffect, useRef } from 'react';
 import { isMotionActive, onMotionChange } from '../../utils/idleMotion';
 import { computeCanvasBackingSize } from '../../utils/canvasSizing';
+import { useTheme } from '../../theme/engine';
+import { ambientCount, ambientPaletteFor, drawMote } from '../../utils/ambientPalette';
+import { useAmbientActive } from '../../hooks/useAmbientMotion';
 
 /**
  * The water column behind the Descent settings: one tall gradient that pans
  * down as you change zones, a canvas of bioluminescent motes that thin out
  * with depth, and a flash-tinted vignette that only breathes in at the abyss
  * (the vignette + bead color are driven by .sd-z-abyss on the root).
+ *
+ * Every theme gets the motes, tinted for it (utils/ambientPalette.ts: Dark's
+ * teal + warm exactly as before, a dim field in Midnight, soft accent bubbles
+ * on a light page, a sparse neutral field in high contrast, a custom theme's
+ * own accent). They move only while useAmbientActive() says so (Reduce motion,
+ * Celebrations and effects, Home ambience); otherwise the canvas is not
+ * mounted at all, so nothing is left on screen.
  */
 interface SeaBackdropProps {
     /** 0 = Surface, 1 = Twilight, 2 = Midnight, 3 = Abyss */
@@ -22,19 +32,23 @@ const MOTE_SPEED = [1, 0.8, 0.55, 0.35];
 
 export const SeaBackdrop: React.FC<SeaBackdropProps> = ({ zone }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    // The theme's mote look, read by the rAF loop through a ref so a theme
+    // switch retints the field on the next frame instead of restarting it.
+    const theme = useTheme();
+    const palRef = useRef(ambientPaletteFor(theme));
+    palRef.current = ambientPaletteFor(theme);
+    // Reduced motion / effects off / Home ambience off: no canvas at all (the
+    // still state is the bare water — there is nothing on the canvas to freeze).
+    const active = useAmbientActive();
     // The rAF loop reads these refs so zone changes never restart the loop.
     const targetRef = useRef(MOTE_COUNT[0]);
     const speedRef = useRef(MOTE_SPEED[0]);
-    targetRef.current = MOTE_COUNT[zone] ?? 12;
+    targetRef.current = ambientCount(palRef.current, MOTE_COUNT[zone] ?? 12);
     speedRef.current = MOTE_SPEED[zone] ?? 0.6;
 
     useEffect(() => {
         const cv = canvasRef.current;
-        if (!cv) return;
-        // Still frame (in fact zero frames — the canvas just never draws):
-        // satisfies prefers-reduced-motion without a separate "draw once and
-        // freeze" path, since there is nothing on the canvas to freeze.
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        if (!cv || !active) return;
         const cx = cv.getContext('2d');
         if (!cx) return;
 
@@ -139,15 +153,13 @@ export const SeaBackdrop: React.FC<SeaBackdropProps> = ({ zone }) => {
             cx.clearRect(0, 0, w, h);
             while (motes.length < targetRef.current) motes.push(spawn(h + 8));
             if (motes.length > targetRef.current) motes.length = targetRef.current;
+            const pal = palRef.current;
             for (const m of motes) {
                 m.y -= m.v * speedRef.current * step;
                 m.p += 0.012 * step;
                 if (m.y < -10) Object.assign(m, spawn(h + 8));
                 const x = m.x + Math.sin(m.p) * 14;
-                cx.beginPath();
-                cx.arc(x, m.y, m.r, 0, 7);
-                cx.fillStyle = m.warm ? `rgba(255,201,77,${m.a})` : `rgba(37,224,200,${m.a})`;
-                cx.fill();
+                drawMote(cx, pal, x, m.y, m.r, m.a, m.warm);
             }
         };
 
@@ -208,12 +220,12 @@ export const SeaBackdrop: React.FC<SeaBackdropProps> = ({ zone }) => {
             else window.removeEventListener('resize', resize);
             if (io) io.disconnect();
         };
-    }, []);
+    }, [active]);
 
     return (
         <div className="sd-sea" aria-hidden="true">
             <div className="sd-sea-grad" style={{ transform: `translateY(${-zone * 40}vh)` }} />
-            <canvas ref={canvasRef} className="sd-motes" />
+            {active && <canvas ref={canvasRef} className="sd-motes" />}
             <div className="sd-sea-vignette" />
         </div>
     );

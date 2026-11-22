@@ -3,6 +3,7 @@ import type {
     CallEvent, DiagnosticReportBody, InboundTrackStats, OutboundTrackStats, WebrtcSample,
 } from '../../utils/diagnostics/reportTypes';
 import { callEventDetailText, callEventLabel, callEventTone } from '../../utils/diagnostics/callEventsView';
+import { formatFullDateTime } from '../../utils/a11y/timeFormat';
 
 /**
  * The readable half of the Preview step. Renders ONLY what is in `body` — the
@@ -229,7 +230,7 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
                         ...(p.crash.exit_code !== undefined ? [['Exit code', String(p.crash.exit_code)] as [string, string]] : []),
                         ...(p.crash.error_name ? [['Error', p.crash.error_name] as [string, string]] : []),
                         ...(p.crash.message ? [['Message', p.crash.message] as [string, string]] : []),
-                        ['When', new Date(p.crash.occurred_at).toLocaleString()],
+                        ['When', formatFullDateTime(new Date(p.crash.occurred_at))],
                         ...(p.crash.app_version_at_crash ? [['Version then', p.crash.app_version_at_crash] as [string, string]] : []),
                     ]} />
                     {p.crash.stack && <pre className="rp-pre" style={{ marginTop: 10 }}>{p.crash.stack}</pre>}
@@ -370,8 +371,8 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
             {p.previous_session && (
                 <Section title="Session that ended" count={`${p.previous_session.rows.length} rows`}>
                     <KV rows={[
-                        ['Started', new Date(p.previous_session.started_at).toLocaleString()],
-                        ['Last seen running', new Date(p.previous_session.last_written_at).toLocaleString()],
+                        ['Started', formatFullDateTime(new Date(p.previous_session.started_at))],
+                        ['Last seen running', formatFullDateTime(new Date(p.previous_session.last_written_at))],
                         ['In a call', p.previous_session.state.in_call === undefined ? '—' : p.previous_session.state.in_call ? 'Yes' : 'No'],
                         ['Sharing screen', p.previous_session.state.sharing === undefined ? '—' : p.previous_session.state.sharing ? 'Yes' : 'No'],
                     ]} />

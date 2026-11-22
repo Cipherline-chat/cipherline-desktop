@@ -51,7 +51,7 @@ export const FlatIconBtn = React.forwardRef<
         type="button"
         className={`shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-md transition-colors [&_svg]:w-3.5 [&_svg]:h-3.5 ${
             danger
-                ? 'text-cl-faint hover:text-cl-flash hover:bg-cl-flash/10'
+                ? 'text-cl-faint hover:text-cl-flash-text hover:bg-cl-flash/10'
                 : 'text-cl-faint hover:text-cl-text hover:bg-white/[0.08]'
         } ${className ?? ''}`}
         {...rest}

@@ -17,8 +17,10 @@ import { getScreenShareSession } from '../screenShareDiagnostics';
 import { parseStartupFlagsState } from '../startupFlags';
 import { readKeybindsSnapshot, unboundGlobalActions } from '../../hooks/useKeybinds';
 import { buildDiagnosticReport, sanitizeSuppressedUnclean, type BuiltReport, type PerfLogInput, type SettingsSnapshot } from './bundle';
-import { buildSettingsSnapshot, type NotificationPrefsLike, type VoiceSettingsLike } from './settingsSnapshot';
+import { buildSettingsSnapshot, type HoldKeyReportLike, type NotificationPrefsLike, type VoiceSettingsLike } from './settingsSnapshot';
+import { parseHoldKeySupport } from '../holdKeys';
 import { collectSensitiveTerms } from './sensitiveTerms';
+import { storeHealthSettings } from '../storeHealthReport';
 import { getRecentErrors, type CapturedError } from './recentErrors';
 import { webrtcRing } from './webrtcRing';
 import { readCallEvents, readPinnedCallEvents, type CallEventInput } from './callEventsSource';
@@ -78,6 +80,54 @@ async function deviceKinds(): Promise<Array<{ kind: string }> | null> {
     }
 }
 
+/** The store's health as report settings (labels only — see storeHealthReport.ts). Never throws. */
+function storageForReport(corrupted: boolean): { status?: string; failure?: string; attempts?: number; recovered?: boolean } | null {
+    try {
+        const e = storeHealthSettings(secureLocalStore.loadHealth(), corrupted);
+        return {
+            status: String(e.storage_status),
+            ...(typeof e.storage_load_failure === 'string' ? { failure: e.storage_load_failure } : {}),
+            ...(typeof e.storage_load_attempts === 'number' ? { attempts: e.storage_load_attempts } : {}),
+            ...(typeof e.storage_load_recovered === 'boolean' ? { recovered: e.storage_load_recovered } : {}),
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Push-to-talk delivery for the report: main's live watcher results, else a dry
+ * run of the saved key (no call running). Never throws; null outside the desktop app.
+ */
+async function holdKeysForReport(voice: VoiceSettingsLike | null): Promise<HoldKeyReportLike | null> {
+    const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
+    if (!api?.getHoldKeyDiagnostics) return null;
+    try {
+        const raw = await api.getHoldKeyDiagnostics() as {
+            backend?: string; nativeWatcher?: boolean; elevationCheck?: boolean; foregroundBlocked?: boolean; adminGame?: string | null;
+            live?: Record<string, { status?: string; reason?: string } | undefined>;
+        } | null;
+        if (!raw || typeof raw !== 'object') return null;
+        const slot = async (name: 'push-to-talk' | 'push-to-mute', key: string | null | undefined) => {
+            const live = raw.live?.[name];
+            if (live && typeof live === 'object') return { status: live.status, reason: live.reason, live: true };
+            if (!key || !api.checkGlobalHoldKey) return null;
+            const dry = parseHoldKeySupport(await api.checkGlobalHoldKey(key).catch(() => null));
+            return dry ? { status: dry.status, reason: dry.status === 'focused-only' ? dry.reason : undefined, live: false } : null;
+        };
+        const [pushToTalk, pushToMute] = await Promise.all([
+            slot('push-to-talk', voice?.pushToTalk ? voice.pushToTalkKey : null),
+            slot('push-to-mute', voice?.pushToMuteKey),
+        ]);
+        return {
+            backend: raw.backend, nativeWatcher: raw.nativeWatcher, elevationCheck: raw.elevationCheck,
+            foregroundBlocked: raw.foregroundBlocked, adminGame: raw.adminGame, pushToTalk, pushToMute,
+        };
+    } catch {
+        return null;
+    }
+}
+
 async function startupFlags() {
     try {
         const raw = await window.electronAPI?.getStartupFlags?.();
@@ -91,7 +141,8 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
     // Started first so its ~10 s window overlaps the IPC below and the user's typing.
     const snapshot = startShareSnapshot();
-    const [sysRaw, crashesRaw, perf, devices, flags, avSync, suppressedRaw] = await Promise.all([
+    const voice = readVoiceSettings();
+    const [sysRaw, crashesRaw, perf, devices, flags, avSync, suppressedRaw, storeCorruption, holdKeys] = await Promise.all([
         api?.diagGetSystemInfo?.().catch(() => null) ?? Promise.resolve(null),
         api?.diagGetPendingCrashes?.().catch(() => null) ?? Promise.resolve(null),
         fetchFreezeLog().catch(() => []),
@@ -102,6 +153,8 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         // no wire-schema change. Identity-free (per-call placeholders).
         sampleAvSyncNow().catch(() => []),
         api?.diagGetSuppressedUnclean?.().catch(() => null) ?? Promise.resolve(null),
+        api?.getSecureStoreCorruption?.().catch(() => null) ?? Promise.resolve(null),
+        holdKeysForReport(voice),
     ]);
     const now = Date.now();
     const parsed = parseSystemInfoReply(sysRaw, APP_VERSION, BUILD_COMMIT);
@@ -113,7 +166,7 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         hardwareAcceleration: system.hardware_acceleration,
         reducedMotion: typeof window !== 'undefined' && typeof window.matchMedia === 'function'
             ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : undefined,
-        voice: readVoiceSettings(),
+        voice,
         notifications: ctx.notificationPrefs,
         notificationPermission: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
         screenShareCodecPref: getScreenShareCodecPref(),
@@ -121,6 +174,8 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         shareSession: session,
         startupFlags: flags,
         devices,
+        storage: storageForReport(!!storeCorruption),
+        holdKeys,
     });
     const sensitiveTerms = collectSensitiveTerms({
         extra: [ctx.user?.username, ctx.user?.email, scrub.osUsername],

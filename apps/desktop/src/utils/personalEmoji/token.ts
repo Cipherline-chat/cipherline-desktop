@@ -28,6 +28,11 @@ export interface PersonalEmojiWire {
 }
 
 export const PERSONAL_EMOJI_MAX_BYTES = 256 * 1024;
+/** The largest image the shared on-device store holds: a personal STICKER
+ *  (packages/shared stickers.ts STICKER_MAX_BYTES). The store is shared by My
+ *  Emojis, My stickers and both received caches; each library still enforces
+ *  its own cap (emojis stay <= PERSONAL_EMOJI_MAX_BYTES). */
+export const PERSONAL_BLOB_MAX_BYTES = 512 * 1024;
 export const PERSONAL_EMOJI_MAX_PER_MESSAGE = 6;
 /** Library size (owner decision). */
 export const PERSONAL_EMOJI_LIBRARY_MAX = 100;
@@ -160,16 +165,16 @@ export interface ValidatedWireEmoji {
  * was refused. The mime and animated flag are derived from the bytes, never
  * trusted from the sender.
  */
-export async function validateWireEmoji(raw: unknown): Promise<ValidatedWireEmoji | { rejected: WireRejection }> {
+export async function validateWireEmoji(raw: unknown, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES): Promise<ValidatedWireEmoji | { rejected: WireRejection }> {
     if (!raw || typeof raw !== 'object') return { rejected: 'shape' };
     const e = raw as Partial<PersonalEmojiWire>;
     if (!isPersonalEmojiId(e.id) || typeof e.bytes_b64 !== 'string' || !e.bytes_b64) return { rejected: 'shape' };
     if (!isPersonalEmojiName(e.name)) return { rejected: 'name' };
     // base64 of N bytes is ceil(N/3)*4 chars: refuse before decoding anything.
-    if (e.bytes_b64.length > Math.ceil(PERSONAL_EMOJI_MAX_BYTES / 3) * 4 + 4) return { rejected: 'size' };
+    if (e.bytes_b64.length > Math.ceil(maxBytes / 3) * 4 + 4) return { rejected: 'size' };
     let bytes: Uint8Array;
     try { bytes = b64ToBytes(e.bytes_b64); } catch { return { rejected: 'shape' }; }
-    if (bytes.length === 0 || bytes.length > PERSONAL_EMOJI_MAX_BYTES) return { rejected: 'size' };
+    if (bytes.length === 0 || bytes.length > maxBytes) return { rejected: 'size' };
     const mime = sniffImageMime(bytes);
     if (!mime) return { rejected: 'mime' };
     if ((await personalEmojiIdFromBytes(bytes)) !== e.id) return { rejected: 'hash' };

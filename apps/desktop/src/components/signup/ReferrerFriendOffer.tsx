@@ -100,13 +100,13 @@ export const ReferrerFriendOffer: React.FC<{
                         display: 'flex', alignItems: 'center', gap: 12,
                         padding: '14px 16px', borderRadius: 16,
                         background: 'linear-gradient(135deg, #0B1428 0%, #0e1e38 100%)',
-                        border: '1px solid rgba(37,224,200,0.35)',
-                        boxShadow: '0 8px 32px rgba(0,0,0,0.55), 0 0 24px rgba(37,224,200,0.16)',
+                        border: '1px solid rgb(var(--cl-lume-rgb) / 0.35)',
+                        boxShadow: '0 8px 32px rgb(var(--cl-shade-rgb) / 0.55), 0 0 24px rgb(var(--cl-lume-rgb) / 0.16)',
                     }}
                 >
                     <div style={{
                         width: 40, height: 40, borderRadius: 12, flexShrink: 0,
-                        background: 'rgba(37,224,200,0.12)', color: 'var(--cl-lume)',
+                        background: 'rgb(var(--cl-lume-rgb) / 0.12)', color: 'var(--cl-lume-text)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
                         {phase === 'sent' ? <Check size={20} /> : <UserPlus size={20} />}

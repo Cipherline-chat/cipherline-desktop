@@ -170,7 +170,7 @@ describe('Voice & Video: the settings search lands on every setting', () => {
         await renderPane();
         const folded = new Set(Array.from(host.querySelectorAll('.sx-disc-body .vv-row b')).map(b => b.textContent));
         expect([...folded].sort()).toEqual(['Audio health', 'Brightness', 'Contrast', 'Mic EQ', 'Saturation']);
-        for (const visible of ['Microphone', 'Input volume', 'Mic test', 'Noise suppression', 'Voice gate', 'Push to talk',
+        for (const visible of ['Microphone', 'Input volume', 'Mic test', 'Noise suppression', 'Noise gate', 'Push to talk',
             'Echo cancellation', 'Auto gain control', 'Speakers', 'Output volume', 'Normalize voice volume', 'Camera',
             'Camera quality', 'Incoming video quality', GAMING_VIDEO_LABEL]) {
             const b = Array.from(host.querySelectorAll('.vv-row b')).find(x => x.textContent === visible);
@@ -186,21 +186,23 @@ describe('Voice & Video: explanations live behind the "i"', () => {
         const names = Array.from(host.querySelectorAll('button.vv-info')).map(b => b.getAttribute('aria-label'));
         expect(names.sort()).toEqual([
             'About Audio health', 'About Auto gain control', 'About Camera', 'About Camera quality',
-            'About Echo cancellation', 'About Incoming video quality', 'About Input volume', 'About Mic EQ', 'About Mic test',
+            'About Echo cancellation', 'About Incoming video quality', 'About Input volume',
+            'About Mic EQ', 'About Mic test',
             'About Noise suppression', 'About Normalize voice volume', 'About Output volume', `About ${GAMING_VIDEO_LABEL}`,
-            'About Push to talk', 'About Voice gate', 'About Your audio devices',
+            'About Noise gate', 'About Push to talk', 'About Your audio devices',
         ].sort());
         // the old long inline descriptions are gone from the page itself
         expect(host.textContent).not.toContain('Stops others from hearing themselves');
         expect(host.textContent).not.toContain('Evens out how loud each person sounds');
     });
 
-    it('Echo cancellation says "speakers only" in its "i" and shows what Auto resolved to on the page', async () => {
+    it('Echo cancellation says "speakers only" in its "i" and carries no note line on the page', async () => {
         await renderPane();
         const NOTE = 'Only recommended when using speakers — leave it off with headphones.';
         const row = Array.from(host.querySelectorAll('.vv-row')).find(r => r.querySelector('b')?.textContent === 'Echo cancellation')!;
-        // never chosen -> Auto; no output facts in a test DOM -> unknown -> treated as speakers
-        expect(row.querySelector('.vv-rnote')!.textContent).toBe('Auto (on — output type unknown)');
+        // owner 2026-11-20: no extra text under the label; the control sits on the right of a normal row
+        expect(row.querySelector('.vv-rnote')).toBeNull();
+        expect(row.querySelector('[role="tablist"]')).not.toBeNull();
         const b = row.querySelector('button[aria-label="About Echo cancellation"]') as HTMLButtonElement;
         act(() => { b.click(); });
         const tip = document.getElementById(b.getAttribute('aria-describedby')!)!;
@@ -241,22 +243,26 @@ describe('Voice & Video: noise suppression as one Off / Light / Strong control',
 
     it('each card says what it removes and its measured delay; one line under them says how Light and Strong differ', async () => {
         await renderPane();
-        expect(seg('Light').textContent).toContain('Steady hum and fans');
-        expect(seg('Light').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 2.7 ms');
-        expect(seg('Strong').textContent).toContain('keyboard clacks');
-        expect(seg('Strong').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 39 ms');
+        expect(seg('Light').textContent).toContain('Silent pauses, clean voice');
+        expect(seg('Light').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 20 ms');
+        expect(seg('Strong').textContent).toContain('Only your voice gets through');
+        expect(seg('Strong').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 104 ms'); // measured: 64 ms of model look-ahead + 30 ms reserved for the worker hand-off + 9 ms buffering + ~1 ms (clAudioLatency.ts)
         const line = host.querySelector('[data-testid="ns-difference"]')!.textContent!;
-        expect(line).toContain('Light only removes steady noise');
-        expect(line).toContain('Strong is an AI model');
-        expect(line).toContain('39 ms');
+        expect(line).toContain('Both send silence while you are not talking');
+        expect(line).toContain('Strong cleans deeper and also cuts sounds that are not speech');
+        expect(line).toContain('about a tenth of a second later');
         // and the fuller version is in the "i": the engines by name, what each removes, the honest limit
         const b = host.querySelector('button[aria-label="About Noise suppression"]') as HTMLButtonElement;
         act(() => { b.click(); });
         const tip = document.getElementById(b.getAttribute('aria-describedby')!)!.textContent!;
-        expect(tip).toContain('Speex, adds 2.7 ms');
-        expect(tip).toContain('RNNoise');
-        expect(tip).toContain('adds 39 ms');
-        expect(tip).toContain('keyboard clacks');
+        expect(tip).toContain('adds 20 ms');
+        expect(tip).toContain('adds 104 ms');
+        expect(tip).toContain('about a tenth of a second later'); // the honest cost of Strong, in plain words
+        expect(tip).toContain('only speech gets through');
+        expect(tip).not.toContain('DeepFilterNet');
+        expect(tip).not.toMatch(/RNNoise|Speex/);
+        expect(tip).not.toContain('40 ms');
+        expect(tip).not.toContain('Light is used instead');
         expect(tip).toContain('Neither removes other people talking near you');
         act(() => { b.click(); });
     });

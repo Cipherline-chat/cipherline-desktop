@@ -1,5 +1,6 @@
 import { mentionsToDisplayText } from './mentionTokens';
 import { stripFormatting } from './formatting/plainText';
+import { labelThemeLinks } from '../theme/themeLink';
 
 /**
  * Message text as a user SEES it, for every place that previews or searches a
@@ -65,6 +66,7 @@ export interface PlainTextOptions {
  *   ```` ```js\nx()\n``` ```` -> "x()"        (code is the message: its text stays)
  *   `[docs](https://…)`      -> "docs";  `<https://x.y>` -> "https://x.y"
  *   `# Title`, `> quote`, `- item`, `\*` escapes -> the words, with "• " for bullets
+ *   `https://cipherline.chat/theme#clth1.…` -> "Theme: <name>"
  *
  * Cut first (PREVIEW_SCAN_MAX), then the formatting syntax removed
  * (utils/formatting/plainText.ts), then tokens shown as display text.
@@ -73,7 +75,8 @@ export interface PlainTextOptions {
  * here.
  */
 export function toPlainText(text: unknown, opts: PlainTextOptions = {}): string {
-    const plain = stripFormatting(clipForPreview(text, opts.max));
+    // A theme link (~350 characters of code) reads as "Theme: Ocean" (theme/themeLink.ts).
+    const plain = labelThemeLinks(stripFormatting(clipForPreview(text, opts.max)));
     return opts.tokens === 'keep' ? plain : mentionsToDisplayText(plain);
 }
 

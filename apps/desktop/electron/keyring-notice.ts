@@ -3,6 +3,7 @@ import { keyringNoticeHtml } from './keyring-notice-html';
 import { walletNameForBackend } from './keyring-prompt';
 import { keyringNoticeGuard } from './keyring-notice-guard';
 import { lockPageZoom } from './page-zoom-lock';
+import { bootPalette } from './theme-boot';
 
 /**
  * Put up the "your system is asking for your wallet password" window and hand
@@ -74,7 +75,7 @@ export async function showKeyringNotice(
         show: false,
         frame: false,
         transparent,
-        backgroundColor: transparent ? '#00000000' : '#0B0F1E',
+        backgroundColor: transparent ? '#00000000' : bootPalette().windowBackground,
         resizable: false,
         movable: false,
         minimizable: false,

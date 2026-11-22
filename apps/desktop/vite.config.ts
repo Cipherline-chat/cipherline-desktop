@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { escapeNonAsciiJs } from './src/utils/asciiJsSource'
 import { whatsNewPlugin } from './vite-plugin-whats-new'
+import { fillBootHtml } from './src/theme/bootHtml'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -88,9 +89,19 @@ function asciiWorkletSources(): Plugin {
   }
 }
 
+// index.html's instant-first-paint backdrop takes its colours from the theme
+// data (src/theme/themes.ts `boot.gradient`) instead of literal hex. Runs
+// before Vite's own %ENV% substitution, in the dev server and the build.
+function themeBootHtml(): Plugin {
+  return {
+    name: 'cl-theme-boot-html',
+    transformIndexHtml: { order: 'pre', handler: (html) => fillBootHtml(html) },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [asciiWorkletSources(), whatsNewPlugin(), react()],
+  plugins: [themeBootHtml(), asciiWorkletSources(), whatsNewPlugin(), react()],
   // Emit pure-ASCII JavaScript (esbuild's own default; Vite overrides it to
   // utf8). Blink keeps every loaded script's source text alive for lazy
   // compilation, and stores it two bytes per character as soon as it contains

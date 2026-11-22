@@ -2,7 +2,7 @@
  * Which end of the custom title bar carries the "Cipherline" wordmark.
  *
  * - Windows / Linux: LEFT. The window controls are on the right (the native
- *   titleBarOverlay on Windows, the in-app WindowControls on Linux).
+ *   titleBarOverlay on Windows and Linux).
  * - macOS: RIGHT. The traffic lights sit on the left there
  *   (titleBarStyle 'hiddenInset'), and nothing else lives on the right.
  *

@@ -137,6 +137,33 @@ export function isCrashReason(reason: unknown): boolean {
  */
 export const STATUS_DLL_INIT_FAILED_LOGOFF = -1073741205; // 0xC000026B
 
+/**
+ * Utility services that Chromium starts on demand and simply restarts on the
+ * next use, and that carry nothing the user is doing: UtilWin (Windows shell
+ * helper: file dialogs, jump lists, "show in folder", AV / program queries),
+ * the data decoder (sandboxed image / JSON parsing) and the proxy resolver.
+ * Both the mojo interface name and the display name are listed because
+ * Electron reports whichever Chromium has. Report d70cedf5 (0.1.1, Windows):
+ * `chrome.mojom.UtilWin` crashed 11 s after launch while the app itself was
+ * fine, and the user got "Cipherline closed unexpectedly".
+ *
+ * NOT in this list on purpose (a death there IS visible to the user and keeps
+ * prompting): the GPU process, renderers, `network.mojom.NetworkService`,
+ * `audio.mojom.AudioService`, `video_capture.mojom.VideoCaptureService`.
+ * The event is still written to the Performance log (main.ts process:gone).
+ */
+const RESTARTABLE_UTILITY_SERVICES: ReadonlySet<string> = new Set([
+    'chrome.mojom.UtilWin', 'Windows Utility',
+    'data_decoder.mojom.DataDecoderService', 'Data Decoder Service',
+    'proxy_resolver.mojom.ProxyResolverFactory', 'Proxy Resolver',
+]);
+
+/** Is this `child-process-gone` a non-essential, on-demand Utility service (log only, never a prompt)? */
+export function isRestartableUtilityGone(details: unknown): boolean {
+    const d = (details ?? {}) as { type?: unknown; serviceName?: unknown };
+    return d.type === 'Utility' && typeof d.serviceName === 'string' && RESTARTABLE_UTILITY_SERVICES.has(d.serviceName);
+}
+
 /** Is this `child-process-gone` / `render-process-gone` the OS ending the user's session? */
 export function isOsSessionEndExit(details: unknown): boolean {
     const d = (details ?? {}) as { exitCode?: unknown };

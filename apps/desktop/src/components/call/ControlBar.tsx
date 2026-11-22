@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy, Settings2, Eye, EyeOff } from 'lucide-react';
+import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy, Settings2, Eye, EyeOff, ShieldAlert } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -16,6 +16,7 @@ import { useChromiumFpsCap } from '../../utils/linuxShareCaps';
 import { ClButton } from '../cl';
 import { ShareFpsNote } from '../ShareFpsNote';
 import { MicIcon, CamIcon, HeadphonesIcon } from '../icons/SlashableIcon';
+import { serverMutedMicView } from '../../utils/serverMuteGate';
 import { ClSlider } from '../ClSlider';
 import { playIco } from '../../utils/clPhysics';
 import { usePttUiState, pttMicDisplay } from '../../utils/pushToTalk';
@@ -78,6 +79,9 @@ interface ControlBarProps {
      *  immediately sees they've been restricted rather than clicking a button
      *  that silently does nothing. Defaults false (permissive) when absent. */
     serverMutedAudio?: boolean;
+    /** The user's OWN mute choice while `serverMutedAudio` holds (utils/serverMuteGate.ts).
+     *  The mic button stays clickable then and toggles this, not the track. */
+    selfMutedChoice?: boolean;
     serverMutedVideo?: boolean;
     serverMutedScreenShare?: boolean;
     /** True when a moderator has server-deafened this participant (track_type='deafen').
@@ -118,9 +122,9 @@ const toneStyle: Record<Tone, React.CSSProperties> = {
     // backdrop, nothing more. The ring itself lives in CSS (.cl-ctrlbtn):
     // setting it inline here would outrank the :focus-visible rule and
     // silently swallow the focus indicator.
-    neutral: { background: 'transparent', color: 'rgba(255,255,255,0.92)' },
+    neutral: { background: 'transparent', color: 'rgb(var(--cl-bright-rgb) / 0.92)' },
     live:    { background: 'var(--cl-lume)', color: 'var(--cl-on-lume)' },
-    off:     { background: 'rgba(255,107,94,0.16)', color: 'var(--cl-flash)' },
+    off:     { background: 'rgb(var(--cl-flash-rgb) / 0.16)', color: 'var(--cl-flash-text)' },
     // No drop shadow — it pooled under the button and read as a backing plate.
     danger:  { background: 'var(--cl-flash)', color: '#fff' },
 };
@@ -208,7 +212,7 @@ const CtrlBtn = ({ tone = 'neutral', disabled, busy, title, onClick, onContextMe
         className={`cl-ctrlbtn ${className}`}
         style={{
             ...(disabled
-                ? { background: 'rgba(255,255,255,0.035)', color: 'rgba(255,255,255,0.28)', boxShadow: 'none' }
+                ? { background: 'rgb(var(--cl-bright-rgb) / 0.035)', color: 'rgb(var(--cl-bright-rgb) / 0.28)', boxShadow: 'none' }
                 : toneStyle[tone]),
             ...style,
         }}
@@ -343,6 +347,7 @@ export const ControlBar = ({
     canVideo = true,
     canScreenShare = true,
     serverMutedAudio = false,
+    selfMutedChoice = false,
     serverMutedVideo = false,
     serverMutedScreenShare = false,
     isServerDeafened = false,
@@ -355,8 +360,11 @@ export const ControlBar = ({
     //   time clicking a button the SFU will silently reject anyway.
     // Server DEAFEN is deliberately not here: it only stops this member hearing
     // others' microphones, it never touches their own mic. Only a server MUTE does.
-    const micDisabled    = (!canSpeak && !localParticipant?.isMicrophoneEnabled)
-                           || serverMutedAudio;
+    // A server MUTE does not disable the mic button: it still toggles the user's
+    // own choice (what happens when the moderator lifts it). The SFU is what
+    // stops the audio - the grant has no microphone - so nothing here can
+    // un-mute them early.
+    const micDisabled    = !canSpeak && !localParticipant?.isMicrophoneEnabled;
     const cameraDisabled = (!canVideo && !localParticipant?.isCameraEnabled)
                            || serverMutedVideo;
     const shareDisabled  = (!canScreenShare && !localParticipant?.isScreenShareEnabled)
@@ -661,7 +669,7 @@ export const ControlBar = ({
             <div style={{ display: ssMenuMode === 'main' ? 'block' : 'none' }}>
                 <div className="px-3.5 py-2.5 border-b border-white/[0.06] flex items-center gap-2">
                     <div className="w-5 h-5 rounded-md bg-cl-lume/15 flex items-center justify-center shrink-0">
-                        <ScreenShare className="w-3 h-3 text-cl-lume" />
+                        <ScreenShare className="w-3 h-3 text-cl-lume-text" />
                     </div>
                     <span className="text-[13px] text-cl-text font-semibold">Screen Share</span>
                 </div>
@@ -714,7 +722,7 @@ export const ControlBar = ({
                         className="border-t border-white/[0.06]"
                     >
                         {currentShareAudio
-                            ? <Volume2  className="w-4 h-4 text-cl-lume shrink-0" />
+                            ? <Volume2  className="w-4 h-4 text-cl-lume-text shrink-0" />
                             : <VolumeX className="w-4 h-4 text-cl-faint shrink-0" />
                         }
                         <div className="min-w-0 flex-1">
@@ -784,7 +792,7 @@ export const ControlBar = ({
                         <ChevronLeft className="w-3.5 h-3.5 text-cl-faint" />
                     </ClButton>
                     <div className="w-5 h-5 rounded-md bg-cl-lume/15 flex items-center justify-center shrink-0">
-                        <Sliders className="w-3 h-3 text-cl-lume" />
+                        <Sliders className="w-3 h-3 text-cl-lume-text" />
                     </div>
                     <span className="text-[13px] text-cl-text font-semibold">Adjust Quality</span>
                 </div>
@@ -906,6 +914,7 @@ export const ControlBar = ({
     const pttUi = usePttUiState();
     const micDisplay = pttMicDisplay(pttUi, micLive);
     const micOn    = micDisplay === 'normal' ? micLive : micDisplay === 'held';
+    const serverMuteView = serverMutedAudio && !micDisabled ? serverMutedMicView(selfMutedChoice) : null;
     const pttKeyLabel = voice?.settings?.pushToTalkKey ? formatCombo(voice.settings.pushToTalkKey) : 'your key';
     const camOn    = !!localParticipant?.isCameraEnabled;
 
@@ -922,17 +931,17 @@ export const ControlBar = ({
             <div className="cl-console-inner" data-live-share={isScreensharing || undefined}>
 
                 <CtrlBtn
-                    pulse={micDisplay === 'idle' ? undefined : micDisplay === 'held' ? 'live' : micOn ? undefined : 'off'}
+                    pulse={serverMuteView ? undefined : micDisplay === 'idle' ? undefined : micDisplay === 'held' ? 'live' : micOn ? undefined : 'off'}
                     disabled={micDisabled}
-                    tone={micDisplay === 'held' ? 'live' : micDisplay === 'idle' ? 'neutral' : micOn ? 'neutral' : 'off'}
-                    style={micDisplay === 'idle' ? { color: 'rgba(255,255,255,0.45)' } : undefined}
+                    tone={serverMuteView ? 'off' : micDisplay === 'held' ? 'live' : micDisplay === 'idle' ? 'neutral' : micOn ? 'neutral' : 'off'}
+                    style={!serverMuteView && micDisplay === 'idle' ? { color: 'rgb(var(--cl-bright-rgb) / 0.45)' } : undefined}
                     onClick={(e) => {
                         bumpMicDizzy(e.currentTarget as HTMLElement);
                         onToggleMic();
                     }}
                     onContextMenu={openMicMenu}
                     title={
-                        serverMutedAudio    ? "Your microphone has been muted by a moderator"
+                        serverMuteView      ? serverMuteView.title
                         : micDisabled       ? "You don't have permission to speak in this channel"
                         : micDisplay === 'held' ? 'Transmitting (push to talk)'
                         : micDisplay === 'idle' ? `Push to talk: hold ${pttKeyLabel} to speak. Click to mute`
@@ -940,7 +949,27 @@ export const ControlBar = ({
                         : micOn ? 'Mute' : 'Unmute'
                     }
                 >
-                    <span className="cl-ico"><MicIcon off={micDisplay === 'idle' ? false : !micOn} className={iconSize} /></span>
+                    {serverMuteView ? (
+                        <span className="cl-ico" data-server-muted="true" style={{ position: 'relative' }}>
+                            <MicIcon off={serverMuteView.iconOff} className={iconSize} />
+                            {/* Moderator badge: the one thing that says "not your
+                                choice" at a glance, next to an icon that is. */}
+                            <span
+                                aria-hidden="true"
+                                style={{
+                                    position: 'absolute', right: -6, bottom: -6,
+                                    width: 13, height: 13, borderRadius: 999,
+                                    display: 'grid', placeItems: 'center',
+                                    background: 'var(--cl-flash)', color: 'var(--cl-on-flash)',
+                                    boxShadow: '0 0 0 1.5px var(--cl-abyss)',
+                                }}
+                            >
+                                <ShieldAlert style={{ width: 8, height: 8 }} strokeWidth={3} />
+                            </span>
+                        </span>
+                    ) : (
+                        <span className="cl-ico"><MicIcon off={micDisplay === 'idle' ? false : !micOn} className={iconSize} /></span>
+                    )}
                 </CtrlBtn>
 
                 <CtrlBtn

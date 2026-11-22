@@ -33,7 +33,7 @@ import { chromeMaxWidthCss, cornerStyle, type ChromeInsets, type TileCorner } fr
  * ./videoRectChrome.ts's module comment). Before this file, VideoTile owned the
  * only correct implementation and the other two had either a differently-tuned
  * corner or no corner chrome at all. Copying VideoTile's `absolute z-20 flex
- * items-center gap-1.5 bg-black/35 backdrop-blur-sm ...` into each of them
+ * items-center gap-1.5 bg-pure-black/35 backdrop-blur-sm ...` into each of them
  * would have made them agree exactly once — on the day it was pasted.
  *
  * WHERE the corner is still comes from `videoRectChrome`; this file owns only
@@ -81,7 +81,7 @@ export const TileNamePill = ({ insets, corner, children, className = '', large =
     large?: boolean;
 }) => (
     <div
-        className={`absolute z-20 flex items-center gap-1.5 bg-black/35 backdrop-blur-sm rounded-lg pointer-events-none ${
+        className={`absolute z-20 flex items-center gap-1.5 bg-pure-black/35 backdrop-blur-sm rounded-lg pointer-events-none ${
             large ? 'px-3 py-1.5' : 'px-2 py-1'
         } ${className}`}
         style={{
@@ -130,7 +130,7 @@ export const TileToolCluster = ({ insets, corner, children, className = '' }: Ti
  */
 export const TileStatsReadout = ({ insets, corner, children, className = '' }: TileCornerChromeProps) => (
     <div
-        className={`absolute z-20 flex items-center gap-1.5 bg-black/35 backdrop-blur-sm px-2.5 py-1 rounded-lg pointer-events-none ${className}`}
+        className={`absolute z-20 flex items-center gap-1.5 bg-pure-black/35 backdrop-blur-sm px-2.5 py-1 rounded-lg pointer-events-none ${className}`}
         style={{
             ...cornerStyle(corner, insets),
             maxWidth: chromeMaxWidthCss(insets),

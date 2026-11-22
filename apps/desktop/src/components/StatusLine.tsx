@@ -66,7 +66,7 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
                 // so inside a truncating parent a long video title was clipped mid-letter with no
                 // ellipsis; as a block it takes the parent's width and the title ellipsizes.
                 <span className={['flex items-center gap-1 min-w-0 max-w-full overflow-hidden', className ?? ''].filter(Boolean).join(' ')} style={style} title={listeningTip ?? undefined} data-testid="status-line-listening">
-                    <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} className="shrink-0 text-cl-ok" />
+                    <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} className="shrink-0 text-cl-ok-text" />
                     <span className="truncate min-w-0">{ACTIVITY_LABEL[heard.kind]} {heard.track}</span>
                 </span>
             );
@@ -75,7 +75,11 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
     }
     if (m.kind === 'game') {
         // The tooltip carries the Rich Presence lines (round, score) when shared.
-        return <span className={className} style={style} title={m.gameTooltip ?? undefined}>{renderGame ? renderGame(m.game!) : `Playing ${m.game}`}</span>;
+        // One line, ellipsis when it does not fit (owner, 2026-11-20: a long title wrapped in the
+        // member list). `block` because overflow/text-overflow do nothing on an inline box;
+        // `min-w-0 max-w-full` so a flex/grid parent lets it shrink instead of growing the row.
+        // The full title stays on the tooltip.
+        return <span className={['block truncate min-w-0 max-w-full', className ?? ''].filter(Boolean).join(' ')} style={style} title={m.gameTooltip ?? undefined}>{renderGame ? renderGame(m.game!) : `Playing ${m.game}`}</span>;
     }
     const label = customStatusLabel(m);
     // custom+game: the game rides on the tooltip, under the status text.
@@ -90,7 +94,7 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
             <StatusEmoji value={m.emoji} className="shrink-0" renderCustom={personalStatusEmoji(userId, animate)} />
             {m.text && <span className="truncate min-w-0">{m.text}</span>}
             {m.kind === 'custom' && heard && (
-                <span className="shrink-0 inline-flex items-center text-cl-ok" title={listeningTip ?? undefined} data-testid="status-line-listening">
+                <span className="shrink-0 inline-flex items-center text-cl-ok-text" title={listeningTip ?? undefined} data-testid="status-line-listening">
                     <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} />
                 </span>
             )}

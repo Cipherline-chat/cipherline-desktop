@@ -68,7 +68,7 @@ export const AddToGroupModal: React.FC<AddToGroupModalProps> = ({
             <DialogHeader
                 icon={<Users size={19} strokeWidth={2.2} />}
                 title="Add to group"
-                subtitle={<>Add <b style={{ color: 'var(--cl-text, #F4F7FF)' }}>{targetUser.username}</b> to a group chat.</>}
+                subtitle={<>Add <b style={{ color: 'var(--cl-text, var(--cl-text))' }}>{targetUser.username}</b> to a group chat.</>}
             />
             <DialogBody>
                 {myGroups.length > 0 && (

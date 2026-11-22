@@ -5,16 +5,25 @@
  * Auto-saves: name input debounces PATCH by 500ms; color clicks are
  * immediate (palette presets) or debounced 300ms (custom colour picker commit).
  * Toggles (mentionable / hoist) fire PATCH immediately.
+ *
+ * Gradient (secondary colour) and the role ICON (RoleIconPicker) were added
+ * with the role-icons feature; both are hidden for @everyone.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { Lock, Trash2 } from 'lucide-react';
 import { apiUrl } from '../../../utils/apiPath';
-import { roleColorHexFromInt } from '../../../utils/roleColor';
+import { readableNameColor, roleColorHexFromInt } from '../../../utils/roleColor';
+import { roleIconOf, roleNameStyle } from '../../../utils/roleStyle';
+import { useTheme } from '../../../theme/engine';
+import { RoleIconBadge } from './RoleIconBadge';
+import { RoleIconPicker } from './RoleIconPicker';
 import { ClButton, ClInput, ClToggle } from '../../cl';
 import { ColourSwatchButton } from '../../settings/ui/ColourPicker';
 import type { Role } from './types';
+import { roleNameDraftError, ROLE_NAME_INPUT_MAX_UNITS } from '../../../utils/serverRoleNames';
+import { serverInitial } from '../../../utils/serverAbbreviation';
 
 const PRESET_COLORS = [
     '#25E0C8', // lume — brand accent
@@ -47,6 +56,14 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
     const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const nameRef = useRef(name);
     nameRef.current = name;
+    const theme = useTheme();
+    // Gradient end colour, mirrored locally like the primary so the custom
+    // picker's debounce doesn't fight the optimistic role state.
+    const secondaryHexOf = (r: Role): string | null => (r.secondary_color !== undefined && r.secondary_color >= 0 ? roleColorHexFromInt(r.secondary_color) : null);
+    const [localSecondaryHex, setLocalSecondaryHex] = useState<string | null>(() => secondaryHexOf(role));
+    const secondaryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when switching roles (same reason as the primary colour)
+    useEffect(() => { setLocalSecondaryHex(secondaryHexOf(role)); }, [role.role_id]);
 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the local hex input only when switching roles; re-syncing on role.color would overwrite what the user is typing
     useEffect(() => { setLocalColorHex(roleColorHexFromInt(role.color)); }, [role.role_id]);
@@ -58,15 +75,20 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
             clearTimeout(nameTimer.current);
             nameTimer.current = null;
             const trimmed = nameRef.current.trim();
-            if (trimmed && patchRef.current) patchRef.current({ name: trimmed });
+            if (trimmed && roleNameDraftError(trimmed) === null && patchRef.current) patchRef.current({ name: trimmed });
         }
         if (colorTimer.current) {
             clearTimeout(colorTimer.current);
             colorTimer.current = null;
         }
+        if (secondaryTimer.current) {
+            clearTimeout(secondaryTimer.current);
+            secondaryTimer.current = null;
+        }
     }, []);
 
-    const nameDirty = name.trim() !== role.name && name.trim().length > 0;
+    const nameError = roleNameDraftError(name);
+    const nameDirty = name.trim() !== role.name && name.trim().length > 0 && nameError === null;
     useEffect(() => { onDirtyChange?.(nameDirty); }, [nameDirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const patch = async (props: Partial<Role>): Promise<void> => {
@@ -101,7 +123,7 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
         if (nameTimer.current) clearTimeout(nameTimer.current);
         nameTimer.current = setTimeout(() => {
             const trimmed = v.trim();
-            if (trimmed && trimmed !== role.name) patch({ name: trimmed });
+            if (trimmed && trimmed !== role.name && roleNameDraftError(trimmed) === null) patch({ name: trimmed });
         }, 500);
     };
 
@@ -128,6 +150,36 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
         setLocalColorHex(null);
         patch({ color: -1 });
     };
+
+    const applySecondaryHex = (hex: string) => {
+        const m = hex.trim().match(/^#?([0-9a-f]{6})$/i);
+        if (!m || readOnly) return;
+        setLocalSecondaryHex(`#${m[1]}`);
+        if (secondaryTimer.current) clearTimeout(secondaryTimer.current);
+        secondaryTimer.current = setTimeout(() => { patch({ secondary_color: parseInt(m[1], 16) }); }, 300);
+    };
+
+    const onGradientToggle = (on: boolean) => {
+        if (readOnly) return;
+        if (secondaryTimer.current) { clearTimeout(secondaryTimer.current); secondaryTimer.current = null; }
+        if (!on) { setLocalSecondaryHex(null); patch({ secondary_color: -1 }); return; }
+        // Start from the next palette colour so the gradient is visible at once.
+        const primary = (localColorHex ?? '').toLowerCase();
+        const idx = PRESET_COLORS.findIndex(c => c.toLowerCase() === primary);
+        const start = PRESET_COLORS[(idx + 1 + PRESET_COLORS.length) % PRESET_COLORS.length];
+        const pick = start.toLowerCase() === primary ? PRESET_COLORS[2] : start;
+        setLocalSecondaryHex(pick);
+        patch({ secondary_color: parseInt(pick.slice(1), 16) });
+    };
+
+    const gradientOn = !!localColorHex && !!localSecondaryHex;
+    const heroName = roleNameStyle(localColorHex, gradientOn ? localSecondaryHex : null, 'rgb(var(--cl-bright-rgb) / 0.9)', theme);
+    const heroIcon = roleIconOf(role, serverId);
+    // Either stop moved to stay readable on this theme -> say so, quietly.
+    const adjusted = gradientOn && theme.nameMinContrast > 1 && (
+        readableNameColor(localColorHex, theme)?.toLowerCase() !== localColorHex?.toLowerCase()
+        || readableNameColor(localSecondaryHex, theme)?.toLowerCase() !== localSecondaryHex?.toLowerCase()
+    );
 
     const hasCustomColor = !!localColorHex && !PRESET_COLORS.some(c => c.toLowerCase() === localColorHex.toLowerCase());
     const previewColor = localColorHex ?? 'rgba(255,255,255,0.9)';
@@ -170,14 +222,17 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
                             boxShadow: localColorHex ? `0 0 20px ${localColorHex}45, inset 0 0 0 1px ${localColorHex}40` : 'inset 0 0 0 1px rgba(255,255,255,0.08)',
                         }}
                     >
-                        {(liveName[0] ?? 'R').toUpperCase()}
+                        {liveName.trim() ? serverInitial(liveName) : 'R'}
                     </span>
                     <div className="min-w-0 flex-1">
                         <p className="text-[10px] font-mono font-semibold uppercase tracking-[1.4px] text-cl-faint m-0 mb-1">
                             {role.is_everyone ? 'Default role' : 'Server role'}
                         </p>
-                        <p className="text-[22px] font-bold leading-none tracking-tight truncate" style={{ color: previewColor }}>
-                            {displayName}
+                        <p className="flex items-center gap-2 min-w-0 m-0">
+                            <span className={`text-[22px] font-bold leading-none tracking-tight truncate ${heroName.className ?? ''}`} style={heroName.style} data-testid="role-hero-name">
+                                {displayName}
+                            </span>
+                            {heroIcon && <RoleIconBadge icon={heroIcon} token={token} size={22} />}
                         </p>
                     </div>
                     {role.is_everyone && (
@@ -203,9 +258,11 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
                     value={name}
                     onChange={e => onNameChange(e.target.value)}
                     disabled={readOnly || role.is_everyone}
-                    maxLength={50}
+                    maxLength={ROLE_NAME_INPUT_MAX_UNITS}
+                    aria-invalid={nameError !== null}
                     placeholder="role name"
                 />
+                {nameError && <p role="alert" className="mt-2 text-[12px] cl-fmsg">{nameError}</p>}
                 {role.is_everyone && (
                     <p className="mt-2 text-[12px] text-cl-faint">@everyone is the default role and cannot be renamed.</p>
                 )}
@@ -239,7 +296,7 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
                                     : 'border-white/20 hover:border-white/40'
                             }`}
                             style={{
-                                backgroundImage: 'repeating-conic-gradient(rgba(255,255,255,0.06) 0 25%, transparent 0 50%)',
+                                backgroundImage: 'repeating-conic-gradient(rgb(var(--cl-bright-rgb) / 0.06) 0 25%, transparent 0 50%)',
                                 backgroundSize: '10px 10px',
                             }}
                         />
@@ -285,7 +342,48 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
                             <span className="ml-2 text-cl-faint">· member names use the highest role's color</span>
                         </p>
                     )}
+
+                    {/* Gradient: a second colour, names fade from one to the other. */}
+                    <div className="mt-4 rounded-[14px] border border-cl-border/40 bg-white/[0.02] px-5 py-4" data-testid="role-gradient">
+                        <div className="flex items-center justify-between">
+                            <span className="flex-1 pr-4">
+                                <span className="block text-[14px] font-medium text-cl-text">Gradient</span>
+                                <span className="block text-[12px] text-cl-faint mt-0.5">
+                                    {localColorHex
+                                        ? 'Member names fade from the role color into a second color.'
+                                        : 'Pick a role color first, then add a second one.'}
+                                </span>
+                            </span>
+                            <ClToggle checked={gradientOn} onChange={onGradientToggle} disabled={readOnly || !localColorHex} />
+                        </div>
+                        {gradientOn && (
+                            <div className="mt-3 flex items-center gap-3 flex-wrap">
+                                <ColourSwatchButton
+                                    value={localSecondaryHex ?? PRESET_COLORS[5]}
+                                    label="Gradient end color"
+                                    triggerLabel={`Gradient end color: ${localSecondaryHex}`}
+                                    size={28}
+                                    disabled={readOnly}
+                                    onCommit={applySecondaryHex}
+                                />
+                                <span className="font-mono text-[12px] text-cl-muted">{localColorHex} → {localSecondaryHex}</span>
+                                <span className={`text-[15px] font-semibold ${heroName.className ?? ''}`} style={heroName.style} aria-hidden="true">
+                                    {liveName}
+                                </span>
+                            </div>
+                        )}
+                        {adjusted && (
+                            <p className="mt-2 text-[12px] text-cl-faint" data-testid="role-gradient-adjusted">
+                                Shown slightly adjusted on this theme so names stay readable.
+                            </p>
+                        )}
+                    </div>
                 </section>
+            )}
+
+            {/* ── Role icon — hidden for @everyone ───────────────────── */}
+            {!role.is_everyone && (
+                <RoleIconPicker role={role} serverId={serverId} token={token} readOnly={readOnly} onSaved={onSaved} />
             )}
 
             {/* ── Options — both toggles in one divided card (one idiom,

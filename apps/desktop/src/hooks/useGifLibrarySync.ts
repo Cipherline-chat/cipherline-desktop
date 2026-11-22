@@ -16,6 +16,7 @@
  * the local library keeps working offline, and nothing blocks on the network.
  */
 
+import { useOwnSlotNudge } from './useOwnSlotNudge';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { pullLibrary, publishLibraryDetailed, gifRepublishReason } from '../services/gifLibrarySyncService';
 import { createGifSyncEnv, getLastSeen, setLastSeen, getGifSlotView, setGifSlotView } from '../services/gifLibrarySyncEnv';
@@ -155,5 +156,7 @@ export function useGifLibrarySync(auth: GifSyncAuthLike) {
         };
     }, [publishSoon]);
 
+    // Real time: another device wrote this slot (own_slot:changed) -> one coalesced pull.
+    useOwnSlotNudge('gif_library', ready, () => { syncNow(); });
     return { syncing, syncNow, publishSoon };
 }

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../../utils/a11y/motionPrefs';
 import {
     INITIAL_BRAIN, onPoke, onWake, onRest, applySignal, shouldArmRest,
     nextBlinkDelay, pokeReaction, BROWS, REST_MS, heldBrows,
@@ -33,13 +34,21 @@ let wavedThisSession = false;
 // eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function __resetWaveGuard() { wavedThisSession = false; }
 
+/** The @mention badge is drawn for an 'alert' Keys who is awake and not sad
+ *  (it unmounts the moment the mention is read: signal drops to pulse/idle).
+ *  Whether it is VISIBLE is the theme's call (keys.css: Light only). */
+export function showMentionBadge(signal: KeysSignal | undefined, sad?: boolean, asleep?: boolean): boolean {
+    return signal === 'alert' && !sad && !asleep;
+}
+
 export interface KeysProps {
     /** Fixed pixel width. Height follows the 110:92 viewBox ratio. */
     size?: number;
     /** width:100%/height:auto — a container-sized slot scales Keys with zero JS. */
     fluid?: boolean;
-    /** App-state channel: 'alert' (mentions — amber + urgent cadence, wakes a
-     *  sleeping Keys), 'pulse' (unreads — lively), 'idle'. */
+    /** App-state channel: 'alert' (mentions — urgent cadence, wakes a
+     *  sleeping Keys, and amber in Dark: --cl-keys-alert, which is teal in
+     *  Light), 'pulse' (unreads — lively), 'idle'. */
     signal?: KeysSignal;
     /** Controlled speech line (the host owns WHICH line — quip pools live with
      *  the host per the personality doctrine). Hidden while asleep. */
@@ -87,9 +96,8 @@ export interface KeysProps {
     className?: string;
 }
 
-const reducedMotion = () =>
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Mascot idle animation: reduced motion OR "Celebrations and effects" off.
+const reducedMotion = () => typeof window !== 'undefined' && celebrationReducedNow();
 
 export const Keys: React.FC<KeysProps> = ({
     size = 96, fluid, signal = 'idle', speech = null,
@@ -321,7 +329,7 @@ export const Keys: React.FC<KeysProps> = ({
                     className={svgCls}
                     width={fluid ? undefined : size}
                     height={fluid ? undefined : size * (92 / 110)}
-                    style={fluid ? { width: '100%', height: 'auto', overflow: 'visible', color: signal === 'alert' ? 'var(--cl-glow)' : 'var(--cl-lume)' } : { overflow: 'visible', color: signal === 'alert' ? 'var(--cl-glow)' : 'var(--cl-lume)' }}
+                    style={fluid ? { width: '100%', height: 'auto', overflow: 'visible', color: signal === 'alert' ? 'var(--cl-keys-alert)' : 'var(--cl-lume)' } : { overflow: 'visible', color: signal === 'alert' ? 'var(--cl-keys-alert)' : 'var(--cl-lume)' }}
                     viewBox="0 0 110 92"
                     fill="none"
                 >
@@ -339,7 +347,7 @@ export const Keys: React.FC<KeysProps> = ({
                         {/* The W-brows — his eyes, the only face he has.
                             k2-eyes is the hook a host moves them by (the Home
                             deck's glance and look-at-the-pointer). */}
-                        <g className="k2-eyes" stroke="var(--cl-abyss)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+                        <g className="k2-eyes" stroke="var(--cl-keys-ink)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
                             {held !== 'blank' && (
                                 <>
                                     <path className="k2-brow" d={browL} />
@@ -354,10 +362,19 @@ export const Keys: React.FC<KeysProps> = ({
                         {costume && <KeysCostume costume={costume} />}
                     </g>
                     {reaction === 'squish' && (
-                        <g className="k2-ink" fill="#0B0F1E">
+                        <g className="k2-ink" fill="var(--cl-keys-ink)">
                             <circle cx="38" cy="80" r="6" />
                             <circle cx="58" cy="84" r="8" />
                             <circle cx="74" cy="79" r="5" />
+                        </g>
+                    )}
+                    {showMentionBadge(signal, sad, asleep) && (
+                        // The @mention cue (Light theme only, shown by keys.css):
+                        // a coral badge at his shoulder, shape + colour, so he
+                        // stays teal. Static unless motion is allowed.
+                        <g className="k2-badge" aria-hidden="true">
+                            <circle cx="89" cy="17" r="12.5" fill="var(--cl-danger-text)" stroke="var(--cl-pure-white)" strokeWidth="2.5" />
+                            <text x="89" y="22.6" textAnchor="middle" fontFamily="var(--cl-font-display)" fontWeight="700" fontSize="16" fill="var(--cl-pure-white)">@</text>
                         </g>
                     )}
                     {asleep && (

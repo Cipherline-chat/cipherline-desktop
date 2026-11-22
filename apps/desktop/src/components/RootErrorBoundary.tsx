@@ -1,5 +1,6 @@
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
+import { copyText } from '../utils/clipboard';
 
 /**
  * Last-resort error boundary wrapped around the ENTIRE renderer tree in
@@ -70,11 +71,12 @@ export class RootErrorBoundary extends Component<Props, State> {
     }
 
     private copyDetails = () => {
-        try {
-            navigator.clipboard?.writeText(this.details());
+        // The crash details are shown in a selectable <pre>, so a failed copy still leaves them reachable.
+        void copyText(this.details()).then(ok => {
+            if (!ok) return;
             this.setState({ copied: true });
             setTimeout(() => this.setState({ copied: false }), 2000);
-        } catch { /* clipboard may be unavailable — the <pre> is still selectable */ }
+        });
     };
 
     render() {

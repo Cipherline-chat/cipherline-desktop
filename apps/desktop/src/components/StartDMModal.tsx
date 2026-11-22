@@ -335,7 +335,7 @@ export const StartDMModal: React.FC<StartDMModalProps> = ({
                     <span id={hintId} className="sr-only">
                         Up and down arrows move through your friends. Enter opens a chat with the highlighted friend.
                     </span>
-                    {egg && <div className="text-[12px] font-bold text-cl-lume mx-1 mt-2">{egg}</div>}
+                    {egg && <div className="text-[12px] font-bold text-cl-lume-text mx-1 mt-2">{egg}</div>}
 
                     <PeopleListbox
                         id={listboxId}

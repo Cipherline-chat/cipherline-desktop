@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../../utils/a11y/motionPrefs';
 import { createPortal } from 'react-dom';
 import { secureLocalStore } from '../../utils/secureLocalStore';
 import { pushEscapeLayer } from '../../utils/escapeStack';
@@ -60,7 +61,7 @@ const store = {
 };
 
 const reducedMotion = () =>
-    typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    typeof window !== 'undefined' && celebrationReducedNow();
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph', 'Fn']);
 

@@ -12,7 +12,8 @@
 
 .rc-root{
   position:relative;display:block;outline:none;
-  font-size:calc(14.5px * var(--cl-msg-scale, 1));
+  /* --cl-msg-text-scale: Accessibility → Message text size (utils/a11y/messageTextSize.ts), 1 by default. */
+  font-size:calc(14.5px * var(--cl-msg-text-scale, 1) * var(--cl-msg-scale, 1));
   line-height:1.52;
   min-height:22px;max-height:260px;overflow-y:auto;overflow-x:hidden;
   white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
@@ -23,10 +24,10 @@
 .rc-root[aria-disabled="true"]{cursor:not-allowed}
 .rc-root[data-empty]::before{
   content:attr(data-placeholder);position:absolute;left:4px;top:2px;right:4px;
-  color:rgba(255,255,255,.25);pointer-events:none;
+  color:rgb(var(--cl-bright-rgb) / .25);pointer-events:none;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.rc-root[aria-disabled="true"][data-empty]::before{color:rgba(255,255,255,.3);font-style:italic}
+.rc-root[aria-disabled="true"][data-empty]::before{color:rgb(var(--cl-bright-rgb) / .3);font-style:italic}
 
 .rc-b{min-height:1.52em}
 
@@ -43,7 +44,7 @@
 
 /* Headings: the feed's look (structure, not size). */
 .rc-h1{font-family:var(--cl-font-display);font-weight:600;letter-spacing:.012em;color:var(--cl-text)}
-.rc-h2{font-weight:800;color:var(--cl-lume)}
+.rc-h2{font-weight:800;color:var(--cl-lume-text)}
 .rc-h3{font-weight:800;color:var(--cl-muted);text-transform:uppercase;letter-spacing:.07em}
 .rc-sub{color:var(--cl-faint);font-weight:600}
 
@@ -55,15 +56,15 @@
 /* Code block: the feed's dark well, monospace, wraps in the box. */
 .rc-code{
   position:relative;
-  font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-scale, 1));line-height:1.55;
+  font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-text-scale, 1) * var(--cl-msg-scale, 1));line-height:1.55;
   font-variant-ligatures:none;tab-size:4;color:#DCE3F5;
-  background:var(--cl-abyss);border:1px solid rgba(255,255,255,.07);border-radius:10px;
+  background:var(--cl-abyss);border:1px solid rgb(var(--cl-bright-rgb) / .07);border-radius:10px;
   padding:6px 10px;margin:2px 0;
 }
 .rc-code[data-lang]{padding-top:18px}
 .rc-code[data-lang]::before{
   content:attr(data-lang);position:absolute;top:3px;left:11px;
-  font-size:calc(10.5px * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint);
+  font-size:calc(10.5px * var(--cl-msg-text-scale, 1) * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint);
   pointer-events:none;-webkit-user-select:none;user-select:none;
 }
 .rc-q.rc-code{border-left:3px solid var(--cl-border)}
@@ -78,12 +79,12 @@
 /* Inline styles (the feed's classes come from formatting.css). */
 .rc-icode{
   font-family:var(--cl-font-mono);font-size:.86em;font-variant-ligatures:none;
-  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);border-radius:5px;padding:.04em .32em;
+  background:rgb(var(--cl-bright-rgb) / .07);border:1px solid rgb(var(--cl-bright-rgb) / .08);border-radius:5px;padding:.04em .32em;
   color:var(--cl-text);
 }
 /* A spoiler in your own box: the pill and a light blur, but you can still read it. */
 .rc-spoiler{
-  background:rgba(94,107,143,.45);border-radius:4px;padding:0 .12em;
+  background:rgb(var(--cl-faint-rgb) / .45);border-radius:4px;padding:0 .12em;
   box-decoration-break:clone;-webkit-box-decoration-break:clone;
   filter:blur(.55px);
 }

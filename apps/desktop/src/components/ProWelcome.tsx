@@ -22,6 +22,7 @@
  *   - prefers-reduced-motion: the finished frame, faded in, nothing moving.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../utils/a11y/motionPrefs';
 import { createPortal } from 'react-dom';
 import { Crown, Video, MonitorUp, Upload, HardDrive, Hash } from 'lucide-react';
 import cipherlineMark from '../assets/cipherline-mark.svg';
@@ -76,7 +77,7 @@ const SHAFTS = [
 const MAX_TILT_DEG = 7;
 
 function prefersReducedMotion(): boolean {
-    try { return !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
+    try { return celebrationReducedNow(); } catch { return false; }
 }
 
 /** "OCT 2026" — the month the membership started (this moment). */

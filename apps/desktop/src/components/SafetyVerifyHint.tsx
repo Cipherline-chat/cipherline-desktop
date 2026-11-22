@@ -168,7 +168,7 @@ export const SafetyVerifyHint: React.FC<Props> = ({
             >
                 <div className="relative bg-cl-deep border border-white/[0.08] ring-1 ring-cl-lume/30 rounded-xl shadow-2xl px-4 py-3 text-left">
                     <p id={titleId} className="text-[13px] font-semibold text-white leading-tight m-0 flex items-center gap-1.5">
-                        <ShieldQuestion size={14} className="text-cl-glow shrink-0" aria-hidden="true" /> {SAFETY_HINT_TITLE}
+                        <ShieldQuestion size={14} className="text-cl-glow-text shrink-0" aria-hidden="true" /> {SAFETY_HINT_TITLE}
                     </p>
                     <p id={bodyId} className="text-[12px] text-cl-muted leading-snug m-0 mt-1.5">{safetyHintBody(name)}</p>
                     <div className="flex items-center gap-2 mt-3">

@@ -14,6 +14,7 @@
  *    the log never holds any.
  */
 import { PERMISSION_GROUPS } from './roles/permissions';
+import { slowmodeLabel } from '@cipherline/shared';
 
 export type AuditIcon =
     | 'userPlus' | 'userMinus' | 'ban' | 'mute' | 'nickname' | 'shield' | 'role'
@@ -102,6 +103,10 @@ export const AUDIT_FILTER_OPTIONS: AuditFilterOption[] = [
     { value: 'channel.pin.delete', label: 'Message unpinned' },
     { value: 'channel.save.create', label: 'Message saved to server' },
     { value: 'channel.save.delete', label: 'Message un-saved' },
+    { value: 'import.start', label: 'Message import started' },
+    { value: 'import.complete', label: 'Message import finished' },
+    { value: 'import.cancel', label: 'Message import stopped' },
+    { value: 'import.save', label: 'Imported messages saved' },
     { value: 'huddle.call.spawn', label: 'Call started' },
     { value: 'huddle.call.rename', label: 'Call renamed' },
     { value: 'huddle.call.destroy', label: 'Call ended' },
@@ -124,6 +129,14 @@ const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is st
 
 let LABELS: Map<string, string> | null = null;
 /** "MANAGE_ROLES" -> "Manage Roles"; an unknown key is humanised, never dropped. */
+/** role.update `icon` before/after: an emoji, `image:<attachment id>`, or null. */
+function roleIconChange(before: unknown, after: unknown): string {
+    const isImage = (v: unknown) => typeof v === 'string' && v.startsWith('image:');
+    if (after === null || after === undefined) return 'Icon removed';
+    if (isImage(after)) return before === null || before === undefined ? 'Icon image added' : 'Icon image changed';
+    return `Icon set to ${String(after)}`;
+}
+
 export function permissionLabel(key: string): string {
     if (!LABELS) {
         LABELS = new Map();
@@ -239,6 +252,8 @@ function describe(e: AuditEntryLike): AuditDescription {
                 if (JSON.stringify(before[k]) === JSON.stringify(after[k])) continue;
                 if (k === 'name') details.push(`Name: "${String(before[k])}" to "${String(after[k])}"`);
                 else if (k === 'color') details.push('Colour changed');
+                else if (k === 'secondary_color') details.push(after[k] === -1 ? 'Gradient removed' : before[k] === -1 || before[k] === undefined ? 'Gradient added' : 'Gradient colour changed');
+                else if (k === 'icon') details.push(roleIconChange(before[k], after[k]));
                 else if (k === 'hoisted') details.push(after[k] ? 'Now shown separately in the member list' : 'No longer shown separately');
                 else if (k === 'mentionable') details.push(after[k] ? 'Now mentionable by anyone' : 'No longer mentionable');
                 else if (k === 'position') details.push('Moved in the role order');
@@ -253,6 +268,8 @@ function describe(e: AuditEntryLike): AuditDescription {
         // ── Channels ──
         case 'channel.create': {
             const kind = str(d.kind) === 'huddle' ? 'Calls channel' : str(d.kind) === 'voice' ? 'voice channel' : 'channel';
+            if (num(d.slowmode_seconds)) details.push(`Slowmode: ${slowmodeLabel(num(d.slowmode_seconds) ?? 0).toLowerCase()}`);
+            if (d.age_restricted === true) details.push('Age-restricted (18+)');
             return out('hash', 'ok', `${actor} created the ${kind} ${channelLabel(str(d.name) ?? chanName)}`);
         }
         case 'channel.update': {
@@ -270,6 +287,8 @@ function describe(e: AuditEntryLike): AuditDescription {
                 else if (k === 'call_naming') lines.push('Call naming changed');
                 else if (k === 'end_call_when_starter_leaves') lines.push(after[k] ? 'Calls now end when the starter leaves' : 'Calls no longer end when the starter leaves');
                 else if (k === 'member_limit' || k === 'max_calls') lines.push('Limits changed');
+                else if (k === 'slowmode_seconds') lines.push(num(after[k]) ? `Slowmode set to ${slowmodeLabel(num(after[k]) ?? 0).toLowerCase()}` : 'Slowmode turned off');
+                else if (k === 'age_restricted') lines.push(after[k] ? 'Channel marked age-restricted (18+)' : 'Channel is no longer age-restricted');
             }
             const only = new Set(changed.map(k => (k === 'icon_name' || k === 'icon_emoji') ? 'icon' : k));
             if (only.size === 1 && only.has('name')) return out('hash', 'accent', `${actor} renamed ${channelLabel(String(before.name))} to ${channelLabel(String(after.name))}`);
@@ -421,6 +440,24 @@ function describe(e: AuditEntryLike): AuditDescription {
         case 'channel.pin.autoremove_on_delete': return out('pin', 'neutral', `A pin in ${channelLabel(chanName)} was removed with its message`);
         case 'channel.save.create': return out('save', 'neutral', `${actor} saved a message to the server in ${channelLabel(chanName)}`);
         case 'channel.save.delete': return out('save', 'neutral', `${actor} removed a server-saved message in ${channelLabel(chanName)}`);
+
+        // ── Message-history import (counts only, never content) ──
+        case 'import.start': {
+            const n = typeof d.channels === 'number' ? d.channels : null;
+            return out('save', 'accent', `${actor} started importing message history${n !== null ? ` into ${n} channel${n === 1 ? '' : 's'}` : ''}`);
+        }
+        case 'import.complete': {
+            const n = typeof d.rows === 'number' ? d.rows : null;
+            return out('save', 'ok', `${actor} finished importing message history${n !== null ? ` (${n.toLocaleString()} message${n === 1 ? '' : 's'})` : ''}`);
+        }
+        case 'import.cancel': {
+            const n = typeof d.deleted === 'number' ? d.deleted : 0;
+            return out('save', 'danger', `${actor} stopped a message import${n > 0 ? ` and deleted ${n.toLocaleString()} imported message${n === 1 ? '' : 's'}` : ''}`);
+        }
+        case 'import.save': {
+            const n = typeof d.count === 'number' ? d.count : 0;
+            return out(d.pinned ? 'pin' : 'save', 'neutral', `${actor} ${d.pinned ? 'saved and pinned' : 'saved'} ${n.toLocaleString()} imported message${n === 1 ? '' : 's'} in ${channelLabel(chanName)}`);
+        }
 
         // ── Calls ──
         case 'huddle.call.spawn': return out('phone', 'ok', `${actor} started a call${str(d.name) ? ` "${String(d.name)}"` : ''} in ${channelLabel(chanName)}`);

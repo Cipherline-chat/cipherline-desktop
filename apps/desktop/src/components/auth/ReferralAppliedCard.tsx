@@ -41,9 +41,9 @@ export const ReferralAppliedCard: React.FC<{
             style={{
                 display: 'flex', alignItems: 'center', gap: 12,
                 padding: '12px 14px', borderRadius: 14,
-                background: 'rgba(37,224,200,0.08)',
-                border: '1px solid rgba(37,224,200,0.32)',
-                boxShadow: '0 0 20px rgba(37,224,200,0.10)',
+                background: 'rgb(var(--cl-lume-rgb) / 0.08)',
+                border: '1px solid rgb(var(--cl-lume-rgb) / 0.32)',
+                boxShadow: '0 0 20px rgb(var(--cl-lume-rgb) / 0.10)',
             }}
         >
             <div style={{ position: 'relative', flexShrink: 0 }}>
@@ -51,7 +51,7 @@ export const ReferralAppliedCard: React.FC<{
                     aria-hidden
                     style={{
                         width: 38, height: 38, borderRadius: 12,
-                        background: 'rgba(37,224,200,0.16)', color: 'var(--cl-lume)',
+                        background: 'rgb(var(--cl-lume-rgb) / 0.16)', color: 'var(--cl-lume-text)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         fontWeight: 800, fontSize: 16, textTransform: 'uppercase',
                     }}
@@ -68,7 +68,7 @@ export const ReferralAppliedCard: React.FC<{
                         width: 18, height: 18, borderRadius: 999,
                         background: 'var(--cl-lume)', color: '#06130f',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        border: '2px solid #0B0F1E',
+                        border: '2px solid var(--cl-abyss)',
                     }}
                 >
                     <Check size={11} strokeWidth={3.4} />
@@ -76,7 +76,7 @@ export const ReferralAppliedCard: React.FC<{
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--cl-text)' }}>
-                    Invited by <span style={{ color: 'var(--cl-lume)' }}>{tag}</span>
+                    Invited by <span style={{ color: 'var(--cl-lume-text)' }}>{tag}</span>
                 </p>
                 <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--cl-muted)', lineHeight: 1.35 }}>
                     Referral applied: +{bonusDays} free days for you both. They'll see that you joined with their link.

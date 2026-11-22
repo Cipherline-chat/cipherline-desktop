@@ -58,6 +58,19 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 /**
+ * Forget the cached connection so the next openDb() opens afresh. Used by
+ * secureLocalStore between boot-load retries: a connection that failed
+ * mid-read may be the broken thing, and a failed open already clears itself.
+ * A connection that did open is closed (close() lets running transactions
+ * finish first). Never deletes or clears anything.
+ */
+export function dropDbConnection(): void {
+    const p = dbPromise;
+    dbPromise = null;
+    p?.then(db => { try { db.close(); } catch { /* already closed */ } }, () => { /* failed open */ });
+}
+
+/**
  * Open (and upgrade) the shared `cipherline` IndexedDB. Exported so
  * `secureLocalStore` can transact against the `kv_enc` store using the same
  * connection + schema version — keeping all object-store creation in one place.

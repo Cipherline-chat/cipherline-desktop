@@ -4,6 +4,7 @@ import { padDiscriminator } from '@cipherline/shared';
 import { StatusIcon } from '../StatusIcon';
 import { formatShortAgo, type PickerPerson, type PickerSection } from '../../utils/peoplePicker';
 import '../../styles/people-picker.css';
+import { formatFullDateTime } from '../../utils/a11y/timeFormat';
 
 /**
  * People picker — the presentational half (rules live in utils/peoplePicker.ts).
@@ -200,7 +201,7 @@ export const PersonRow: React.FC<{
                         {busy ? <Loader2 size={13} className="pp-spin" /> : <>{actionLabel}<ArrowRight size={13} strokeWidth={2.6} /></>}
                     </button>
                 ) : ago ? (
-                    <span className="pp-ago" title={new Date(person.lastActivityAt!).toLocaleString()}>{ago}</span>
+                    <span className="pp-ago" title={formatFullDateTime(new Date(person.lastActivityAt!))}>{ago}</span>
                 ) : null}
                 {selectable && (
                     <span className={['pp-check', selected ? 'on' : ''].filter(Boolean).join(' ')} aria-hidden="true">

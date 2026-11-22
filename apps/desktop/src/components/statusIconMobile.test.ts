@@ -17,7 +17,7 @@ describe('the phone glyph in place of the status dot', () => {
     });
 
     it('keeps the status colour: DND on a phone is a red phone, not a green one', () => {
-        expect(html(h(StatusDot, { status: 'dnd', onMobile: true }))).toContain('#FF6B5E');
+        expect(html(h(StatusDot, { status: 'dnd', onMobile: true }))).toContain('var(--cl-dnd-dot)');
     });
 
     it('never for offline, even if the flag were set', () => {

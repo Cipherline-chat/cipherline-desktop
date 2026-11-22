@@ -33,8 +33,11 @@ export function useAttachments(token: string | null) {
          *  distinction PATCH /attachments/:id/key now enforces before it will
          *  take custody of a decryption key. Omit it on a group icon and the
          *  key store is refused, so the icon never renders for anyone else.
-         *  Ordinary chat attachments must NOT set it. */
-        purpose?: 'group_icon',
+         *  Ordinary chat attachments must NOT set it.
+         *
+         *  'role_icon' goes WITH serverId instead: a role's icon image, under
+         *  role_icons/<serverId>/… and gated on MANAGE_ROLES (not MANAGE_EMOJIS). */
+        purpose?: 'group_icon' | 'role_icon',
     ) => {
         if (!token) throw new Error('Not authenticated');
 

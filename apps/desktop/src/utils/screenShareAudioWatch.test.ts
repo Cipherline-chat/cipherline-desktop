@@ -17,6 +17,7 @@ import { Track } from 'livekit-client';
 import {
     attachShareAudioReconciler,
     reconcileShareAudioSubscriptions,
+    isShareAudioPublication,
     shouldPlayShareAudio,
     wantsShareAudio,
     SHARE_AUDIO_RECONCILE_EVENTS,
@@ -141,6 +142,39 @@ describe('reconcileShareAudioSubscriptions', () => {
     it('ignores a publication-shaped value without the LiveKit subscription API', () => {
         const odd: ShareAudioParticipantLike = { identity: 'odd', getTrackPublication: () => ({ isDesired: 'yes' }) };
         expect(reconcileShareAudioSubscriptions([odd], new Set(), 'me')).toEqual({ subscribed: [], unsubscribed: [] });
+    });
+});
+
+describe('share audio published under the wrong source (phone clients)', () => {
+    const mk = (source: Track.Source, name: string) => ({
+        source, name, kind: Track.Kind.Audio, subscribed: true, calls: [] as boolean[],
+        get isDesired() { return this.subscribed !== false; },
+        setSubscribed(v: boolean) { this.subscribed = v; this.calls.push(v); },
+    });
+    const part = (identity: string, pubs: ReturnType<typeof mk>[]): ShareAudioParticipantLike => ({
+        identity,
+        getTrackPublication: (s: Track.Source) => pubs.find(p => p.source === s),
+        trackPublications: new Map(pubs.map((p, i) => [String(i), p])),
+    });
+
+    it('isShareAudioPublication: by source, or unknown source + share-audio name; never the microphone', () => {
+        expect(isShareAudioPublication(mk(Track.Source.ScreenShareAudio, 'x'))).toBe(true);
+        expect(isShareAudioPublication(mk(Track.Source.Unknown, 'screen_share_audio'))).toBe(true);
+        expect(isShareAudioPublication(mk(Track.Source.Unknown, 'screen-audio'))).toBe(true);
+        expect(isShareAudioPublication(mk(Track.Source.Unknown, 'extra'))).toBe(false);
+        expect(isShareAudioPublication(mk(Track.Source.Microphone, 'screen_share_audio'))).toBe(false);
+        expect(isShareAudioPublication(null)).toBe(false);
+    });
+
+    it('an unwatched sharer\'s mis-sourced share audio is released; the mic is untouched; Watch re-requests it', () => {
+        const mic = mk(Track.Source.Microphone, 'mic');
+        const odd = mk(Track.Source.Unknown, 'screen_share_audio');
+        const p = part('phone', [mic, odd]);
+        reconcileShareAudioSubscriptions([p], new Set(), 'me');
+        expect(odd.calls).toEqual([false]);
+        expect(mic.calls).toEqual([]);
+        reconcileShareAudioSubscriptions([p], new Set(['phone']), 'me');
+        expect(odd.calls).toEqual([false, true]);
     });
 });
 

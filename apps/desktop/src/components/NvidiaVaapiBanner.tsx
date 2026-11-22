@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Cpu } from 'lucide-react';
 import { ClBanner } from './ClBanner';
+import { copyText } from '../utils/clipboard';
 import {
     dismissNvidiaVaapiCard, fetchNvidiaVaapiStatus, isNvidiaVaapiCardDismissed, nvidiaVaapiOutcomeText,
     requestNvidiaVaapiInstall, shouldShowNvidiaVaapiCard, type NvidiaVaapiOutcome, type NvidiaVaapiStatus,
@@ -16,6 +17,7 @@ export const NvidiaVaapiBanner: React.FC = () => {
     const [status, setStatus] = useState<NvidiaVaapiStatus | null>(null);
     const [dismissed, setDismissed] = useState<boolean>(() => isNvidiaVaapiCardDismissed());
     const [busy, setBusy] = useState(false);
+    const [copied, setCopied] = useState(false);
     const [outcome, setOutcome] = useState<NvidiaVaapiOutcome | null>(null);
 
     useEffect(() => {
@@ -32,7 +34,8 @@ export const NvidiaVaapiBanner: React.FC = () => {
         void requestNvidiaVaapiInstall().then(r => { setBusy(false); setOutcome(r.outcome); setStatus(r.status); });
     };
     const close = () => { dismissNvidiaVaapiCard(); setDismissed(true); };
-    const copy = () => { try { void navigator.clipboard?.writeText(status.command); } catch { /* no clipboard */ } };
+    // The command is printed in the card, so a failed copy still leaves it selectable.
+    const copy = () => { void copyText(status.command).then(ok => { if (!ok) return; setCopied(true); setTimeout(() => setCopied(false), 1800); }); };
 
     const title = status.state === 'restart' ? 'Restart Cipherline to use the NVIDIA video driver' : 'Install the NVIDIA video driver for smoother viewing of shares and cameras';
     const note = outcome ? nvidiaVaapiOutcomeText(outcome, status) : (status.state === 'modeset' ? status.modesetNote : null);
@@ -52,7 +55,7 @@ export const NvidiaVaapiBanner: React.FC = () => {
             </>}
             actions={[
                 ...(status.state === 'install' && status.canInstall ? [{ key: 'install', label: 'Install', onClick: install, loading: busy }] : []),
-                ...(showCommand ? [{ key: 'copy', label: 'Copy command', onClick: copy, variant: 'ghost' as const }] : []),
+                ...(showCommand ? [{ key: 'copy', label: copied ? 'Copied' : 'Copy command', onClick: copy, variant: 'ghost' as const }] : []),
                 ...(status.state === 'restart' ? [{ key: 'restart', label: 'Restart', onClick: () => { void window.electronAPI?.relaunchApp?.(); } }] : []),
             ]}
             dismissLabel="Not now"

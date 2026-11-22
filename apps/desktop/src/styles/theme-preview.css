@@ -1,0 +1,127 @@
+/* ============ Theme preview (CustomThemePreview) ============
+   A small static model of the app painted ONLY from the previewed theme's own
+   --cl-* variables (the component sets them inline on .ctp). Used by the custom
+   theme editor and share / import dialogs (settings), the chat's theme-link card
+   (components/themeShare/ThemeLinkEmbed) and the website's /theme page
+   (apps/website ThemeLinkPage, via the @app-theme-preview alias) — so it must
+   not depend on app-only globals: every value here is a token or a size. */
+.ctp {
+  display: grid; grid-template-columns: 38px minmax(0, 118px) minmax(0, 1fr) minmax(0, 112px); gap: 6px;
+  height: 400px; padding: 7px; border-radius: 14px; overflow: hidden;
+  background: var(--cl-abyss); color: var(--cl-text);
+  font-family: var(--cl-font-sans, 'Nunito', sans-serif); font-size: 11px; line-height: 1.35;
+  box-shadow: 0 0 0 1px var(--cl-border), var(--cl-shadow-card);
+  user-select: none;
+}
+.ctp--compact { height: 250px; font-size: 10px; }
+.ctp--compact .ctp-toast, .ctp--compact .ctp-topic { display: none; }
+.ctp i, .ctp b, .ctp em { font-style: normal; }
+.ctp p { margin: 0; }
+
+.ctp-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 2px; }
+.ctp-srv {
+  position: relative; width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--cl-surface); color: var(--cl-muted); font-size: 9.5px; font-weight: 800;
+}
+.ctp-srv--home { background: var(--cl-lume); color: var(--cl-on-lume); box-shadow: var(--cl-glow-lume); }
+.ctp-srv--on { background: var(--cl-raise); color: var(--cl-text); box-shadow: 0 0 0 2px var(--cl-lume-ui); }
+.ctp-srv--add { background: transparent; color: var(--cl-ok-text); box-shadow: inset 0 0 0 1px var(--cl-border-strong); }
+.ctp-sep { width: 18px; height: 2px; border-radius: 2px; background: var(--cl-border); }
+.ctp-badge {
+  position: absolute; right: -4px; bottom: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 99px;
+  background: var(--cl-danger); color: var(--cl-pure-white); font-size: 8.5px; line-height: 14px; text-align: center;
+  box-shadow: 0 0 0 2px var(--cl-abyss);
+}
+
+.ctp-list, .ctp-chat, .ctp-members {
+  min-width: 0; border-radius: 10px; background: var(--cl-deep); box-shadow: var(--cl-elev-3);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ctp-list { padding: 8px 6px; gap: 2px; }
+.ctp-list-head { font-weight: 800; font-size: 11.5px; padding: 0 4px 6px; border-bottom: 1px solid var(--cl-border); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctp-cat { font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--cl-faint); padding: 6px 4px 2px; }
+.ctp-ch { display: flex; align-items: center; gap: 4px; padding: 3px 5px; border-radius: 6px; color: var(--cl-muted); font-weight: 700; white-space: nowrap; }
+.ctp-ch svg { flex: none; opacity: .8; }
+.ctp-ch--on { background: var(--cl-raise); color: var(--cl-text); box-shadow: var(--cl-elev-1); }
+.ctp-ch--unread { color: var(--cl-text); font-weight: 800; }
+.ctp-pill { margin-left: auto; min-width: 14px; height: 14px; padding: 0 4px; border-radius: 99px; background: var(--cl-lume); color: var(--cl-on-lume); font-size: 8.5px; line-height: 14px; text-align: center; }
+.ctp-vc { display: flex; align-items: center; gap: 5px; padding: 2px 5px 2px 18px; color: var(--cl-muted); }
+.ctp-vc .ctp-av { width: 14px; height: 14px; }
+.ctp-leave { margin-top: auto; padding: 4px 5px; color: var(--cl-danger-text); font-weight: 800; }
+
+.ctp-chat { position: relative; }
+.ctp-chat-head { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid var(--cl-border); white-space: nowrap; min-width: 0; }
+.ctp-chat-head svg { color: var(--cl-faint); flex: none; }
+.ctp-topic { color: var(--cl-faint); overflow: hidden; text-overflow: ellipsis; margin-left: 4px; min-width: 0; }
+.ctp-head-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
+.ctp-btn { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 99px; font-weight: 800; font-size: 9.5px; }
+.ctp-btn--primary { background: var(--cl-lume); color: var(--cl-on-lume); box-shadow: var(--cl-glow-lume); }
+.ctp-btn--ghost { padding: 0 5px; background: var(--cl-surface); color: var(--cl-muted); box-shadow: inset 0 0 0 1px var(--cl-border-strong); }
+.ctp-toggle { width: 22px; height: 12px; border-radius: 99px; background: var(--cl-lume-ui); position: relative; }
+.ctp-toggle i { position: absolute; right: 2px; top: 2px; width: 8px; height: 8px; border-radius: 99px; background: var(--cl-on-lume); }
+.ctp-feed { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 4px; min-height: 0; overflow: hidden; }
+.ctp-msg { display: flex; gap: 7px; padding: 3px 4px; border-radius: 6px; }
+.ctp-msg--mention { background: rgb(var(--cl-glow-rgb) / .08); box-shadow: inset 2px 0 0 var(--cl-glow-text); }
+.ctp-av { flex: none; width: 22px; height: 22px; border-radius: 99px; position: relative; display: block; }
+.ctp-av--a { background: var(--cl-lume); }
+.ctp-av--b { background: var(--cl-flash); }
+.ctp-av--c { background: var(--cl-glow); }
+.ctp-av--d { background: var(--cl-border-strong); }
+.ctp-body { min-width: 0; color: var(--cl-text); }
+.ctp-meta { display: flex; align-items: baseline; gap: 5px; }
+.ctp-name { font-weight: 800; color: var(--cl-text); }
+.ctp-name--role { color: var(--cl-lume-text); font-weight: 800; }
+.ctp-time { font-size: 9px; color: var(--cl-faint); }
+.ctp-link { color: var(--cl-lume-text); text-decoration: underline; text-underline-offset: 2px; }
+.ctp-mention { padding: 0 3px; border-radius: 4px; background: var(--cl-lume-tint); color: var(--cl-lume-text); font-weight: 800; }
+.ctp-code { font-family: var(--cl-font-mono); font-size: 10px; padding: 0 3px; border-radius: 4px; background: var(--cl-surface); color: var(--cl-code-text); }
+.ctp-pre {
+  margin: 4px 0 0; padding: 5px 7px; border-radius: 6px; white-space: pre; overflow: hidden;
+  font-family: var(--cl-font-mono); font-size: 9.5px; background: var(--cl-abyss); color: var(--cl-code-text);
+  border: 1px solid rgb(var(--cl-bright-rgb) / .07);
+}
+.ctp-kw { color: var(--cl-code-kw); }
+.ctp-fn { color: var(--cl-code-type); }
+.ctp-str { color: var(--cl-code-str); }
+.ctp-composer {
+  display: flex; align-items: center; justify-content: space-between; margin: 4px 8px 8px; padding: 6px 6px 6px 9px;
+  border-radius: 10px; background: var(--cl-surface); color: var(--cl-muted); box-shadow: inset 0 0 0 1px var(--cl-border-strong), var(--cl-shadow-composer);
+}
+.ctp-send { width: 18px; height: 18px; border-radius: 6px; display: grid; place-items: center; background: var(--cl-lume); color: var(--cl-on-lume); }
+.ctp-toast {
+  position: absolute; right: 8px; bottom: 46px; display: flex; align-items: center; gap: 6px; padding: 6px 9px 6px 6px;
+  border-radius: 10px; background: var(--cl-surface); box-shadow: var(--cl-shadow-pop), inset 0 0 0 1px var(--cl-border);
+}
+.ctp-toast span:last-child { display: flex; flex-direction: column; }
+.ctp-toast b { font-weight: 800; color: var(--cl-text); }
+.ctp-toast em { font-size: 9px; color: var(--cl-muted); }
+.ctp-toast-ic { width: 16px; height: 16px; border-radius: 99px; display: grid; place-items: center; background: var(--cl-ok-dot); color: var(--cl-dot-hole); }
+
+.ctp-members { padding: 6px; gap: 3px; }
+.ctp-mem { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; font-weight: 700; color: var(--cl-text); white-space: nowrap; min-width: 0; }
+.ctp-mem--off { color: var(--cl-muted); }
+.ctp-mem .ctp-av { width: 18px; height: 18px; }
+.ctp-mem--off .ctp-av { opacity: .55; }
+.ctp-dot { position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 99px; box-shadow: 0 0 0 2px var(--cl-deep); }
+.ctp-dot--ok { background: var(--cl-ok-dot); }
+.ctp-dot--idle { background: var(--cl-idle-dot); }
+.ctp-dot--dnd { background: var(--cl-dnd-dot); }
+.ctp-dot--off { background: var(--cl-offline-dot); }
+.ctp-verified { color: var(--cl-ok-text); flex: none; }
+.ctp-danger-btn {
+  margin-top: auto; align-self: stretch; text-align: center; padding: 4px 0; border-radius: 8px; font-weight: 800;
+  color: var(--cl-danger-text); box-shadow: inset 0 0 0 1px rgb(var(--cl-danger-rgb) / .45);
+}
+
+@container (max-width: 470px) {
+  .ctp { grid-template-columns: 34px minmax(0, 104px) minmax(0, 1fr); }
+  .ctp-members { display: none; }
+}
+
+
+/* The fixed 16:9 thumbnail (ThemePreviewThumb): laid out at 560 x 315, scaled by
+   an inline transform. The stage is its own size container, so the narrow-panel
+   rule above never fires inside a thumbnail however small it is drawn. */
+.ctp-thumb { position: relative; overflow: hidden; border-radius: 10px; flex: none; max-width: 100%; }
+.ctp-thumb-stage { position: absolute; left: 0; top: 0; width: 560px; height: 315px; transform-origin: 0 0; container-type: inline-size; }
+.ctp-thumb .ctp { height: 315px; border-radius: 16px; }

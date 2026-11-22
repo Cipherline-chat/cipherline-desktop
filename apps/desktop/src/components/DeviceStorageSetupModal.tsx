@@ -69,10 +69,10 @@ export const DeviceStorageSetupModal: React.FC<Props> = ({ open, onSave }) => {
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                     <div style={{
                         width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-                        background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)',
+                        background: 'rgb(var(--cl-lume-rgb) / .1)', border: '1px solid rgb(var(--cl-lume-rgb) / .2)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                        <HardDrive size={22} style={{ color: 'var(--cl-lume)' }} aria-hidden />
+                        <HardDrive size={22} style={{ color: 'var(--cl-lume-text)' }} aria-hidden />
                     </div>
                     <div>
                         <h2 style={{ margin: '0 0 6px', fontSize: 17, fontWeight: 700, color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)' }}>
@@ -104,7 +104,7 @@ export const DeviceStorageSetupModal: React.FC<Props> = ({ open, onSave }) => {
                 {error && (
                     <div role="alert" className="flex items-start gap-2 px-3 py-2 rounded-xl"
                         style={{ background: 'rgba(255,107,107,.08)', border: '1px solid rgba(255,107,107,.25)' }}>
-                        <AlertTriangle size={14} style={{ color: 'var(--cl-glow)', marginTop: 1, flexShrink: 0 }} aria-hidden />
+                        <AlertTriangle size={14} style={{ color: 'var(--cl-glow-text)', marginTop: 1, flexShrink: 0 }} aria-hidden />
                         <p className="text-xs leading-relaxed" style={{ margin: 0, color: 'var(--cl-text)' }}>{error}</p>
                     </div>
                 )}

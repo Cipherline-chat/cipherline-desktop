@@ -43,7 +43,7 @@ export const Row: React.FC<{ icon: React.ReactNode; label: string; sublabel: Rea
 }) => (
     <div className={`px-3 py-2.5 ${dim ? 'opacity-55' : ''}`}>
         <div className="flex items-center gap-3">
-            <div className="w-6 h-6 rounded-md bg-cl-lume/10 text-cl-lume/80 flex items-center justify-center shrink-0">{icon}</div>
+            <div className="w-6 h-6 rounded-md bg-cl-lume/10 text-cl-lume-text/80 flex items-center justify-center shrink-0">{icon}</div>
             <div className="min-w-0 flex-1">
                 <div className="text-[12.5px] font-semibold text-cl-text leading-tight">{label}</div>
                 <div className="text-[10.5px] text-cl-faint leading-snug">{sublabel}</div>
@@ -139,7 +139,7 @@ export const CallNamingSection: React.FC<Props> = ({ value, onChange, channelNam
                                     type="button"
                                     disabled={disabled}
                                     onClick={() => insertToken(t)}
-                                    className="px-1.5 h-[20px] rounded-md border border-solid border-cl-border/50 text-cl-muted hover:border-cl-lume/40 hover:text-cl-lume font-mono"
+                                    className="px-1.5 h-[20px] rounded-md border border-solid border-cl-border/50 text-cl-muted hover:border-cl-lume/40 hover:text-cl-lume-text font-mono"
                                 >
                                     {t}
                                 </button>
@@ -179,7 +179,7 @@ export const CallNamingSection: React.FC<Props> = ({ value, onChange, channelNam
             />
             <div className="px-3 py-2 text-[11px]" aria-live="polite">
                 {error ? (
-                    <span className="text-cl-flash" role="alert">{error}</span>
+                    <span className="text-cl-flash-text" role="alert">{error}</span>
                 ) : (
                     <span className="text-cl-faint" data-testid="call-naming-example">
                         Example: <span className="text-cl-muted">{preview.start}</span>

@@ -9,7 +9,7 @@ import { assertPublicHttpUrl, assertRemoteImageUrlShape, pinnedLookup } from './
 import { appOriginsFor, decidePermissionCheck, decidePermissionRequest } from './permission-policy';
 import { isPathInside } from './path-containment';
 import { writePrivatePage } from './private-page-file';
-import { parseInviteUrl, parseReferralUrl, extractDeepLinkFromArgv, externalUrlToOpen } from './deep-link';
+import { parseInviteUrl, parseReferralUrl, parseThemeDeepLink, extractDeepLinkFromArgv, externalUrlToOpen } from './deep-link';
 import { decideSmokeTestMode } from './smoke-mode';
 import { stripDebugSwitches } from './debug-switches';
 import { installSmokeReporter } from './smoke-report';
@@ -41,6 +41,8 @@ import { probeWallet } from './keyring-probe';
 import { AUTO_RETRY_ARG, shouldWatchWallet, startWalletWatcher, type WalletWatcher } from './keyring-autoretry';
 import { keyringNoticeGuard } from './keyring-notice-guard';
 import { clearMarker, readBootId, readMarker, shouldPreannounce, writeMarker } from './keyring-marker';
+import { registerDiscordImportIpc } from './discord-import/ipc';
+import { createQuitGuard, shouldAskBeforeClose } from './discord-import/quit-guard';
 import { KEYRING_ACTION_CHANNEL, KEYRING_RETRY_COOLDOWN_MS, KEYRING_STATUS_CHANNEL, parseKeyringAction, relaunchOptions } from './keyring-ipc';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
 import { KvCrypto } from './kv-crypto';
@@ -73,9 +75,59 @@ import {
   markRendererReplyListenerLost,
 } from './notifications';
 import { setBadgeCount, flashTaskbar, applyWindowsCallOverlay } from './badge';
-import { lockPageZoom } from './page-zoom-lock';
-import { setupTray, updateTrayMenu, getTray, setTrayCallState } from './tray';
+import { lockPageZoom, setIntendedZoomFactor, resetZoomToIntended } from './page-zoom-lock';
+import { createUiScaleController, isUiScaleStep, UI_SCALE_STORE_KEY, type UiScaleController, type UiScaleState } from './ui-scale';
+import { setupTray, updateTrayMenu, getTray, setTrayCallState, setTrayQuitConfirm } from './tray';
 import type { TrayMenuState } from './tray';
+import { THEME_STORE_KEY, bootPalette, isBootThemePreference, type BootPalette } from './theme-boot';
+import { titleBarOverlayFor } from './window-chrome';
+import {
+  CUSTOM_THEME_PREF, THEME_CUSTOM_STORE_KEY, createWindowThemePreview, paletteForState, parseCustomBootPayload,
+  readDeviceThemeStateWithCustom, type CustomAwareThemeState,
+} from './theme-custom-boot';
+
+/** A preference (and custom-theme copy) set this session: kept in memory too, so a locked store still shows it. */
+let sessionThemePref: string | null = null;
+let sessionThemeCustom: string | null = null;
+
+/** The device's theme: the stored preference, `system` resolved with nativeTheme, `custom` with its stored copy. */
+function deviceThemeState(): CustomAwareThemeState {
+  const systemDark = (() => { try { return nativeTheme.shouldUseDarkColors; } catch { return true; } })();
+  // `system` picks High contrast when the OS asks for more contrast: Windows
+  // High Contrast (forced colours) or macOS Increase contrast (theme-boot.ts).
+  const systemMoreContrast = (() => {
+    try { return nativeTheme.shouldUseHighContrastColors || nativeTheme.inForcedColorsMode === true; } catch { return false; }
+  })();
+  if (sessionThemePref) return readDeviceThemeStateWithCustom(() => sessionThemePref, () => sessionThemeCustom, systemDark, systemMoreContrast);
+  return readDeviceThemeStateWithCustom(() => secureStore.get(THEME_STORE_KEY), () => secureStore.get(THEME_CUSTOM_STORE_KEY), systemDark, systemMoreContrast);
+}
+
+/** Window background + the native caption overlay (Windows and Linux; electron/window-chrome.ts). */
+function paintWindowColors(colors: BootPalette): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.setBackgroundColor(colors.windowBackground); } catch { /* tearing down */ }
+  const overlay = titleBarOverlayFor(process.platform, colors.titleBar);
+  if (overlay) {
+    try { mainWindow.setTitleBarOverlay(overlay); } catch { /* no overlay */ }
+  }
+}
+
+/**
+ * A live theme PREVIEW (renderer: src/theme/engine.ts startThemePreview).
+ * Memory only and never stored: theme:preview paints it, theme:preview-end and
+ * any page (re)load drop it and repaint the device's real theme. While it is up
+ * a real theme change still updates the store and the renderer, but leaves the
+ * window colours on the preview.
+ */
+const windowThemePreview = createWindowThemePreview(paintWindowColors, () => paletteForState(deviceThemeState(), bootPalette));
+
+/** Repaint what main owns (window background, Windows caption overlay) and tell the renderer. */
+function paintWindowTheme(state: CustomAwareThemeState): void {
+  if (!windowThemePreview.active()) paintWindowColors(paletteForState(state, bootPalette));
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.webContents.send('theme:changed', state); } catch { /* tearing down */ }
+}
+
 import {
   loginItemTarget,
   electronLoginItemQuery,
@@ -157,7 +209,7 @@ import {
   WaylandGlobalShortcuts, buildPortalShortcuts, acceleratorToPortalTrigger, ACTION_DESCRIPTIONS, ensureDesktopEntry, dbusSessionBus, cleanupLegacyKdeComponent, PORTAL_APP_ID,
 } from './wayland-global-shortcuts';
 import { validateGlobalShortcutMap } from './global-shortcut-payload';
-import { GlobalHoldKeyWatcher, holdKeyBackend, isHoldSlot, comboToAccelerator, HOLD_SLOTS, type HoldSlot, type GlobalPttResult } from './global-ptt';
+import { GlobalHoldKeyWatcher, ForegroundElevationMonitor, holdKeyBackend, holdKeySupport, supportFromResult, backendName, isHoldSlot, comboToAccelerator, HOLD_SLOTS, type HoldSlot, type GlobalPttResult } from './global-ptt';
 import { isTrustedSenderUrl, channelRequiresSenderCheck } from './ipc-guard';
 import { validateClipboardPng } from './clipboard-image';
 import {
@@ -200,7 +252,7 @@ import {
 } from './linux-video-decode';
 import { computeNvidiaVaapiStatus, installNvidiaVaapiDriver, type NvidiaVaapiStatus } from './nvidia-vaapi-install';
 import { computeVideoEncodeDriverStatus, detectEncodeGap, installVideoEncodeDriver, runListVa, NONE_ENCODE_STATUS, type EncodeGap, type VideoEncodeDriverStatus } from './video-encode-driver';
-import { parseScreenSourceIndex, cleanRect } from './annotation-overlay-target';
+import { parseScreenSourceIndex, parseWindowSourceHandle, cleanRect, cleanWindowInfo, type WindowInfo } from './annotation-overlay-target';
 import { PowerCoordinator, type PowerSignal } from './power-events';
 import { wireWindowDiagnostics, summarizeAppMetrics, summarizeGpuFeatureStatus, describeChildProcessGone } from './lifecycle-diagnostics';
 import {
@@ -225,7 +277,10 @@ import { applyAvatarKey } from './avatar-key-policy';
 import { isNativeShareEncoderEnabled } from './native-share-encoder';
 import { registerNativeShareIpc } from './native-share-ipc';
 import { resolveNativeShareHelper, allowNativeShareTestBackend } from './native-share-helper-path';
-import { MessageChannelMain } from 'electron';
+import { MessageChannelMain, utilityProcess } from 'electron';
+// Settings → Appearance → Theme → Sync with system (theme-boot.ts).
+import { nativeTheme } from 'electron';
+import { registerAudioEngineIpc, type AudioEngineController } from './audio-engine-ipc';
 import { installRenumberBridge } from './renumber-bridge';
 import {
   STAGING_VERIFIER, verifyPassword, isAcceptablePasswordInput, createAttemptLimiter,
@@ -349,6 +404,7 @@ let audioCaptureAddon: {
   // System-wide key-held watcher for push-to-talk (src-native/key_state.cc, Windows + Linux X11). electron/global-ptt.ts.
   watchKeys?(slot: number, groups: number[][], callback: (down: boolean) => void): boolean;
   stopWatchingKeys?(slot?: number): void;
+  getForegroundElevation?(): unknown;
   // Speakers-or-headphones facts (src-native/audio_output_kind.cc, Windows + macOS). Optional like the others.
   getAudioOutputEndpoints?(): unknown;
 } & HdrNative | null = null;
@@ -1116,6 +1172,29 @@ if (process.platform === 'linux') {
 
 let mainWindow: BrowserWindow | null = null;
 
+// ── Interface size (Settings → Accessibility; electron/ui-scale.ts) ─────────
+// Main window only. Created on first use, after the SecureStore barrier (the
+// first use is createWindow, which runs after it); a locked/unavailable store
+// reads as the default and a write that fails applies for this session only.
+let uiScaleCtl: UiScaleController | null = null;
+function uiScale(): UiScaleController {
+  if (!uiScaleCtl) {
+    uiScaleCtl = createUiScaleController({
+      readStored: () => { try { return secureStore.get(UI_SCALE_STORE_KEY); } catch { return null; } },
+      writeStored: (v) => { secureStore.set('uiScale', v); },
+      workAreaFor: (bounds) => screen.getDisplayMatching(bounds).workArea,
+      applyZoomFactor: (factor) => {
+        setIntendedZoomFactor(factor);
+        if (mainWindow && !mainWindow.isDestroyed()) resetZoomToIntended(mainWindow.webContents);
+      },
+      notify: (state: UiScaleState) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ui-scale:changed', state);
+      },
+    });
+  }
+  return uiScaleCtl;
+}
+
 // The apps a Linux Wayland window share can take audio from: the handles main issued for the
 // addon's list, and the rules for starting one. See app-audio.ts. Ends with the share, like the grant.
 const appAudio = createAppAudio();
@@ -1214,6 +1293,14 @@ const CIPHERLINE_PROD_PORT = IS_SMOKE_TEST ? 42918 : 42917;
 // Wrapped in an object so tray.ts callbacks can read the latest value by reference.
 // Both `isQuitting` and `isQuittingRef.value` must be kept in sync.
 let isQuitting = false;
+// "An import is running — quit anyway?" (discord-import/quit-guard.ts): the
+// renderer reports a background Discord import; the window's real close and the
+// tray's Quit ask first. Asked before a quit starts, never from before-quit.
+const discordImportQuitGuard = createQuitGuard((opts) => (mainWindow && !mainWindow.isDestroyed()
+  ? dialog.showMessageBox(mainWindow, opts)
+  : dialog.showMessageBox(opts)));
+let closeConfirmedWhileImporting = false;
+setTrayQuitConfirm(() => discordImportQuitGuard.confirmQuit());
 // When close-to-tray last hid the window (0 = not hidden that way), and the
 // updater's reaction to it being shown again (set once the updater block runs).
 let trayHiddenAt = 0;
@@ -1384,6 +1471,14 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
   // app.exit(0)s — it used to report the RUNNING instance's marker as an
   // unclean exit and leave its own behind.
   const savedState = loadWindowState();
+  // Interface size: the first paint is already at the chosen (display-clamped) scale.
+  const initialZoom = uiScale().factorFor({
+    x: savedState.x ?? 0, y: savedState.y ?? 0, width: savedState.width, height: savedState.height,
+  });
+  // The device's theme (electron/theme-boot.ts): the window's own background
+  // and the Windows caption overlay are painted before the renderer exists, so
+  // they come from the stored theme id, read here before the window is made.
+  const themeColors = paletteForState(deviceThemeState(), bootPalette);
 
   mainWindow = new BrowserWindow({
     // Explicit, not left to fall back: index.html's own <title> takes over
@@ -1414,6 +1509,8 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
       // Renderer sandbox: load-bearing per CLAUDE.md ("never weaken"). Set
       // explicitly so a future preload edit can't silently drop the sandbox.
       sandbox: true,
+      // Settings → Accessibility → Interface size (electron/ui-scale.ts).
+      zoomFactor: initialZoom,
       // Disable Chromium's background throttling: when the window is hidden or
       // minimized, Chromium normally freezes timers (including our 15s WS
       // heartbeat) and suspends network I/O (ERR_NETWORK_IO_SUSPENDED). That
@@ -1431,31 +1528,25 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
     // On macOS, titleBarStyle:'hiddenInset' keeps the native traffic lights.
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    // Native window-controls overlay — WINDOWS ONLY. Colours match the app's
-    // top drag bar — `bg-cl-abyss` (#0B0F1E) with cl-text glyphs (#F4F7FF) and
-    // the same 34px height — so the min/maximise/close buttons blend into the
-    // titlebar instead of sitting on a mismatched near-black strip.
+    // Native window-controls overlay on Windows AND Linux (macOS keeps its
+    // traffic lights). Colours match the app's top drag bar — `bg-cl-abyss`
+    // with cl-text glyphs (theme-boot.ts) and the same 34px height — so the
+    // min/maximise/close buttons blend into the titlebar.
     //
-    // NOT on Linux, despite Electron supporting it there. Dashboard.tsx's
-    // <WindowControls> draws its own design-system caption buttons on Linux
-    // (its guard is `if (isMac || isWindows) return null`), on the assumption
-    // — stated in its own comment — that the native overlay isn't available
-    // there. That assumption is wrong on Electron 43: the overlay DOES render
-    // on Linux, on top of the custom buttons. The native overlay is narrower
-    // than the three custom buttons (120px total), so it covered the custom
-    // maximise/close but left the custom minimise sticking out to its left —
-    // the stray dash beside the minimize button. Reproduced exactly, and
-    // fixed, in a minimal harness toggling only this one option.
+    // Linux used Dashboard.tsx's HTML <WindowControls> instead, and they broke
+    // twice: a fixed drag strip stacked over them swallowed every click (the
+    // 1.0.23 report from Arch KDE Wayland), and they only existed in the
+    // Dashboard bar, so the sign-in screen and full-window surfaces had no
+    // window buttons at all. The overlay is hit-tested by the browser process,
+    // above any page drag region. Why, and how it was verified:
+    // electron/window-chrome.ts.
     //
-    // If this ever needs revisiting: `navigator.windowControlsOverlay.visible`
-    // in the renderer is the ground truth for whether the native overlay is
-    // being drawn (true on Windows, and on Linux only when this option is
-    // set). WindowControls checks it as a backstop.
-    titleBarOverlay: process.platform === 'win32' ? {
-      color: '#0B0F1E',
-      symbolColor: '#F4F7FF',
-      height: 34
-    } : undefined,
+    // Never draw both: `navigator.windowControlsOverlay.visible` in the
+    // renderer is the ground truth for whether this overlay is on screen, and
+    // the HTML fallback draws only while it is false (src/utils/windowControls.ts).
+    // (2026-08: enabling the overlay on Linux WITHOUT that check stacked the
+    // two sets of buttons — the stray dash beside the minimise button.)
+    titleBarOverlay: titleBarOverlayFor(process.platform, themeColors.titleBar),
     // NOT transparent, deliberately. Windows 11's DWM rounds the corners of
     // an opaque frameless window by itself, so transparency buys nothing
     // visible here — while a transparent window has documented costs on
@@ -1464,7 +1555,7 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
     // double-click) and composites per-pixel alpha in DWM on every frame.
     // backgroundColor below paints the window before the renderer does.
     transparent: false,
-    backgroundColor: '#0B0F1E',
+    backgroundColor: themeColors.windowBackground,
   });
 
   // HIGH-17: Enable screen-capture protection immediately on window creation
@@ -1580,12 +1671,27 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
     // Only hide when a tray icon really exists — otherwise (tray creation
     // failed, or the store was unreadable at boot so no tray was made) the
     // window would vanish with no way back but relaunching.
-    if (shouldHideToTrayOnClose({ isQuitting, minimizeToTray, trayExists: getTray() !== null })) {
+    const hidesToTray = shouldHideToTrayOnClose({ isQuitting, minimizeToTray, trayExists: getTray() !== null });
+    if (hidesToTray) {
       e.preventDefault();
       mainWindow?.hide();
       trayHiddenAt = Date.now();
+    } else if (shouldAskBeforeClose({ isQuitting, hidesToTray, importRunning: discordImportQuitGuard.isRunning(), confirmed: closeConfirmedWhileImporting })) {
+      // A real close while a Discord import runs: ask, then close again on "Quit anyway".
+      e.preventDefault();
+      const win = mainWindow;
+      void discordImportQuitGuard.confirmQuit().then((go) => {
+        if (!go || !win || win.isDestroyed()) return;
+        closeConfirmedWhileImporting = true;
+        win.close();
+      });
     }
   });
+  // A reload / crash of the renderer ends its import: nothing to ask about any more.
+  // (Its own listeners on a local: the crash / quit wiring tests read the first `mainWindow.webContents.on('render-process-gone'`.)
+  const importWc = mainWindow.webContents;
+  importWc.on('did-navigate', () => discordImportQuitGuard.setRunning(false));
+  importWc.on('render-process-gone', () => discordImportQuitGuard.setRunning(false));
 
   // Screen-capture protection: blanks Cipherline's window in OS-level
   // screenshots + screen recordings where the platform honours the flag
@@ -1594,8 +1700,34 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
   // renderer pushes the persisted preference up on startup via the
   // win:set-content-protection IPC once AuthContext mounts.
 
-  // Page zoom is unsupported (Ctrl -/+/0, Ctrl+wheel, pinch); see page-zoom-lock.ts.
-  lockPageZoom(mainWindow.webContents);
+  // Interface size: raise the minimum / grow the window for the stored scale
+  // FIRST (ui-scale.ts rule 5), then lock zoom to that factor. Accidental zoom
+  // (Ctrl+wheel, pinch) stays blocked; Ctrl/Cmd + = / - / 0 step the setting.
+  uiScale().apply(mainWindow, 'init');
+  lockPageZoom(mainWindow.webContents, {
+    scalable: true,
+    onShortcut: (action) => { uiScale().step(mainWindow, action); },
+  });
+  {
+    // A different display can hold a different maximum (rule 4): re-check
+    // after a move or a display change; the controller only reports changes.
+    const win = mainWindow;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const recheck = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => { t = null; if (!win.isDestroyed()) uiScale().apply(win, 'display'); }, 300);
+    };
+    win.on('moved', recheck);
+    screen.on('display-metrics-changed', recheck);
+    screen.on('display-added', recheck);
+    screen.on('display-removed', recheck);
+    win.once('closed', () => {
+      if (t) clearTimeout(t);
+      screen.removeListener('display-metrics-changed', recheck);
+      screen.removeListener('display-added', recheck);
+      screen.removeListener('display-removed', recheck);
+    });
+  }
 
   // CRIT-8: Block all renderer navigations away from the app origin.
   // Prevents HTML injection → external page load → full node privilege escalation.
@@ -1736,7 +1868,9 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
         req.on('end', () => {
           showAndFocusWindow(mainWindow);
           const deepLink = decodeHandoffBody(body);
-          if (deepLink) {
+          const themeCode = deepLink ? parseThemeDeepLink(deepLink) : null;
+          if (themeCode) sendDeepLinkTheme(themeCode);
+          else if (deepLink) {
             const inviteCode = parseInviteUrl(deepLink);
             if (inviteCode) sendDeepLinkInvite(inviteCode);
             else {
@@ -2108,6 +2242,18 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
  */
 let pendingDeepLinkCode: string | null = null;
 let pendingDeepLinkRef: string | null = null;
+/** A `cipherline://theme#clth1.…` share code (shape-checked only), parked like the invite code. */
+let pendingDeepLinkTheme: string | null = null;
+
+/**
+ * Send a theme share code to the renderer (the import preview; nothing is
+ * saved or applied without the user). Parked too, for the mount race and for
+ * a link opened before sign-in (the Dashboard pulls it once mounted).
+ */
+function sendDeepLinkTheme(code: string) {
+  pendingDeepLinkTheme = code;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('deep-link:theme', code);
+}
 
 /**
  * Send the invite code to the renderer.
@@ -2449,6 +2595,12 @@ ipcMain.handle('deep-link:get-pending', () => {
 });
 
 // Renderer pulls any pending referral code on startup — clears on first read.
+ipcMain.handle('deep-link:get-pending-theme', () => {
+  const code = pendingDeepLinkTheme;
+  pendingDeepLinkTheme = null;
+  return code;
+});
+
 ipcMain.handle('deep-link:get-pending-ref', () => {
   const code = pendingDeepLinkRef;
   pendingDeepLinkRef = null;
@@ -2490,6 +2642,8 @@ if (process.defaultApp && process.argv.length >= 2) {
 // macOS: the OS delivers the URL via open-url when the app is already running.
 app.on('open-url', (event, url) => {
   event.preventDefault();
+  const themeCode = parseThemeDeepLink(url);
+  if (themeCode) { sendDeepLinkTheme(themeCode); return; }
   const inviteCode = parseInviteUrl(url);
   if (inviteCode) { sendDeepLinkInvite(inviteCode); return; }
   const refCode = parseReferralUrl(url);
@@ -2530,6 +2684,8 @@ if (!gotInstanceLock) {
     showAndFocusWindow(mainWindow);
 
     if (url) {
+      const themeCode = parseThemeDeepLink(url);
+      if (themeCode) { sendDeepLinkTheme(themeCode); return; }
       const inviteCode = parseInviteUrl(url);
       if (inviteCode) { sendDeepLinkInvite(inviteCode); return; }
       const refCode = parseReferralUrl(url);
@@ -2620,109 +2776,39 @@ function splashSendProgress(pct: number): void {
     .catch(() => { /* window may be closing */ });
 }
 
-interface Bounds { x: number; y: number; width: number; height: number; }
-
-// Tween a window's bounds from → to over durationMs (easeOutCubic), ~60fps via
-// setBounds. Electron has no native cross-platform resize animation, so we step
-// it manually. Calls onDone when finished (or immediately if the window dies).
-function animateWindowBounds(
-  win: BrowserWindow, from: Bounds, to: Bounds, durationMs: number, onDone: () => void,
-): void {
-  const start = Date.now();
-  const ease = (t: number) => 1 - Math.pow(1 - t, 3);
-  const step = () => {
-    if (!win || win.isDestroyed()) { onDone(); return; }
-    const t = Math.min(1, (Date.now() - start) / durationMs);
-    const e = ease(t);
-    try {
-      win.setBounds({
-        x: Math.round(from.x + (to.x - from.x) * e),
-        y: Math.round(from.y + (to.y - from.y) * e),
-        width: Math.round(from.width + (to.width - from.width) * e),
-        height: Math.round(from.height + (to.height - from.height) * e),
-      });
-    } catch { /* window may be closing */ }
-    if (t < 1) setTimeout(step, 16);
-    else onDone();
-  };
-  step();
-}
-
-// Fires the completion animation, holds on "You're in." for a beat, then grows
-// the splash window into the main window's target footprint and reveals the app.
+// The app is ready: reveal it now. (This used to play a completion animation,
+// hold on "You're in." for 1 s and then grow the splash into the main window
+// for another 0.4-0.7 s - about 1.5 s of waiting with nothing left to wait for,
+// on every first launch after an install or update. Owner, 2026-11-19: no fake
+// loading.)
 function finalizeInstaller(): void {
   if (installerFinalized) return;
   installerFinalized = true;
-  splashSendProgress(99);
-  if (installerSplash && !installerSplash.isDestroyed() && splashReady) {
-    installerSplash.webContents
-      .executeJavaScript('window.clComplete && window.clComplete()')
-      .catch(() => { /* ignore */ });
+  markVersionInstalled();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // When launched from the stub installer, briefly pin the window to the
+    // topmost Z-order (HWND_TOPMOST) so it appears above any existing
+    // foreground app without needing SetForegroundWindow permission.
+    // AllowSetForegroundWindow alone is insufficient because its grant is
+    // revoked the moment the stub process exits and cedes the foreground.
+    const fromStub = process.argv.includes('--fresh-install');
+    if (fromStub) mainWindow.setAlwaysOnTop(true);
+    mainWindow.show();
+    // Re-assert the restored maximised state now that the window is visible
+    // (maximise() applied while hidden can be dropped on show()).
+    if (pendingMainMaximize) { mainWindow.maximize(); pendingMainMaximize = false; }
+    mainWindow.focus();
+    if (fromStub) setTimeout(() => mainWindow?.setAlwaysOnTop(false), 300);
   }
-
-  const revealMain = () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      // When launched from the stub installer, briefly pin the window to the
-      // topmost Z-order (HWND_TOPMOST) so it appears above any existing
-      // foreground app without needing SetForegroundWindow permission.
-      // AllowSetForegroundWindow alone is insufficient because its grant is
-      // revoked the moment the stub process exits and cedes the foreground.
-      const fromStub = process.argv.includes('--fresh-install');
-      if (fromStub) mainWindow.setAlwaysOnTop(true);
-      mainWindow.show();
-      // Re-assert the restored maximised state now that the window is visible
-      // (maximise() applied while hidden can be dropped on show()).
-      if (pendingMainMaximize) { mainWindow.maximize(); pendingMainMaximize = false; }
-      mainWindow.focus();
-      if (fromStub) setTimeout(() => mainWindow?.setAlwaysOnTop(false), 300);
-    }
-    if (installerSplash && !installerSplash.isDestroyed()) installerSplash.close();
-    installerSplash = null;
-  };
-
-  setTimeout(() => {
-    markVersionInstalled();
-    const splash = installerSplash;
-    const main = mainWindow;
-    // No splash, dead window, or a maximised target → just reveal (no grow:
-    // animating toward a maximised/fullscreen footprint reads oddly).
-    if (!splash || splash.isDestroyed() || !main || main.isDestroyed() || pendingMainMaximize) {
-      revealMain();
-      return;
-    }
-    // Grow the splash from screen-centre to the target SIZE (kept centred on
-    // its display), dissolving the card as it expands; then, only if the final
-    // geometry is off-centre (e.g. a restored update position), glide it into
-    // place before revealing the app. Both windows share the abyss background,
-    // so the hand-off is seamless.
-    try { splash.setResizable(true); } catch { /* ignore */ }
-    splash.webContents.executeJavaScript('window.clDissolve && window.clDissolve()').catch(() => {});
-    const startB = splash.getBounds();
-    const targetB = main.getBounds();
-    const wa = screen.getDisplayMatching(startB).workArea;
-    const centredGrown: Bounds = {
-      width: targetB.width,
-      height: targetB.height,
-      x: Math.round(wa.x + (wa.width - targetB.width) / 2),
-      y: Math.round(wa.y + (wa.height - targetB.height) / 2),
-    };
-    const needsSettle = Math.abs(centredGrown.x - targetB.x) > 2 || Math.abs(centredGrown.y - targetB.y) > 2;
-    animateWindowBounds(splash, startB, centredGrown, 420, () => {
-      if (needsSettle && !splash.isDestroyed()) {
-        animateWindowBounds(splash, centredGrown, targetB, 260, revealMain);
-      } else {
-        revealMain();
-      }
-    });
-  }, 1000);
+  if (installerSplash && !installerSplash.isDestroyed()) installerSplash.close();
+  installerSplash = null;
 }
 
 // Gates finalization on the two real startup milestones (secure store ready +
 // main-window renderer painted), with a minimum on-screen time so the
 // completion animation always reads, and a safety timeout so a stuck milestone
 // can never leave the user staring at the splash forever.
-function makeInstallerGate(startTs: number) {
-  const MIN_VISIBLE_MS = 1900;
+function makeInstallerGate() {
   const SAFETY_MS = 20_000;
   const done = { store: false, renderer: false };
   const armSafety = () => setTimeout(() => {
@@ -2733,8 +2819,9 @@ function makeInstallerGate(startTs: number) {
   const maybeFinish = () => {
     if (!done.store || !done.renderer) return;
     clearTimeout(safety);
-    const wait = Math.max(0, MIN_VISIBLE_MS - (Date.now() - startTs));
-    setTimeout(finalizeInstaller, wait);
+    // Straight away: no minimum on-screen time (it was 1.9 s, which only ever
+    // delayed a launch that was already ready).
+    finalizeInstaller();
   };
   return {
     // The Linux wallet prompt is a HUMAN wait (a password, or KDE's wallet
@@ -2854,7 +2941,7 @@ app.whenReady().then(async () => {
       // A populated marker means a prior version was installed → this is an
       // update; an empty marker means a fresh first install.
       installerSplash = createInstallerSplash(prevInstalledVersion !== '');
-      installerGate = makeInstallerGate(Date.now());
+      installerGate = makeInstallerGate();
       splashSendProgress(8);
     } catch (e) {
       // If the splash can't be created, fall back to showing the app normally
@@ -3264,6 +3351,71 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:set-start-minimized', (_e, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('app:set-start-minimized expects a boolean');
     secureStore.set('startMinimized', encodeBoolPref(enabled));
+  });
+
+  // Interface size — the whole renderer↔host contract for UI scale (also what
+  // the Tauri host implements): get, set(step), and the 'ui-scale:changed' event.
+  ipcMain.handle('ui-scale:get', () => uiScale().state('init'));
+  ipcMain.handle('ui-scale:set', (_e, percent: unknown) => {
+    if (!isUiScaleStep(percent)) throw new Error('ui-scale:set expects a UI scale step');
+    return uiScale().set(mainWindow, percent);
+  });
+
+  // Theme (electron/theme-boot.ts host contract; the Tauri host implements the
+  // same): the device's theme id, read before the first React render
+  // (src/theme/engine.ts bootTheme) and by main before `new BrowserWindow`.
+  // Settings → Appearance → Theme stores a preference: a built-in theme id
+  // ('dark' | 'light' | 'midnight' | 'hc-dark' | 'hc-light') or 'system', or
+  // 'custom' through theme:set-custom (theme-custom-boot.ts, below).
+  // `system` follows nativeTheme live (below), High contrast included. The tray icon is NOT
+  // themed on purpose: it sits on the OS taskbar, not on our window, and its
+  // two-tone slash already reads on light and dark taskbars (tray.ts).
+  ipcMain.handle('theme:get', (): CustomAwareThemeState => deviceThemeState());
+  // The preload asks synchronously, before the page loads, so the first paint
+  // (index.html's boot backdrop) is already in the stored theme.
+  // A page (re)load also ends a live preview (renderer memory only): the
+  // reloaded page boots in the stored theme, so the window must too.
+  ipcMain.on('theme:get-sync', (e) => { windowThemePreview.end(); e.returnValue = deviceThemeState(); });
+  ipcMain.handle('theme:set', (_e, pref: unknown): CustomAwareThemeState => {
+    if (!isBootThemePreference(pref)) throw new Error('theme:set expects a built-in theme id or system');
+    try { secureStore.set(THEME_STORE_KEY, pref); } catch { /* store locked: this session only */ }
+    sessionThemePref = pref;
+    const state = deviceThemeState();
+    paintWindowTheme(state);
+    return state;
+  });
+  // A custom theme (src/theme/customTheme.ts; theme-custom-boot.ts): colours as
+  // DATA, validated here (every value #rrggbb, every key known, small), never
+  // CSS and never the theme's name. Stored device-level next to the preference.
+  ipcMain.handle('theme:set-custom', (_e, payload: unknown): CustomAwareThemeState => {
+    const custom = parseCustomBootPayload(payload);
+    if (!custom) throw new Error('theme:set-custom expects a valid custom theme');
+    const json = JSON.stringify(custom);
+    try {
+      secureStore.set(THEME_CUSTOM_STORE_KEY, json);
+      secureStore.set(THEME_STORE_KEY, CUSTOM_THEME_PREF);
+    } catch { /* store locked: this session only */ }
+    sessionThemePref = CUSTOM_THEME_PREF;
+    sessionThemeCustom = json;
+    const state = deviceThemeState();
+    paintWindowTheme(state);
+    return state;
+  });
+  // Live preview (src/theme/engine.ts startThemePreview): paint the window
+  // background / caption buttons from a custom theme payload (validated exactly
+  // as theme:set-custom), STORING NOTHING - no SecureStore write, no session
+  // preference, no theme:changed. Kept apart from theme:set on purpose.
+  ipcMain.handle('theme:preview', (_e, payload: unknown): boolean => {
+    if (!windowThemePreview.start(payload)) throw new Error('theme:preview expects a valid custom theme');
+    return true;
+  });
+  ipcMain.handle('theme:preview-end', (): boolean => windowThemePreview.end());
+  // Sync with system: the OS flipped light/dark (Windows "Choose your mode",
+  // macOS appearance, GNOME/KDE colour scheme via the portal) or turned high
+  // contrast on/off (Windows High Contrast, macOS Increase contrast).
+  nativeTheme.on('updated', () => {
+    const state = deviceThemeState();
+    if (state.pref === 'system') paintWindowTheme(state);
   });
 
   ipcMain.handle('app:get-minimize-to-tray', () => {
@@ -4224,6 +4376,11 @@ app.whenReady().then(async () => {
     secureStore.set(KEYPROT_ACK_KEY, keyProtectionNoticeToken(secureStore.keyProtection()));
     return true;
   });
+
+  // "Import from Discord" (structure only): the user's own Discord BOT token is
+  // kept in SecureStore and used from THIS process only (electron/discord-import/).
+  // The renderer never receives it back, and Cipherline's servers never see it.
+  registerDiscordImportIpc(ipcMain, { store: secureStore, onRunningChange: (running) => discordImportQuitGuard.setRunning(running) });
 
   // Linux wallet prompt (keyring-prompt.ts). What the system wallet did when the
   // first safeStorage call asked it to open: enums and flags only, no key
@@ -5328,18 +5485,51 @@ app.whenReady().then(async () => {
       ? { ok: true, watching: true }
       : { ok: false, reason: 'unsupported' };
   };
+  const holdBackend = () => holdKeyBackend(process.platform, process.env, process.platform === 'linux' && isNativeWaylandClient(process.env, gsOzone()));
   const globalHold = new GlobalHoldKeyWatcher(
     () => audioCaptureAddon,
-    () => holdKeyBackend(process.platform, process.env, process.platform === 'linux' && isNativeWaylandClient(process.env, gsOzone())),
+    holdBackend,
     (slot, down) => sendHoldState(slot, down),
     portalSetHold,
+  );
+  // Windows: a game running elevated ("as administrator") while we are not hides the key state from the poll
+  // (UIPI). Watched only while a native hold watch runs; the renderer shows a one-line hint on a change.
+  const holdElevation = new ForegroundElevationMonitor(
+    () => audioCaptureAddon?.getForegroundElevation?.(),
+    (blocked) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('hold-key:elevation', blocked); },
+  );
+  const syncHoldElevation = () => holdElevation.setRunning(
+    process.platform === 'win32' && globalHold.watchingNatively && typeof audioCaptureAddon?.getForegroundElevation === 'function',
   );
   ipcMain.handle('hold-key:set', async (event, slot: unknown, combo: unknown) => {
     if (!isTrustedSender(event)) return { ok: false, reason: 'failed' };
     if (!isHoldSlot(slot)) return { ok: false, reason: 'bad-key' };
-    return globalHold.setKey(slot, combo);
+    const r = await globalHold.setKey(slot, combo);
+    syncHoldElevation();
+    return r;
   });
-  app.on('will-quit', () => globalHold.stop());
+  // Dry run for Settings / Keybinds: would this key work while another app has focus here? Starts nothing.
+  ipcMain.handle('hold-key:check', (event, combo: unknown) => {
+    if (!isTrustedSender(event)) return null;
+    return holdKeySupport(combo, holdBackend(), typeof audioCaptureAddon?.watchKeys === 'function');
+  });
+  // For the problem report: backend, what each live watch did, and the elevated-foreground state. No key text.
+  ipcMain.handle('hold-key:diagnostics', (event) => {
+    if (!isTrustedSender(event)) return null;
+    const backend = holdBackend();
+    const results = globalHold.results();
+    const live: Partial<Record<HoldSlot, ReturnType<typeof supportFromResult>>> = {};
+    for (const s of HOLD_SLOTS) { const r = results[s]; if (r) live[s] = supportFromResult(r, backend); }
+    return {
+      backend: backendName(backend),
+      nativeWatcher: typeof audioCaptureAddon?.watchKeys === 'function',
+      elevationCheck: typeof audioCaptureAddon?.getForegroundElevation === 'function',
+      foregroundBlocked: holdElevation.isBlocked,
+      adminGame: holdElevation.lastGame,
+      live,
+    };
+  });
+  app.on('will-quit', () => { globalHold.stop(); holdElevation.setRunning(false); });
 
   // --- Screen Lock: notify the renderer when the OS locks/sleeps ---
   // 'lock-screen' fires on Windows + macOS only; 'suspend' fires everywhere
@@ -6069,6 +6259,27 @@ app.whenReady().then(async () => {
     }
   }
 
+  // Native "Strong" noise suppression (DeepFilterNet): the engine lives in a utilityProcess, the page's AudioWorklet talks to it over a
+  // MessagePort (electron/audio-engine-ipc.ts). Available only when the addon AND the model file are present; otherwise the page keeps
+  // Strong on Light. Paths are pinned here and never taken from the renderer.
+  {
+    const unpacked = (p: string) => (app.isPackaged ? p.replace(/app\.asar([\\/])/, 'app.asar.unpacked$1') : p);
+    const modelName = 'DeepFilterNet3_ll_onnx.tar.gz';
+    const audioEngine: AudioEngineController = registerAudioEngineIpc({
+      ipc: ipcMain as never,
+      fork: (hostPath) => utilityProcess.fork(hostPath, [], { serviceName: 'Cipherline audio engine', stdio: 'ignore' }) as never,
+      newChannel: () => new MessageChannelMain() as never,
+      files: {
+        host: path.join(__dirname, 'audio-engine-host.js'),
+        addon: unpacked(path.join(__dirname, '../build/Release/cl_audio_node.node')),
+        model: app.isPackaged ? path.join(process.resourcesPath, 'dfn', modelName) : path.join(__dirname, '../resources/dfn', modelName),
+      },
+      exists: (p) => fs.existsSync(p),
+      log: (l) => console.log('[AudioEngine]', l),
+    });
+    app.on('will-quit', () => audioEngine.stop());
+  }
+
   // Renderer capability probe — lets the screenshare audio path decide at runtime
   // whether to go through the native WASAPI addon (Windows) or fall back to
   // Electron/Chromium's getDisplayMedia audio (other platforms / missing addon).
@@ -6119,10 +6330,15 @@ app.whenReady().then(async () => {
         : null,
       process.env.XDG_CURRENT_DESKTOP,
     );
+    // The display the app window is mostly on (the Firewall hitch probe's rows say which
+    // refresh rate the window runs against on a mixed-rate multi-monitor setup).
+    let hostId: number | null = null;
+    try { if (mainWindow && !mainWindow.isDestroyed()) hostId = screen.getDisplayMatching(mainWindow.getBounds()).id; } catch { /* no window yet */ }
     return (await displaysWithRealRefresh()).map(d => ({
       id: String(d.id),
       displayFrequency: d.displayFrequency ?? 0,
       isPrimary: d.id === screen.getPrimaryDisplay().id,
+      hostsWindow: hostId !== null && d.id === hostId,
       captureFpsCeiling: ceiling,
     }));
   });
@@ -6274,6 +6490,40 @@ app.whenReady().then(async () => {
       captureFpsCeiling: captureFpsCeiling(capturer.backend, process.env.XDG_CURRENT_DESKTOP),
       captureLog: CAPTURE_LOG_ENABLED,
     };
+  });
+
+  // A WINDOW share Windows would not capture (src/utils/windowShareFallback.ts): where the
+  // window is and which screen sources hold it, so the renderer can capture that monitor
+  // cropped to the window, or offer the whole screen. Windows only, read-only, geometry and
+  // booleans only (never a title), and only for a window the picker offered (the same
+  // admission rule as audio:get-pid-from-source-id). Screens are listed without thumbnails.
+  // `windowOnly`: the window's state alone (the crop-follow tick, which keeps the screen list it got once).
+  ipcMain.handle('screen-share:window-geometry', async (_event, sourceId: unknown, windowOnly?: unknown) => {
+    if (process.platform !== 'win32' || typeof sourceId !== 'string' || !sourceId.startsWith('window:')) return null;
+    if (!cachedDesktopSources.some(s => s.id === sourceId)) return null;
+    const addon = audioCaptureAddon as unknown as {
+      getWindowInfo?: (hwnd: string) => unknown;
+      getScreenRectFromDeviceIndex?: (index: number) => unknown;
+    } | null;
+    const hwnd = parseWindowSourceHandle(sourceId);
+    let window: WindowInfo | null = null;
+    if (hwnd && typeof addon?.getWindowInfo === 'function') {
+      try { window = cleanWindowInfo(addon.getWindowInfo(hwnd)); } catch { window = null; }
+    }
+    const screens: Array<{ sourceId: string; rect: { x: number; y: number; width: number; height: number } }> = [];
+    if (windowOnly !== true && typeof addon?.getScreenRectFromDeviceIndex === 'function') {
+      try {
+        const listed = await desktopSources.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        for (const s of listed) {
+          const index = parseScreenSourceIndex(s.id);
+          if (index === null) continue;
+          let rect = null;
+          try { rect = cleanRect(addon.getScreenRectFromDeviceIndex(index)); } catch { rect = null; }
+          if (rect) screens.push({ sourceId: s.id, rect });
+        }
+      } catch { /* no screens: the renderer offers what it can */ }
+    }
+    return { window, screens };
   });
 
   // Startup flags (Settings → Advanced → screen capture). `saved` is what
@@ -6471,7 +6721,8 @@ app.whenReady().then(async () => {
       beginQuit('relaunch');
       installRequested = true;
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-      applyingUpdate.show(updateState.version);
+      // No popup: the app closes, the installer runs, and it reopens itself
+      // (quitAndInstall's forceRunAfter). Owner 2026-11-19.
       applyingUpdate.install(() => autoUpdater.quitAndInstall(true, true));
       return;
     }
@@ -6935,18 +7186,15 @@ app.whenReady().then(async () => {
     attemptPath: () => path.join(app.getPath('userData'), INSTALL_ATTEMPT_FILE),
     beginQuit: (trigger) => beginQuit(trigger),
     markInstallRequested: () => { installRequested = true; },
-    showInstallingUi: (version) => {
+    // Nothing is shown while the update installs: the app just closes and the
+    // installer reopens it on the new version (forceRunAfter). Owner 2026-11-19:
+    // "what about just opening it after it was closed?" - no popup, no splash,
+    // no hold.
+    showInstallingUi: () => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-      // The small "Applying update" popup; only if it cannot be shown does the
-      // legacy installing splash take its place.
-      if (applyingUpdate.show(version)) return;
-      try {
-        if (!installerSplash || installerSplash.isDestroyed()) installerSplash = createInstallerSplash(true);
-        splashSendProgress(40);
-      } catch (e) { console.warn('[Main/Updater] installing splash unavailable:', (e as Error)?.message || e); }
     },
     quitAndInstall: () => autoUpdater.quitAndInstall(true, true),
-    // Held ~1.8 s behind the popup when it is up; next tick when it is not.
+    // Next tick (never held back).
     defer: (fn) => applyingUpdate.install(fn),
     onInstallStalled: () => autoUpdater.emit('error', new Error('the update installer did not take over in time')),
     log: (line) => console.log(line),
@@ -7335,12 +7583,11 @@ app.whenReady().then(async () => {
     // Hide the main window immediately so the old app doesn't bleed through
     // behind the NSIS installer dialog while it waits for windows to close.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-    // "Applying update" popup for ~1.8 s when a download is ready (nothing is
-    // shown otherwise). Either way the install runs on a LATER tick, so this
-    // IPC handler returns before quitAndInstall starts closing windows. Calling
-    // it synchronously deadlocks: the renderer is blocked waiting for the IPC
-    // reply while the main process is waiting for windows to close.
-    if (updateState.phase === 'ready') applyingUpdate.show(updateState.version);
+    // No popup; the app reopens itself after the install (forceRunAfter). The
+    // install runs on a LATER tick so this IPC handler returns before
+    // quitAndInstall starts closing windows. Calling it synchronously deadlocks:
+    // the renderer is blocked waiting for the IPC reply while the main process
+    // is waiting for windows to close.
     applyingUpdate.install(() => autoUpdater.quitAndInstall(false, true));
   });
   ipcMain.handle('updater:get-channel', () => {
@@ -7594,7 +7841,9 @@ app.whenReady().then(async () => {
   const coldStartUrl = extractDeepLinkFromArgv(process.argv);
   if (coldStartUrl) {
     const inviteCode = parseInviteUrl(coldStartUrl);
-    if (inviteCode) { pendingDeepLinkCode = inviteCode; }
+    const themeCode = parseThemeDeepLink(coldStartUrl);
+    if (themeCode) { pendingDeepLinkTheme = themeCode; }
+    else if (inviteCode) { pendingDeepLinkCode = inviteCode; }
     else {
       const refCode = parseReferralUrl(coldStartUrl);
       if (refCode) pendingDeepLinkRef = refCode;

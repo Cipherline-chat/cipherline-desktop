@@ -3,50 +3,72 @@ import { LogOut } from 'lucide-react';
 import { ClButton } from './cl';
 import SlottedCodeInput, { type SlottedCodeInputHandle } from './SlottedCodeInput';
 import { useAuth } from '../contexts/AuthContext';
-import type { ScreenLockHook } from '../hooks/useScreenLock';
+import { SCREEN_LOCK_LOCKOUT_MS, SCREEN_LOCK_MAX_ATTEMPTS, type ScreenLockHook } from '../hooks/useScreenLock';
 import LockScreenField from './LockScreenField';
 import { isolateFromLock, trapTabWithin } from '../utils/lockIsolation';
+import { useTheme } from '../theme/engine';
 import '../styles/screen-lock.css';
 
 /**
  * The padlock. Drawn here (not an icon-font glyph) so the shackle can move and
  * the whole thing can take the state of the lock: lume when waiting, red after a
- * wrong PIN or while cooling down. The keyhole is cut out in the backdrop's own
- * navy so it reads as a hole on any background.
+ * wrong PIN or while cooling down. Body and shackle colours read a `--sl-*`
+ * variable first and fall back to the Dark value written here: Light and High
+ * contrast light set them from theme tokens (styles/screen-lock.css), the dark
+ * themes set none. The keyhole is the Keys mascot's navy ink in every theme, so
+ * it reads as a hole on any body colour.
  */
 const Padlock: React.FC<{ state: 'idle' | 'typing' | 'bad' | 'cool' }> = ({ state }) => {
     const bad = state === 'bad' || state === 'cool';
-    const top = bad ? '#FF8A85' : '#5CF0DC';
-    const bottom = bad ? '#E5484D' : '#14B8A4';
+    const top = bad ? 'var(--sl-bad-top, #FF8A85)' : 'var(--sl-top, #5CF0DC)';
+    const bottom = bad ? 'var(--sl-bad-bottom, #E5484D)' : 'var(--sl-bottom, #14B8A4)';
+    const shackle = bad ? 'var(--sl-bad-shackle, #FF8A85)' : 'var(--sl-shackle, #A7F3EA)';
     return (
         <div className={`sl-lock${state === 'bad' ? ' is-bad' : ''}${state === 'cool' ? ' is-cool' : ''}${state === 'typing' ? ' is-typing' : ''}`} aria-hidden="true">
             <div className="sl-lock-glow" />
             <svg className="sl-lock-svg" viewBox="0 0 96 96" fill="none">
                 <defs>
                     <linearGradient id="sl-body" x1="48" y1="40" x2="48" y2="88" gradientUnits="userSpaceOnUse">
-                        <stop offset="0" stopColor={top} />
-                        <stop offset="1" stopColor={bottom} />
+                        <stop offset="0" style={{ stopColor: top }} />
+                        <stop offset="1" style={{ stopColor: bottom }} />
                     </linearGradient>
                 </defs>
                 {/* Shackle: a rounded arch that disappears into the body. */}
                 <path
                     className="sl-shackle"
                     d="M30 46 V33 a18 18 0 0 1 36 0 V46"
-                    stroke={bad ? '#FF8A85' : '#A7F3EA'}
+                    style={{ stroke: shackle }}
                     strokeWidth="7"
                     strokeLinecap="round"
                 />
                 {/* Body */}
                 <rect x="17" y="42" width="62" height="46" rx="15" fill="url(#sl-body)" />
                 {/* Top-edge sheen */}
-                <path d="M21 56 a13 13 0 0 1 13 -12 h28" stroke="#FFFFFF" strokeOpacity=".28" strokeWidth="2.4" strokeLinecap="round" />
+                <path d="M21 56 a13 13 0 0 1 13 -12 h28" style={{ stroke: 'var(--cl-pure-white)' }} strokeOpacity=".28" strokeWidth="2.4" strokeLinecap="round" />
                 {/* Keyhole */}
-                <circle cx="48" cy="62" r="6.2" fill="#0B0F1E" />
-                <rect x="45.4" y="64" width="5.2" height="12" rx="2.6" fill="#0B0F1E" />
+                <circle cx="48" cy="62" r="6.2" style={{ fill: 'var(--cl-keys-ink)' }} />
+                <rect x="45.4" y="64" width="5.2" height="12" rx="2.6" style={{ fill: 'var(--cl-keys-ink)' }} />
             </svg>
         </div>
     );
 };
+
+/**
+ * Light-scheme backdrop art (Light, High contrast light, light custom themes):
+ * the website's light look instead of Dark's sea of dots. The soft peach /
+ * mint / amber washes on the cream ground are painted by `.sl-root`
+ * (styles/screen-lock.css); these are the few slow-bobbing dots of the site's
+ * closing card. Decorative only: High contrast hides them, reduced motion
+ * stills them.
+ */
+const LightArt: React.FC = () => (
+    <div className="sl-art" aria-hidden="true">
+        <span className="sl-art-dot sl-art-dot--amber" />
+        <span className="sl-art-dot sl-art-dot--teal" />
+        <span className="sl-art-dot sl-art-dot--coral" />
+        <span className="sl-art-dot sl-art-dot--mint" />
+    </div>
+);
 
 /**
  * Full-viewport gate shown whenever `screenLock.isLocked` is true — visually
@@ -66,10 +88,13 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
     const { logout } = useAuth();
     const [pin, setPin] = useState('');
     const [error, setError] = useState(false);
+    const [wrongShown, setWrongShown] = useState(false);
     const [busy, setBusy] = useState(false);
     const [confirmingSignOut, setConfirmingSignOut] = useState(false);
     const [cooldownSecs, setCooldownSecs] = useState(0);
     const [fieldLive, setFieldLive] = useState(false);
+    // Light-scheme themes get their own backdrop (LightArt) and never start the dot field.
+    const lightScheme = useTheme().scheme === 'light';
     const codeInputRef = useRef<SlottedCodeInputHandle>(null);
     const rootRef = useRef<HTMLDivElement>(null);
     // What had focus when the lock came up (read once, before this mounts).
@@ -121,6 +146,20 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
         return () => { window.clearInterval(id); setCooldownSecs(0); };
     }, [screenLock.lockedOutUntil]);
 
+    // The PIN input is disabled during the cooldown, which drops its focus, and
+    // nothing gave it back: after the 30 s you had to click before typing. Hand
+    // focus back the moment the cooldown ends (the input is enabled by then:
+    // effects run after the commit that re-enables it).
+    const prevCooldown = useRef(0);
+    useEffect(() => {
+        const was = prevCooldown.current;
+        prevCooldown.current = cooldownSecs;
+        if (was > 0 && cooldownSecs === 0) {
+            setWrongShown(false); // the count starts over: no stale "Wrong PIN" under a fresh set of tries
+            codeInputRef.current?.focus();
+        }
+    }, [cooldownSecs]);
+
     const attempt = async (code: string) => {
         if (busy || cooldownSecs > 0) return;
         setBusy(true);
@@ -128,10 +167,27 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
         setBusy(false);
         if (!ok) {
             setError(true);
+            setWrongShown(true);
             setPin('');
             setTimeout(() => setError(false), 500);
         }
     };
+
+    // The red flash (`error`) lasts 500 ms; the message stays until the next digit
+    // is typed, so it can actually be read (it used to vanish with the flash).
+    const onPinChange = (v: string) => {
+        if (v.length > 0) setWrongShown(false);
+        setPin(v);
+    };
+    const triesLeft = Math.max(0, SCREEN_LOCK_MAX_ATTEMPTS - screenLock.attempts);
+    const lockoutSecs = Math.round(SCREEN_LOCK_LOCKOUT_MS / 1000);
+    const statusText = cooldownSecs > 0
+        ? `Too many attempts. Try again in ${cooldownSecs}s.`
+        : wrongShown
+            ? triesLeft === 1
+                ? `Wrong PIN. 1 try left, then a ${lockoutSecs}-second wait.`
+                : `Wrong PIN. ${triesLeft} tries left.`
+            : '';
 
     const handleForgotPin = () => {
         screenLock.forgotPinReset();
@@ -145,20 +201,22 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
         <div
             ref={rootRef}
             data-screen-lock
+            // The backdrop is painted by `.sl-root` (styles/screen-lock.css):
+            // always an opaque theme colour; in the dark themes the loading
+            // screen's own gradient once its dots are up (`is-live`: they are
+            // drawn on a transparent canvas), in the light ones the light art.
+            className={`sl-root${fieldLive ? ' is-live' : ''}`}
             onClick={() => codeInputRef.current?.focus()}
             style={{
                 position: 'fixed', inset: 0, zIndex: 999999,
-                // The loading screen's own backdrop once its dots are up (they
-                // are drawn on a transparent canvas); the flat abyss otherwise.
-                background: fieldLive
-                    ? 'linear-gradient(180deg, #131A30 0%, #0F1526 45%, #0B0F1E 100%)'
-                    : 'var(--cl-abyss)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
                 overflow: 'hidden',
             }}
         >
-            {/* The loading screen's dots, behind everything (see LockScreenField). */}
-            <LockScreenField onLive={setFieldLive} />
+            {/* Dark-scheme themes: the loading screen's dots, behind everything
+                (see LockScreenField). Light-scheme themes never start it (its
+                light-on-dark dots are made for the deep) and draw LightArt. */}
+            {lightScheme ? <LightArt /> : <LockScreenField onLive={setFieldLive} />}
 
             <div className="sl-stage">
                 <Padlock state={lockState} />
@@ -180,7 +238,7 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
                     <SlottedCodeInput
                         ref={codeInputRef}
                         value={pin}
-                        onChange={setPin}
+                        onChange={onPinChange}
                         onAutoSubmit={attempt}
                         disabled={busy || cooldownSecs > 0}
                         error={error}
@@ -189,12 +247,8 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
                         length={screenLock.settings.pinLength}
                     />
 
-                    <p className={`sl-status${cooldownSecs > 0 || error ? ' is-bad' : ''}`} role="status">
-                        {cooldownSecs > 0
-                            ? `Too many attempts. Try again in ${cooldownSecs}s.`
-                            : error
-                                ? 'Wrong PIN. Try again.'
-                                : ''}
+                    <p className={`sl-status${statusText ? ' is-bad' : ''}`} role="status">
+                        {statusText}
                     </p>
 
                     <div className="sl-divider" />

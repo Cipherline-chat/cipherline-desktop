@@ -15,6 +15,7 @@
  * the server will refuse. It decides nothing: a stale or tampered client still
  * gets a 403 from the API.
  */
+import { foldForMatch } from '../../../utils/mentionSuggestions';
 import { Permissions, hasPermission } from '@cipherline/shared';
 
 /** Above this many rows the picker / role list grows a search box. */
@@ -54,9 +55,10 @@ export function shouldShowRoleSearch(rowCount: number): boolean {
 
 /** Case-insensitive substring match on the role name. Blank query = everything. */
 export function filterRolesByQuery<T extends { name: string }>(roles: readonly T[], query: string): T[] {
-    const q = query.trim().toLocaleLowerCase();
+    // Folded on both sides so plain typing finds decorative names ("aes" finds 𝓐𝓮𝓼𝓽𝓱𝓮𝓽𝓲𝓬).
+    const q = foldForMatch(query).trim();
     if (!q) return [...roles];
-    return roles.filter(r => r.name.toLocaleLowerCase().includes(q));
+    return roles.filter(r => foldForMatch(r.name).includes(q));
 }
 
 /** MANAGE_ROLES or ADMINISTRATOR — the same bits `requireServerPermission` accepts. */

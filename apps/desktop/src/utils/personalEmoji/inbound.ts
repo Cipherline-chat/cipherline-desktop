@@ -1,5 +1,6 @@
 import { personalEmojis } from './service';
 import { takePersonalEmojis } from './wire';
+import { takeSticker } from '../stickers/wire';
 import { releaseParkedStatusEmoji, takeStatusEmoji, type TakeStatusEmojiCtx } from './statusEmoji';
 
 /**
@@ -10,7 +11,9 @@ import { releaseParkedStatusEmoji, takeStatusEmoji, type TakeStatusEmojiCtx } fr
  * emoji component re-resolves when they do.
  */
 export function ingestInboundContent<T>(content: T): T {
-    return takePersonalEmojis(content, personalEmojis().store).content;
+    // A sticker's bytes go into the same store (stickers/wire.ts).
+    const store = personalEmojis().store;
+    return takeSticker(takePersonalEmojis(content, store).content, store).content;
 }
 
 /**

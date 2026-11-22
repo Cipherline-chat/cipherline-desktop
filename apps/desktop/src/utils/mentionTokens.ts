@@ -20,7 +20,7 @@
  * drift.
  */
 
-import type { MentionEntry } from '@cipherline/shared';
+import { graphemesOf, type MentionEntry } from '@cipherline/shared';
 import { stripBidiControls } from './fileSafety';
 
 /**
@@ -44,6 +44,27 @@ import { stripBidiControls } from './fileSafety';
  */
 export const MENTION_TOKEN_ID_MAX = 64;
 export const MENTION_TOKEN_LABEL_MAX = 128;
+
+/**
+ * The label a role / user NAME is written into a token with. Decorative names
+ * (server roles may hold any symbol) can contain the token's own terminator
+ * `>` and, as emoji sequences or maths-alphabet letters, run past the label
+ * bound in UTF-16 units. An unparseable token is shown as raw text and stops
+ * being a mention, so the label is made safe instead: `>` becomes U+203A (a
+ * single right-pointing angle quotation mark) and the label is clipped on a
+ * grapheme boundary to MENTION_TOKEN_LABEL_MAX units. Ordinary names pass
+ * through unchanged.
+ */
+export function mentionTokenLabel(name: string): string {
+    const safe = name.replace(/>/g, '\u203A');
+    if (safe.length <= MENTION_TOKEN_LABEL_MAX) return safe;
+    let out = '';
+    for (const g of graphemesOf(safe)) {
+        if (out.length + g.length > MENTION_TOKEN_LABEL_MAX) break;
+        out += g;
+    }
+    return out;
+}
 
 const MENTION_TOKEN_RE = /(<@[ur]:[^:>]{1,64}:[^>]{1,128}>|<:[^:>]{1,64}:[^>]{1,128}>|@everyone|@here)/g;
 

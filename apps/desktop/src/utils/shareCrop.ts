@@ -55,7 +55,7 @@ import {
     runCropPipe, cropVideoFrame,
     type CropSize, type CropStats, type CropDeps,
 } from './shareCropTransform';
-import type { ShareLayout } from './shareLayout';
+import type { CropLayout } from './shareLayout';
 
 interface ProcessorLike { readable: ReadableStream<VideoFrame> }
 interface GeneratorLike extends MediaStreamTrack { writable: WritableStream<VideoFrame> }
@@ -106,7 +106,7 @@ export interface CropPipeline {
     /** Where the crop runs and, if it fell back to the main thread, why. */
     diag(): CropDiag;
     /** Switch screens (or to the uncropped whole display) from the next frame on. */
-    setLayout(layout: ShareLayout): void;
+    setLayout(layout: CropLayout): void;
     /** Whole-display and output size, first at the first frame and on every change. Returns the unsubscribe. */
     onSize(cb: (size: CropSize) => void): () => void;
     /** The display capture ended on its own (window closed, display unplugged, system "stop sharing"). */
@@ -154,7 +154,7 @@ const defaultWorker = (): CropWorkerLike => {
 
 export function createCropPipeline(
     source: MediaStreamTrack,
-    layout: ShareLayout,
+    layout: CropLayout,
     deps: CropPipelineDeps = {},
 ): CropPipeline {
     const Processor = deps.Processor ?? g.MediaStreamTrackProcessor;

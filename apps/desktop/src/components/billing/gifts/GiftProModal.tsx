@@ -42,7 +42,9 @@ import {
     type GiftPurchaseResult,
 } from '@cipherline/shared';
 import { ClButton, ClModal, ClSearch, ClSkeleton } from '../../cl';
-import { STRIPE_APPEARANCE, STRIPE_FONTS } from '../stripeAppearance';
+import { STRIPE_FONTS } from '../stripeAppearance';
+import { stripeAppearanceFor } from '../stripeThemeAppearance';
+import { getTheme } from '../../../theme/engine';
 import { DESKTOP_PAYMENT_ELEMENT_OPTIONS, desktopPaymentMethodTypes } from '../checkoutPaymentMethods';
 import { GiftBox } from './GiftBox';
 import { useGiftActions, type GiftFriend } from './GiftActionsContext';
@@ -185,7 +187,7 @@ export const GiftProModal: React.FC<GiftProModalProps> = ({ onClose, initialReci
         currency: offer.currency,
         // card + link on desktop, always explicit (see checkoutPaymentMethods.ts).
         paymentMethodTypes: desktopPaymentMethodTypes(config.payment_method_types),
-        appearance: STRIPE_APPEARANCE,
+        appearance: stripeAppearanceFor(getTheme()),
         fonts: STRIPE_FONTS,
     } : null), [config, offer]);
 
@@ -560,7 +562,7 @@ const PayForm: React.FC<PayStepProps> = ({ offer, automaticTax, recipient, api, 
                 </div>
                 {phase === 'finishing' ? (
                     <div className="gft-wait" role="status">
-                        <Loader2 size={22} className="animate-spin" style={{ color: 'var(--cl-lume)' }} aria-hidden />
+                        <Loader2 size={22} className="animate-spin" style={{ color: 'var(--cl-lume-text)' }} aria-hidden />
                         <b>Payment received</b>
                         <span>Wrapping your gift…</span>
                     </div>
@@ -700,7 +702,7 @@ export const GiftSlowPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         <ModalHead title="Almost there" sub="Your gift is on its way through." />
         <div className="gft-m-body">
             <div className="gft-wait" role="status">
-                <Loader2 size={22} className="animate-spin" style={{ color: 'var(--cl-glow)' }} aria-hidden />
+                <Loader2 size={22} className="animate-spin" style={{ color: 'var(--cl-glow-text)' }} aria-hidden />
                 <b>Payment received, finishing up</b>
                 <span>
                     It’ll appear under Sent gifts in Settings → Subscription, where you can send the card. Please don’t pay again.

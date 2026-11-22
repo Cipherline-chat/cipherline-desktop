@@ -5,6 +5,8 @@ import {
     FileText, Music, Archive, File, Flag, Ticket,
 } from 'lucide-react';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { importedAuthorView, displayTimeMs } from '../utils/importedAuthor';
+import { ImportedAuthorAvatar } from './server/discordImport/ImportedAuthor';
 import { useAuth } from '../contexts/AuthContext';
 import ClButton from './ClButton';
 import { useEscape } from '../hooks/useEscape';
@@ -137,7 +139,7 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                 redundant. */}
             {isCallOverlay && (
                 <div className="flex items-center gap-2 px-4 py-3 bg-cl-surface border-b border-white/[0.06] shrink-0">
-                    <Pin className="w-4 h-4 shrink-0" style={{ color: 'var(--cl-lume)' }} />
+                    <Pin className="w-4 h-4 shrink-0" style={{ color: 'var(--cl-lume-text)' }} />
                     <div className="flex-1 min-w-0">
                         <p className="text-[13px] font-semibold leading-tight" style={{ color: 'var(--cl-text)' }}>Pinned Messages</p>
                         <p className="text-[11px] leading-tight mt-0.5" style={{ color: 'var(--cl-faint)' }}>Search via the bar above</p>
@@ -195,10 +197,15 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                         }
 
                         const isMe = myDeviceIds.has(msg.sender_device_id);
+                        // Imported history (plan B6.2): the original author, ONLY on a
+                        // server-marked row whose content matches the mark.
+                        const imported = importedAuthorView(msg, Object.values(userIdToUsername ?? {}));
+                        const unclaimed = imported?.kind === 'unclaimed' ? imported : null;
                         // F4: the user id names the sender; the device id is
                         // the sender's own claim, used only when there is none.
                         const senderName =
-                            isMe ? (user?.username ?? 'You')
+                            unclaimed ? unclaimed.name
+                            : isMe ? (user?.username ?? 'You')
                             : (msg.sender_user_id ? userIdToUsername[msg.sender_user_id] : deviceToUsername[msg.sender_device_id])
                             ?? 'Unknown';
 
@@ -213,8 +220,9 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                             isMe ? (user?.user_id ?? null)
                             : (msg.sender_user_id ?? null);
 
-                        const ts = msg.timestamp
-                            ? new Date(msg.timestamp).toLocaleDateString([], {
+                        const shownMs = displayTimeMs(msg);
+                        const ts = Number.isFinite(shownMs)
+                            ? new Date(shownMs).toLocaleDateString([], {
                                 month: 'short',
                                 day: 'numeric',
                                 year: 'numeric',
@@ -243,6 +251,9 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                             <div key={id} className="group relative flex gap-3 py-3 px-4 hover:bg-white/[0.03] transition-colors">
                                 {/* Avatar — userId drives the deterministic colored silhouette
                                     fallback when no picture is available. */}
+                                {unclaimed ? (
+                                    <ImportedAuthorAvatar authorRef={unclaimed.authorRef} name={unclaimed.name} avatar={unclaimed.avatar} token={token} size={32} className="mt-0.5 ring-1 ring-white/5" />
+                                ) : (
                                 <EncryptedAvatar
                                     attachmentId={avatarId}
                                     userId={senderUserId}
@@ -251,11 +262,13 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                                     fallbackSize={18}
                                     disableClickProfile
                                 />
+                                )}
 
                                 {/* Content */}
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-baseline gap-2 mb-1">
                                         <span className="text-[13px] font-semibold truncate" style={{ color: 'var(--cl-text)' }}>{senderName}</span>
+                                        {unclaimed?.suffix && <span className="text-[11px] shrink-0" style={{ color: 'var(--cl-faint)' }}>· {unclaimed.suffix}</span>}
                                         <span className="text-[11px] shrink-0" style={{ color: 'var(--cl-faint)' }}>{ts}</span>
                                     </div>
 

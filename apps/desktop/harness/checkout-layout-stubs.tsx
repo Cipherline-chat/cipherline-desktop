@@ -16,10 +16,22 @@ export const useStripe = () => fakeStripe;
 const elementsFake = { submit: async () => ({}), update: (o: any) => { (window as any).__elementsUpdate = o; } };
 export const useElements = () => elementsFake;
 
+/** The Elements appearance the app passed (theme coverage audit): the stub paints with it, like the real iframe. */
+const ap = () => {
+    const a = (window as any).__elementsOptions?.appearance ?? {};
+    const v = a.variables ?? {}; const r = a.rules ?? {};
+    const inp = r['.Input'] ?? {}; const sel = r['.Tab--selected'] ?? {};
+    return {
+        field: inp.backgroundColor ?? '#0F1424', edge: inp.border ?? '1px solid rgba(255,255,255,0.08)',
+        text: v.colorText ?? '#E8ECF4', label: (r['.Label'] ?? {}).color ?? v.colorTextSecondary ?? '#9AA4B8',
+        sel: sel.borderColor ?? '#25E0C8',
+    };
+};
+
 const input = (label: string, value: string): React.ReactNode => (
     <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ font: '600 12px Nunito, sans-serif', color: '#9AA4B8', marginBottom: 4 }}>{label}</div>
-        <div style={{ height: 40, boxSizing: 'border-box', borderRadius: 12, background: '#0F1424', border: '1px solid rgba(255,255,255,0.08)', padding: '0 12px', display: 'flex', alignItems: 'center', font: '400 15px Nunito, sans-serif', color: '#E8ECF4' }}>{value}</div>
+        <div style={{ font: '600 12px Nunito, sans-serif', color: ap().label, marginBottom: 4 }}>{label}</div>
+        <div style={{ height: 40, boxSizing: 'border-box', borderRadius: 12, background: ap().field, border: ap().edge, padding: '0 12px', display: 'flex', alignItems: 'center', font: '400 15px Nunito, sans-serif', color: ap().text }}>{value}</div>
     </div>
 );
 
@@ -34,19 +46,19 @@ export const PaymentElement = ({ onReady, onChange, onFocus, onBlur, onEscape }:
         onChange?.({ complete: true });
     }, []); // eslint-disable-line
     return (
-        <div data-testid="stripe-stub" style={{ display: 'flex', flexDirection: 'column', gap: 14, font: '400 14px Nunito, sans-serif', color: '#E8ECF4' }}>
-            <div style={{ borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)', background: '#0F1424', padding: '12px 14px' }}>
+        <div data-testid="stripe-stub" style={{ display: 'flex', flexDirection: 'column', gap: 14, font: '400 14px Nunito, sans-serif', color: ap().text }}>
+            <div style={{ borderRadius: 12, border: ap().edge, background: ap().field, padding: '12px 14px' }}>
                 <div style={{ font: '700 13px Nunito, sans-serif', marginBottom: 8 }}>Secure, fast checkout with Link</div>
                 {input('Email', 'dawson@example.com')}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ height: 54, width: 96, boxSizing: 'border-box', borderRadius: 12, border: '1px solid #25E0C8', boxShadow: '0 0 0 1px #25E0C8', background: '#0F1424', padding: 10, font: '700 13px Nunito, sans-serif' }}>Card</div>
+                <div style={{ height: 54, width: 96, boxSizing: 'border-box', borderRadius: 12, border: `1px solid ${ap().sel}`, boxShadow: `0 0 0 1px ${ap().sel}`, background: ap().field, padding: 10, font: '700 13px Nunito, sans-serif' }}>Card</div>
             </div>
             <div tabIndex={0} id="stub-card" onFocus={onFocus} onBlur={onBlur} style={{ outline: 'none' }}>{input('Card number', '4242 4242 4242 4242')}</div>
             <div style={{ display: 'flex', gap: 10 }}>{input('Expiration date', '12 / 34')}{input('Security code', '123')}</div>
             <div style={{ display: 'flex', gap: 10 }}>{input('Country', 'United States')}{input('ZIP code', '12345')}</div>
-            <div style={{ font: '400 12px/1.4 Nunito, sans-serif', color: '#9AA4B8' }}>By providing your card information, you allow Cipherline to charge your card for future payments in accordance with their terms.</div>
-            <label style={{ display: 'flex', gap: 10, alignItems: 'center', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)', background: '#0F1424', padding: '12px 14px', cursor: 'pointer' }}>
+            <div style={{ font: '400 12px/1.4 Nunito, sans-serif', color: ap().label }}>By providing your card information, you allow Cipherline to charge your card for future payments in accordance with their terms.</div>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', borderRadius: 12, border: ap().edge, background: ap().field, padding: '12px 14px', cursor: 'pointer' }}>
                 <input type="checkbox" checked={expanded} onChange={(e) => setExpanded(e.target.checked)} />
                 <span style={{ font: '700 13px Nunito, sans-serif' }}>Save my information for faster checkout</span>
             </label>

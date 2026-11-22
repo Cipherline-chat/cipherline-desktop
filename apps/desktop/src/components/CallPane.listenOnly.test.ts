@@ -24,8 +24,10 @@ describe('listen-only join', () => {
 
     it('the mic-restoring effects ask the live permissions first, and swallow a rejection', () => {
         // undeafen, push-to-talk off, push-to-talk key down, server-mute lifted
-        const restoring = sidebar.match(/canPublishMicrophone\(localParticipant\)/g) ?? [];
+        // (the server-mute lift goes through utils/serverMuteGate, whose adapter asks `canPublishMicrophone(lp)`)
+        const restoring = sidebar.match(/canPublishMicrophone\((localParticipant|lp)\)/g) ?? [];
         expect(restoring.length).toBeGreaterThanOrEqual(5);
+        expect(sidebar).toContain('canPublish: () => canPublishMicrophone(lp),');
         expect(sidebar).not.toMatch(/localParticipant\.setMicrophoneEnabled\(true\);/);
     });
 });

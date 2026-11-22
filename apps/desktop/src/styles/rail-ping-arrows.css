@@ -21,7 +21,7 @@
   background: var(--cl-flash); color: var(--cl-on-flash);
   font-family: var(--cl-font-body); font-size: 10px; font-weight: 800; line-height: 1;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
+  box-shadow: 0 2px 6px rgb(var(--cl-shade-rgb) / .5);
   cursor: pointer;
   transform: translateX(-50%);
   transition: background-color .12s ease;
@@ -58,3 +58,6 @@
 @media (prefers-reduced-motion: reduce) {
   .cl-rail-ping { animation: none; transition: none; }
 }
+/* Settings → Accessibility → Celebrations and effects off: the pill still
+   appears (it is information), it just does not drift. */
+:root[data-effects="off"] .cl-rail-ping { animation: none; }

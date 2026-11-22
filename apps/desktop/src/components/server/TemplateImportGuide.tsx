@@ -143,7 +143,7 @@ const GuideStep: React.FC<{ n: number; title: string; children: React.ReactNode 
     <li className="flex gap-2.5 min-w-0">
         <span
             className="shrink-0 w-5 h-5 mt-[1px] rounded-full flex items-center justify-center text-[11px] font-bold"
-            style={{ background: 'var(--cl-lume-tint)', color: 'var(--cl-lume)' }}
+            style={{ background: 'var(--cl-lume-tint)', color: 'var(--cl-lume-text)' }}
             aria-hidden="true"
         >
             {n}

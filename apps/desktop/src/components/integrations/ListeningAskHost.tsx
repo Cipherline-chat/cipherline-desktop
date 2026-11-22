@@ -35,7 +35,7 @@ export const ListeningAskCard: React.FC<{ onEnable: () => void; onDecline: () =>
             className="pointer-events-auto relative flex items-start gap-3 pl-4 pr-4 py-3 bg-cl-deep border border-white/[0.08] ring-1 ring-cl-lume/30 rounded-xl shadow-2xl overflow-hidden fade-rise-enter"
         >
             <span className="absolute left-0 top-0 bottom-0 w-[3px] bg-cl-lume" aria-hidden="true" />
-            <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg grid place-items-center text-cl-lume bg-cl-lume/10" aria-hidden="true">
+            <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg grid place-items-center text-cl-lume-text bg-cl-lume/10" aria-hidden="true">
                 <Headphones size={17} />
             </span>
             <div className="flex-1 min-w-0">

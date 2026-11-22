@@ -6,14 +6,27 @@
  * invisible to the main thread unless the worker says so. With `probe: true` at
  * init it reports each late frame and each pillar's entry
  * onto the screen. This file records, over the same stretch, the main thread's
- * Long Animation Frames (with their per-script attribution), its own late
- * frames, and network responses, and lays each worker hitch against them:
+ * Long Animation Frames (with their per-script attribution and blockingDuration)
+ * and network responses, and lays each worker hitch against them:
  *
  *   [fw-probe] 41ms frame (2.5 frames) · pillar #6 even +212ms · score 5
  *      main: LoAF 63ms @-30ms: 44ms ChatPane.tsx poll (setInterval) · style/layout 9ms
  *      net:  calls/status (xmlhttprequest) done -12ms
  *
- * A hitch with nothing on the main thread points at the GPU / compositor side.
+ * A hitch with nothing on the main thread points at the GPU / compositor side. So
+ * does a hitch whose long frame has NO blocking time (`fw:block:0`): a LoAF also
+ * counts the time the main thread spent WAITING for its next frame, so a 70 ms
+ * "tasks" frame with no script can be an idle main thread under a stalled frame
+ * pipeline rather than a 70 ms task (measured in the real renderer, worklog
+ * 2026-11-22-firewall-hitch).
+ *
+ * The probe adds NO per-frame main-thread work. It used to run its own
+ * requestAnimationFrame loop for the whole run (main-thread frame gaps and heap
+ * samples), which made the window's main thread render a frame at the display's
+ * rate (165 a second on a 165 Hz monitor) for nothing while the game, which draws
+ * in its worker, needed none. The display rate now comes from the worker (`iv`),
+ * heap samples from a 4 Hz timer (full probe only).
+ *
  * report() is the summary (how evenly the hitches are spaced, odd vs even pillars,
  * how many hitches had main-thread work under them, the scripts seen most). The
  * game-over "Copy hitch report" button was removed (owner 2026-11-13) and a packaged
@@ -22,11 +35,14 @@
  * problem → Performance" sends. Dev builds also log each hitch to the console and
  * leave the full text summary in `window.__fwHitchReport` on close.
  *
- * On only where hitchProbeEnabled() says so: dev builds and staging builds
- * (version `x.y.z-staging.N`). A stable build never starts it. It records
- * timings, script file / function names and API paths (ids replaced) only:
- * nothing a user typed or received, and nothing leaves the device unless the
- * tester pastes the report somewhere.
+ * Runs on EVERY channel (a stable user's "still freezing" report had no probe rows,
+ * 2026-11-19), in two sizes: dev and staging builds (hitchProbeEnabled(): version
+ * `x.y.z-staging.N`) get the full probe; stable gets the light one (long frames and
+ * the worker's late-frame messages only: no heap
+ * sampling, no resource observer, no console output). Both write only label rows
+ * into the Performance log, which leaves the device only inside a report the user
+ * chooses to send after seeing the preview. It records timings, script file /
+ * function names and API paths (ids replaced) only: nothing a user typed or received.
  */
 import type { ProbeMsg } from '../workers/loadingScreenProtocol';
 import { parseSystemInfoReply } from '../utils/diagnostics/ipc';
@@ -41,27 +57,28 @@ interface Loaf extends Span {
     dur: number; block: number; layout: number; scripts: { src: string; ms: number }[];
     phases: LoafPhases | null; firstUI: number | null;
 }
-interface Frame { at: number; gap: number }
 interface HeapSample { at: number; used: number }
 interface Where { x: number; y: number; w: number; h: number; dpr: number }
-interface MainGap extends Span { gap: number }
 interface Net { at: number; name: string; kind: string }
-interface Hitch { at: number; gap: number; frames: number; js: number; score: number; pillar: number; sincePillar: number; loafs: Loaf[]; mainGaps: MainGap[]; net: Net[]; frameRun: number[]; heap: string; where: Where }
+interface Hitch { at: number; gap: number; frames: number; js: number; score: number; pillar: number; sincePillar: number; loafs: Loaf[]; net: Net[]; heap: string; where: Where }
 
 interface LoafScript { duration: number; sourceURL?: string; sourceFunctionName?: string; invoker?: string; invokerType?: string }
 interface LoafEntry extends PerformanceEntry { blockingDuration?: number; renderStart?: number; styleAndLayoutStart?: number; firstUIEventTimestamp?: number; scripts?: LoafScript[] }
 
-/** Dev builds, and staging builds by their version (the same test as utils/stagingLock.ts). */
+/** The FULL probe: dev builds, and staging builds by their version (the same test as utils/stagingLock.ts). Every other build runs the light one. */
 export function hitchProbeEnabled(version: string = import.meta.env.VITE_APP_VERSION ?? '', dev: boolean = !!import.meta.env.DEV): boolean {
     return dev || /^\d+\.\d+\.\d+-staging(?:\.|$)/.test(version);
 }
 
 const KEEP_MS = 12_000;
+/** Heap samples for the GC hint (full probe): a timer, so the probe never asks the main thread for a frame. */
+const HEAP_SAMPLE_MS = 250;
 const T0 = () => performance.timeOrigin;
 
 /**
  * Splits a Long Animation Frame at its two marks. A frame whose `tasks` is big but has no
- * script attributed is timers / GC / decode; a big `raf` is the rAF + ResizeObserver
+ * script attributed is timers / GC / decode IF its blockingDuration is large too; with no
+ * blocking time it is the main thread idling until its frame came (BLOCKED_MS); a big `raf` is the rAF + ResizeObserver
  * callbacks; a big `render` is style, layout, paint and the commit to the compositor
  * (which can include waiting on the GPU process). Null when the browser gave no marks.
  */
@@ -126,8 +143,41 @@ export function glClass(gl: string): string {
     return 'other';
 }
 
+/** The displays as the perf-log rows need them: every refresh rate (Hz, rounded), and the one the window is on. */
+export interface DisplayTopology { hz: number[]; onHz: number | null }
+
+/**
+ * From diag display list (electron `display:get-refresh-rates`; `hostsWindow` marks the
+ * display the app window is mostly on). Mixed refresh rates across monitors are a known
+ * source of periodic compositor stutter on Windows, so the rows say how many there are,
+ * what each runs at, and which one the window is on.
+ */
+export function displayTopology(list: { displayFrequency: number; isPrimary?: boolean; hostsWindow?: boolean }[]): DisplayTopology | null {
+    if (!Array.isArray(list) || !list.length) return null;
+    const hz = list.map(d => Math.round(Number(d.displayFrequency) || 0));
+    const host = list.find(d => d.hostsWindow);
+    return { hz, onHz: host ? Math.round(Number(host.displayFrequency) || 0) : null };
+}
+
 /** One hitch, as far as the perf-log rows need it. */
-export interface HitchLite { gap: number; pillar: number; score: number; loafs: { dur: number; phases: LoafPhases | null; scripts: number }[] }
+export interface HitchLite {
+    gap: number; pillar: number; score: number;
+    /** The game's own work in the frame before the gap, ms (the worker's draw: a GPU stall that fills its command buffer lands here). */
+    js?: number;
+    /** `block`: the long frame's blockingDuration (its long tasks' time over 50 ms each). 0 = the main thread was NOT busy: it was waiting for the frame. */
+    loafs: { dur: number; phases: LoafPhases | null; scripts: number; block?: number }[];
+}
+
+/**
+ * A long animation frame whose blockingDuration is at least this was really held up by a
+ * long task on the main thread. Below it, the frame was long because the main thread was
+ * WAITING (for the compositor's BeginMainFrame, or with nothing to run): the LoAF's `tasks`
+ * phase then counts idle time between tasks, so `fw:split:tasks` with no script attributed
+ * says nothing about main-thread work on its own (measured, docs/worklog 2026-11-22).
+ */
+export const BLOCKED_MS = 20;
+/** The largest blockingDuration among a hitch's long frames (0 without any). */
+export const hitchBlock = (h: HitchLite): number => h.loafs.reduce((m, l) => Math.max(m, l.block ?? 0), 0);
 
 const MAX_HITCH_ROWS = 12;
 const n0 = (x: number) => Math.max(0, Math.round(x));
@@ -139,7 +189,7 @@ const n0 = (x: number) => Math.max(0, Math.round(x));
  * word plus numbers (main drops anything failing freezeLog's LABEL_RE): timings, counts and
  * a GPU vendor word only, nothing a user typed or received, no names or paths.
  */
-export function probeRows(hitches: HitchLite[], at: number[], rate: { r: RunRate; gl: string } | null, displayHz: number, withMain: number): { activity: string; ms: number }[] {
+export function probeRows(hitches: HitchLite[], at: number[], rate: { r: RunRate; gl: string } | null, displayHz: number, withMain: number, disp: DisplayTopology | null = null, full = true): { activity: string; ms: number }[] {
     const c = hitchCadence(at);
     const split = { tasks: 0, raf: 0, render: 0 };
     for (const h of hitches) for (const l of h.loafs) if (l.phases) { split.tasks += l.phases.tasks; split.raf += l.phases.raf; split.render += l.phases.render; }
@@ -147,9 +197,14 @@ export function probeRows(hitches: HitchLite[], at: number[], rate: { r: RunRate
     const summary = [
         'firewall:probe', `fw:late:${hitches.length}`, `fw:hz:${n0(displayHz)}`,
         `fw:fps:${rate ? n0(rate.r.fps) : 0}`, `fw:worst:${rate ? n0(rate.r.maxGapMs) : 0}`, `fw:gl:${glClass(rate?.gl ?? '')}`,
-        `fw:main-busy:${withMain}`, `fw:split:${top}`,
+        `fw:main-busy:${withMain}`, `fw:main-blocked:${hitches.filter(h => hitchBlock(h) >= BLOCKED_MS).length}`, `fw:split:${top}`,
         c ? `fw:cadence:${c.medianMs}` : 'fw:cadence:none', c ? `fw:cadence-mad:${c.madMs}` : 'fw:cadence-mad:none',
+        `fw:build:${full ? 'full' : 'light'}`,
     ];
+    if (disp) {
+        summary.push(`fw:disp:${disp.hz.length}`, `fw:disp-hz:${disp.hz.join('-')}`, `fw:mixed-hz:${new Set(disp.hz).size > 1 ? 1 : 0}`);
+        if (disp.onHz !== null) summary.push(`fw:on-hz:${disp.onHz}`);
+    }
     const rows = [{ activity: summary.join(', '), ms: hitches.reduce((m, h) => Math.max(m, n0(h.gap)), 0) }];
     for (const h of hitches.slice(-MAX_HITCH_ROWS)) {
         const l = h.loafs.slice().sort((a, b) => b.dur - a.dur)[0];
@@ -157,7 +212,9 @@ export function probeRows(hitches: HitchLite[], at: number[], rate: { r: RunRate
         if (l) {
             labels.push(`fw:loaf:${n0(l.dur)}`, `fw:scripts:${l.scripts}`);
             if (l.phases) labels.push(`fw:tasks:${n0(l.phases.tasks)}`, `fw:raf:${n0(l.phases.raf)}`, `fw:render:${n0(l.phases.render)}`);
+            labels.push(`fw:block:${n0(hitchBlock(h))}`);
         } else labels.push('fw:loaf:none');
+        if (h.js !== undefined) labels.push(`fw:js:${n0(h.js)}`);
         rows.push({ activity: labels.join(', '), ms: n0(h.gap) });
     }
     return rows;
@@ -175,7 +232,7 @@ const splitLine = (hitches: Hitch[]): string => {
     for (const h of hitches) for (const l of h.loafs) if (l.phases) { n++; t.tasks += l.phases.tasks; t.raf += l.phases.raf; t.render += l.phases.render; }
     if (!n) return 'Where the long frames\' time went: no phase marks';
     const top = (Object.keys(t) as (keyof typeof t)[]).sort((a, b) => t[b] - t[a])[0];
-    const hint = { tasks: 'tasks/GC/decode before rendering', raf: 'rAF / ResizeObserver callbacks', render: 'style/layout/paint/commit (compositor or GPU wait)' }[top];
+    const hint = { tasks: 'before rendering: tasks/GC/decode if blocked, else waiting for the frame (see "really BLOCKED" below)', raf: 'rAF / ResizeObserver callbacks', render: 'style/layout/paint/commit (compositor or GPU wait)' }[top];
     return `Where the long frames' time went (${n} frames): tasks ${t.tasks.toFixed(0)} ms, rAF/RO ${t.raf.toFixed(0)} ms, render ${t.render.toFixed(0)} ms -> mostly ${hint}`;
 };
 /** Steady hitches against the pillars' own rhythm: a clock that only LOOKS like "every other pillar". */
@@ -206,12 +263,12 @@ export interface HitchProbe {
     stop(): void;
 }
 
-export function startHitchProbe(): HitchProbe {
-    const loafs: Loaf[] = [], mainGaps: MainGap[] = [], net: Net[] = [], hitches: Hitch[] = [];
+export function startHitchProbe(full: boolean = hitchProbeEnabled()): HitchProbe {
+    const loafs: Loaf[] = [], net: Net[] = [], hitches: Hitch[] = [];
     const pillars: { at: number; k: number }[] = [];
     let frameIv = 1000 / 60;
     // Every main-thread long frame of the run, hitch or not: a busy main thread under a smooth game clears it.
-    let loafCount = 0, loafMs = 0, mainGapCount = 0;
+    let loafCount = 0, loafMs = 0, loafBlocked = 0;
     const runScripts = new Map<string, { n: number; ms: number }>();
     const prune = (list: { at: number }[]) => {
         const cut = Date.now() - KEEP_MS;
@@ -229,6 +286,7 @@ export function startHitchProbe(): HitchProbe {
     const hasLoaf = observe('long-animation-frame', e => {
         const l = e as LoafEntry, at = T0() + l.startTime;
         loafCount++; loafMs += l.duration;
+        if ((l.blockingDuration ?? 0) >= BLOCKED_MS) loafBlocked++;
         loafs.push({
             at, end: at + l.duration, dur: l.duration, block: l.blockingDuration ?? 0,
             layout: l.styleAndLayoutStart ? l.startTime + l.duration - l.styleAndLayoutStart : 0,
@@ -250,39 +308,38 @@ export function startHitchProbe(): HitchProbe {
         loafs.push({ at, end: at + e.duration, dur: e.duration, block: e.duration - 50, layout: 0, scripts: [], phases: null, firstUI: null });
         prune(loafs);
     });
-    observe('resource', e => {
+    if (full) observe('resource', e => {
         const r = e as PerformanceResourceTiming;
         net.push({ at: T0() + r.responseEnd, name: shortName(r.name), kind: r.initiatorType });
         prune(net);
     });
-    // The main thread's own frames: a 20-50 ms frame is under LoAF's 50 ms bar but
-    // can still mean a big paint the GPU has to do alongside the game.
-    let raf = 0, last = 0;
-    const frames: Frame[] = [];
+    // NO requestAnimationFrame loop here (see the header): a main-thread rAF makes the
+    // whole window render a frame every vsync for as long as it runs. Heap samples (the
+    // GC hint) come from a 4 Hz timer instead, full probe only; a timer renders nothing.
     const heap: HeapSample[] = [];
     const memory = () => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
     const where = (): Where => ({ x: window.screenX, y: window.screenY, w: window.screen?.width ?? 0, h: window.screen?.height ?? 0, dpr: window.devicePixelRatio || 1 });
-    const tick = (ts: number) => {
-        if (last) {
-            const gap = ts - last;
-            frames.push({ at: T0() + ts, gap }); prune(frames);
-            const m = memory(); if (m) { heap.push({ at: T0() + ts, used: m.usedJSHeapSize }); prune(heap); }
-            if (gap > Math.max(frameIv * 1.6, frameIv + 6)) { mainGapCount++; mainGaps.push({ at: T0() + ts - gap, end: T0() + ts, gap }); prune(mainGaps); }
-            else frameIv += (gap - frameIv) * 0.05;
-        }
-        last = ts;
-        raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
+    const heapTimer = full && memory() ? setInterval(() => {
+        const m = memory();
+        if (m) { heap.push({ at: Date.now(), used: m.usedJSHeapSize }); prune(heap); }
+    }, HEAP_SAMPLE_MS) : null;
 
     // Which GPUs, displays and compositing mode this machine has (main-process read, read-only).
     let sysLines: string[] = [];
-    const api = (window as unknown as { electronAPI?: { diagGetSystemInfo?: () => Promise<unknown>; getDisplayRefreshRates?: () => Promise<{ displayFrequency: number; isPrimary: boolean }[]> } }).electronAPI;
+    let topo: DisplayTopology | null = null;
+    type Disp = { displayFrequency: number; isPrimary: boolean; hostsWindow?: boolean };
+    const api = (window as unknown as { electronAPI?: { diagGetSystemInfo?: () => Promise<unknown>; getDisplayRefreshRates?: () => Promise<Disp[]> } }).electronAPI;
     let stopped = false;
-    void Promise.all([api?.diagGetSystemInfo?.() ?? null, api?.getDisplayRefreshRates?.() ?? []]).then(([raw, hz]) => {
+    // The display list is read on every build (the rows carry it); the full system read only in the full probe.
+    void (async () => {
+        const hz = (await api?.getDisplayRefreshRates?.()) ?? [];
+        if (stopped) return;
+        topo = displayTopology(hz);
+        if (!full) return;
+        const raw = await api?.diagGetSystemInfo?.();
         if (stopped || !raw) return;
         sysLines = describeSystem(parseSystemInfoReply(raw, '', '').system, hz);
-    }).catch(() => { /* no bridge (browser dev): the report just omits it */ });
+    })().catch(() => { /* no bridge (browser dev): the report just omits it */ });
 
     const overlaps = <T extends Span>(list: T[], from: number, to: number) => list.filter(x => x.at < to && x.end > from);
 
@@ -290,6 +347,7 @@ export function startHitchProbe(): HitchProbe {
     const onWorker = (m: ProbeMsg) => {
         if (m.kind === 'rate') {
             rate = { r: { frames: m.frames, ms: m.ms, fps: m.fps, busyAvgMs: m.busyAvgMs, maxGapMs: m.maxGapMs }, gl: m.gl };
+            if (typeof m.iv === 'number' && m.iv > 0) frameIv = m.iv;
             return;
         }
         if (m.kind === 'pillar') {
@@ -297,6 +355,8 @@ export function startHitchProbe(): HitchProbe {
             pillars.push({ at: m.at, k: m.k });
             return;
         }
+        // The worker's own on-time frame interval: the display's rate (no main-thread rAF to learn it from).
+        if (typeof m.iv === 'number' && m.iv > 0) frameIv = m.iv;
         // The late frame covers [at - gap, at]. Pad the front by a frame: work that
         // ended just before the gap opened can still have delayed this frame.
         const from = m.at - m.gap - frameIv, to = m.at;
@@ -306,12 +366,11 @@ export function startHitchProbe(): HitchProbe {
             // The pillar that had entered by the hitch (one may have entered since).
             let p: { at: number; k: number } | null = null;
             for (let i = pillars.length - 1; i >= 0 && !p; i--) if (pillars[i].at <= m.at) p = pillars[i];
-            const near = frames.filter(f => f.at >= m.at - m.gap - 40 && f.at <= m.at + 40);
             const h: Hitch = {
-                frameRun: near.map(f => Math.round(f.gap)), heap: heapHint(heap, from - 50, to + 120), where: where(),
+                heap: heapHint(heap, from - 300, to + 300), where: where(),
                 at: m.at, gap: m.gap, frames: m.gap / frameIv, js: m.js, score: m.score,
                 pillar: p ? p.k : 0, sincePillar: p ? m.at - p.at : 0,
-                loafs: overlaps(loafs, from, to), mainGaps: overlaps(mainGaps, from, to),
+                loafs: overlaps(loafs, from, to),
                 net: net.filter(n => n.at > from - 100 && n.at < to),
             };
             hitches.push(h);
@@ -324,18 +383,18 @@ export function startHitchProbe(): HitchProbe {
                 const s = l.scripts.slice(0, 3).map(x => `${x.ms.toFixed(0)}ms ${x.src}`).join(', ') || 'no script attributed';
                 lines.push(`   main: LoAF ${l.dur.toFixed(0)}ms @${(l.at - m.at).toFixed(0)}ms: ${s}${l.layout ? ` · style/layout ${l.layout.toFixed(0)}ms` : ''} · ${phaseText(l)}`);
             }
-            if (!h.loafs.length) for (const g of h.mainGaps) lines.push(`   main: ${g.gap.toFixed(0)}ms frame @${(g.at - m.at).toFixed(0)}ms (under 50 ms, no attribution)`);
             for (const n of h.net) lines.push(`   net:  ${n.name} (${n.kind}) done ${(n.at - m.at).toFixed(0)}ms`);
-            lines.push(`   heap ${h.heap} · main rAF gaps ${h.frameRun.join(',')} · window ${whereText(h.where)}`);
-            if (!h.loafs.length && !h.mainGaps.length) lines.push('   main thread idle: look at the GPU / compositor side');
-            if (import.meta.env.DEV) console.log(lines.join('\n'));
+            lines.push(`   heap ${h.heap} · window ${whereText(h.where)}`);
+            if (!h.loafs.some(l => l.block >= BLOCKED_MS)) lines.push(`   main thread not blocked (${h.loafs.length ? 'long frame, no long task' : 'no long frame'}): look at the GPU / compositor side`);
+            if (full && import.meta.env.DEV) console.log(lines.join('\n'));
         }, 120);
     };
 
     const report = (): string => {
         const nearPillar = hitches.filter(h => h.pillar && h.sincePillar < 700);
         const odd = nearPillar.filter(h => h.pillar % 2).length, even = nearPillar.length - odd;
-        const withMain = hitches.filter(h => h.loafs.length || h.mainGaps.length).length;
+        const withMain = hitches.filter(h => h.loafs.length).length;
+        const blocked = hitches.filter(h => h.loafs.some(l => l.block >= BLOCKED_MS)).length;
         const scripts = new Map<string, number>();
         for (const h of hitches) for (const l of h.loafs) for (const s of l.scripts) scripts.set(s.src, (scripts.get(s.src) ?? 0) + 1);
         const nets = new Map<string, number>();
@@ -352,8 +411,9 @@ export function startHitchProbe(): HitchProbe {
             splitLine(hitches),
             cadenceLine(hitchCadence(hitches.map(h => h.at)), pillars.map(p => p.at)),
             `Within 700 ms of a pillar entering: odd ${odd}, even ${even}`,
-            `Main thread busy under the hitch: ${withMain} of ${hitches.length}`,
-            `Main thread over the whole run: ${loafCount} long frames (${loafMs.toFixed(0)} ms), ${mainGapCount} late frames`,
+            `Main thread had a long frame under the hitch: ${withMain} of ${hitches.length}; really BLOCKED by a long task (blockingDuration >= ${BLOCKED_MS} ms): ${blocked}`
+                + (withMain > blocked ? ' -> the rest were the main thread WAITING for a frame, not working' : ''),
+            `Main thread over the whole run: ${loafCount} long frames (${loafMs.toFixed(0)} ms), ${loafBlocked} of them blocked by a long task`,
             `Scripts in the hitch frames:\n${top(scripts)}`,
             `Scripts in all the run's long frames (by total ms):\n${[...runScripts].sort((a, b) => b[1].ms - a[1].ms).slice(0, 8)
                 .map(([k, v]) => `  ${v.ms.toFixed(0)}ms in ${v.n}x ${k}`).join('\n') || '  none'}`,
@@ -361,9 +421,9 @@ export function startHitchProbe(): HitchProbe {
             'Each hitch:',
             ...hitches.map(h => `  ${h.gap.toFixed(0)}ms p${h.pillar}${h.pillar ? (h.pillar % 2 ? 'o' : 'e') : ''}+${h.sincePillar.toFixed(0)} `
                 + `loaf ${h.loafs.map(l => `${l.dur.toFixed(0)}[${l.scripts[0]?.src ?? '-'}]`).join(',') || '-'} `
-                + `main ${h.mainGaps.map(g => g.gap.toFixed(0)).join(',') || '-'} net ${h.net.map(n => n.name).join(',') || '-'}\n`
+                + `game ${h.js.toFixed(1)}ms net ${h.net.map(n => n.name).join(',') || '-'}\n`
                 + `${h.loafs.map(l => `      ${phaseText(l)}`).join('\n') || '      no LoAF'}\n`
-                + `      heap ${h.heap} · rAF ms ${h.frameRun.slice(0, 24).join(',')} · ${whereText(h.where)}`),
+                + `      heap ${h.heap} · ${whereText(h.where)}`),
         ].join('\n');
     };
 
@@ -372,14 +432,14 @@ export function startHitchProbe(): HitchProbe {
         report: () => (hitches.length || pillars.length || rate ? report() : null),
         stop() {
             stopped = true;
-            cancelAnimationFrame(raf);
+            if (heapTimer) clearInterval(heapTimer);
             for (const o of observers) o.disconnect();
             if (!hitches.length && !rate) return;
             // Into the Performance log, so "Report a problem → Performance" carries it (staging included).
-            const withMain = hitches.filter(h => h.loafs.length || h.mainGaps.length).length;
-            const lite = hitches.map(h => ({ gap: h.gap, pillar: h.pillar, score: h.score, loafs: h.loafs.map(l => ({ dur: l.dur, phases: l.phases, scripts: l.scripts.length })) }));
-            for (const row of probeRows(lite, hitches.map(h => h.at), rate, 1000 / frameIv, withMain)) recordTimingRow(row.activity, row.ms);
-            if (!import.meta.env.DEV) return;
+            const withMain = hitches.filter(h => h.loafs.length).length;
+            const lite = hitches.map(h => ({ gap: h.gap, pillar: h.pillar, score: h.score, js: h.js, loafs: h.loafs.map(l => ({ dur: l.dur, phases: l.phases, scripts: l.scripts.length, block: l.block })) }));
+            for (const row of probeRows(lite, hitches.map(h => h.at), rate, 1000 / frameIv, withMain, topo, full)) recordTimingRow(row.activity, row.ms);
+            if (!full || !import.meta.env.DEV) return;
             const text = report();
             (window as unknown as { __fwHitchReport?: string }).__fwHitchReport = text;
             console.log(`${text}\n\n(copy it: copy(__fwHitchReport))`);

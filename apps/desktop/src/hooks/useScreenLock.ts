@@ -24,6 +24,9 @@ const STORAGE_KEY = 'cipherline_screenlock_settings';
 const PIN_ITERATIONS = 210_000; // OWASP-2023-floor PBKDF2-SHA256; local lock, not a backup key, so kept snappy
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 30_000;
+/** Wrong PINs allowed before the cooldown, and its length (the overlay says how many tries are left). */
+export const SCREEN_LOCK_MAX_ATTEMPTS = MAX_ATTEMPTS;
+export const SCREEN_LOCK_LOCKOUT_MS = LOCKOUT_MS;
 /** How often the inactivity timer is checked — frequent enough that a short
  *  timeout (e.g. 1 minute) still fires close to on time. */
 const ACTIVITY_POLL_MS = 5_000;

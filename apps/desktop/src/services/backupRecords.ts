@@ -439,11 +439,7 @@ export async function applyBackupContainer(
             if (b.kind === 'gif') {
                 if (api?.writeGifFile) await api.writeGifFile(b.key, bytes);
             } else if (b.kind === 'emoji') {
-                if (api?.writeGifFile) {
-                    await api.writeGifFile(`emoji-${b.key}`, bytes);
-                    // Wake any emoji already on screen that was waiting for this file.
-                    personalEmojis().store.emit(b.key);
-                }
+                // Never here: the restore writes these itself (see below).
             } else if (b.kind === 'sound') {
                 if (api?.uploadCustomSound) await api.uploadCustomSound(b.key, bytes);
             } else {
@@ -461,7 +457,28 @@ export async function applyBackupContainer(
         history,
         ...(Object.keys(channelHistory).length ? { channelHistory } : {}),
     };
-    await importLocalHistory(userId, new Blob([JSON.stringify(vault)], { type: 'application/json' }));
+    // My Emojis / My stickers images (and the received ones old messages show)
+    // are written by the restore itself, each BEFORE the index that lists it:
+    // writing them after importLocalHistory (as this did until 2026-11-22) left
+    // a window where its BACKUP_RESTORED_EVENT had already woken the images on
+    // screen, which found "listed, no file" and deleted the restored entry and
+    // its key for good (utils/personalEmoji/backup.ts).
+    const emojiRecords = new Map(blobRecords.filter(b => b.kind === 'emoji').map(b => [b.key, b.id]));
+    const emojiDone = new Set<string>();
+    await importLocalHistory(userId, new Blob([JSON.stringify(vault)], { type: 'application/json' }), {
+        emojiSealedFile: async (emojiId) => {
+            const rid = emojiRecords.get(emojiId);
+            if (!rid || !api?.writeGifFile) return null;
+            emojiDone.add(emojiId);
+            tick();
+            try { return await container.readBytes(rid); }
+            catch (e) { console.warn('[restore] failed to read record', rid, e); return null; }
+        },
+    });
+    // Records the restore did not ask for (no index entry for them) still count.
+    for (const k of emojiRecords.keys()) if (!emojiDone.has(k)) tick();
+    // Wake any emoji / sticker already on screen that was waiting for its file.
+    for (const k of emojiDone) personalEmojis().store.emit(k);
 
-    for (const b of blobRecords) if (b.kind !== 'sound') await applyBlob(b);
+    for (const b of blobRecords) if (b.kind !== 'sound' && b.kind !== 'emoji') await applyBlob(b);
 }

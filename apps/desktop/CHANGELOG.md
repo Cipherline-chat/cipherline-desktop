@@ -22,6 +22,54 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.3] - 2026-11-22
+
+### What's new
+
+- **Move your Discord server over.** Create a Server -> "Import from a Discord server" copies your server's channels, roles, permissions, emojis and stickers, plus recent messages and every pin. People claim their old messages (and get their roles back) by signing in with Discord. It runs in the background while you keep chatting.
+- **Stickers.** A new Stickers button next to Emoji: server stickers (Server Settings -> Stickers) and your own "My stickers", which sync between your devices and are kept in backups.
+- **Themes.** A Light theme that matches the website, Midnight (true black), high-contrast themes, and your own custom themes you can preview live and share with friends.
+- **Accessibility settings.** Make the whole app bigger or smaller, change text size and message spacing, and reduce motion.
+- **Clearer calls.** A new call-audio engine; Strong noise suppression now uses a newer model that also removes non-speech sounds like eating or a rustling bag, with no large download.
+- **Push to talk in games.** Numpad keys, Caps Lock, AltGr, Shift+key, non-English keyboard keys and mouse side buttons now work while a game is in front, and the app tells you when a key can't.
+- **More for servers.** Slowmode, age-restricted channels, role icons and two-colour role names, fancy symbols in server and role names, per-channel mute, and bulk emoji upload.
+
+### Changes
+
+#### Import from Discord
+- The wizard starts with your bot token and builds the invite link from it; it explains the two Discord settings it needs and checks them.
+- Copies the larger of the last 1,000 messages or the last 30 days per channel, with reactions; nobody is notified.
+- "Copy messages from Discord" fills channels of a server you already imported.
+- A channel or file that can't be copied is reported clearly ("Import finished - issues found") with Retry, instead of being skipped silently.
+
+#### Messages and servers
+- Stickers, slowmode, age-restricted channels, role icons and gradient role colours, member-since dates.
+- Mute DMs, group chats, channels, categories and servers for a while; mutes follow you to your other devices.
+- Server icons keep a transparent background.
+- Invite cards no longer show "expired" while scrolling.
+- Copy buttons (invite links, theme links, call log and others) work again.
+
+#### Calls
+- New call-audio engine; Strong noise suppression uses FastEnhancer; optional manual noise gate.
+- When you are alone in a call the app stops uploading your audio until someone joins.
+- When a moderator lifts a server mute you are back to what you chose, no manual unmute.
+- Sharing a game window Windows refuses to capture now retries, then offers to share that screen instead.
+- A screen share that loses its hardware encoder keeps its frame rate by lowering the resolution.
+- Declining a call stops your other devices ringing.
+
+#### Look and feel
+- Light, Midnight, high-contrast and custom themes; the Screen Lock has a proper Light look and keeps the "Wrong PIN" message on screen.
+- The server list's selector no longer over-stretches the first time you open a server.
+- Faster start-up and no forced waits around updates.
+
+#### Reliability
+- Backups are refused while this device's data can't be read, and ask before replacing a much bigger backup.
+- A briefly unreadable local database at start-up is retried instead of showing an error.
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
 ## [0.1.2] - 2026-11-18
 
 ### What's new

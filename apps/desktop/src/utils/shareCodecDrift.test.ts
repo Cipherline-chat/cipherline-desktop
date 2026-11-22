@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
     readSentCodecs, driftedCodec, codecOfMime, ShareCodecDriftWatch, CodecDriftWatch, codecDriftNotice, cameraCodecDriftNotice,
-    DRIFT_CONFIRM, type StatsLike,
+    DRIFT_CONFIRM, DRIFT_REPUBLISH_COOLDOWN_MS, driftRepublishAllowed, sentEncoderKey, type StatsLike,
 } from './shareCodecDrift';
 
 type Row = Record<string, unknown>;
@@ -161,5 +161,69 @@ describe('codecDriftNotice', () => {
         expect(codecDriftNotice('h265')).toMatch(/H\.265 encoder stopped working/);
         expect(codecDriftNotice('h264')).toMatch(/H\.264/);
         expect(codecDriftNotice('vp9')).toMatch(/VP9/);
+    });
+});
+
+// 2026-11-21 report 07939bfa: a 3440x1440 90 fps share published H.265, the sender switched to libvpx.
+const ULTRAWIDE_DRIFT = report([
+    codec('C1', 'video/H265'), codec('C2', 'video/VP8'),
+    out('C2', { rid: 'q', frameWidth: 1720, frameHeight: 720, encoderImplementation: 'libvpx', powerEfficientEncoder: false }),
+    out('C2', { rid: 'h', frameWidth: 3440, frameHeight: 1440, encoderImplementation: 'SimulcastEncoderAdapter (libvpx, libvpx)', powerEfficientEncoder: false }),
+]);
+
+describe('readSentCodecs: hardware flag and top-layer size (share_encoder diagnostics)', () => {
+    it('the reported ultrawide drift reads as VP8, software, 3440x1440 top layer', () => {
+        const s = readSentCodecs(ULTRAWIDE_DRIFT);
+        expect(s).toMatchObject({ codecs: ['vp8'], layers: 2, hardware: false, topRes: '3440x1440' });
+    });
+    it('hardware true when the top layer says powerEfficientEncoder; absent when not reported', () => {
+        const hw = readSentCodecs(report([codec('C1', 'video/H265'), out('C1', { powerEfficientEncoder: true })]));
+        expect(hw.hardware).toBe(true);
+        expect(readSentCodecs(HEALTHY_H265).hardware).toBeUndefined();
+    });
+    it('sentEncoderKey changes exactly when codec / implementation / hardware / layers change', () => {
+        const a = sentEncoderKey('h265', readSentCodecs(HEALTHY_H265));
+        expect(sentEncoderKey('h265', readSentCodecs(HEALTHY_H265))).toBe(a);
+        expect(sentEncoderKey('h265', readSentCodecs(ULTRAWIDE_DRIFT))).not.toBe(a);
+        expect(sentEncoderKey('h265', { codecs: ['h265'], layers: 2, hardware: true })).not.toBe(sentEncoderKey('h265', { codecs: ['h265'], layers: 2, hardware: false }));
+    });
+    it('the watch hands every poll to onSample (judged or paused)', async () => {
+        const seen: string[] = [];
+        let i = 0;
+        const w = new ShareCodecDriftWatch({
+            getStats: async () => (i++ < 1 ? HEALTHY_H265 : ULTRAWIDE_DRIFT),
+            published: 'h265', onDrift: () => {}, onSample: s => seen.push(s.codecs.join('+')),
+            paused: () => i === 1, sleep: async () => { if (i > 10) w.dispose(); },
+        });
+        await w.start();
+        expect(seen.slice(0, 3)).toEqual(['h265', 'vp8', 'vp8']);
+    });
+    it('a throwing onSample never stops the drift watch', async () => {
+        const onDrift = vi.fn();
+        const w = new ShareCodecDriftWatch({
+            getStats: async () => ULTRAWIDE_DRIFT, published: 'h265', onDrift,
+            onSample: () => { throw new Error('log full'); }, sleep: async () => {},
+        });
+        await w.start();
+        expect(onDrift).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('driftRepublishAllowed: per source AND published codec', () => {
+    const t0 = 1_000_000;
+    it('first drift, or another source: allowed', () => {
+        expect(driftRepublishAllowed(null, 'screen:1', 'h265', t0)).toBe(true);
+        expect(driftRepublishAllowed({ sourceId: 'screen:2', at: t0, codec: 'h265' }, 'screen:1', 'h265', t0 + 1)).toBe(true);
+    });
+    it('H.265 drifted, republished as H.264 High, High drifts 5 s later: allowed (used to leave viewers on nothing)', () => {
+        expect(driftRepublishAllowed({ sourceId: 'screen:1', at: t0, codec: 'h265' }, 'screen:1', 'h264', t0 + 5_000)).toBe(true);
+    });
+    it('the SAME codec drifting again inside the cooldown: held; at the cooldown boundary: allowed', () => {
+        const last = { sourceId: 'screen:1', at: t0, codec: 'h264' };
+        expect(driftRepublishAllowed(last, 'screen:1', 'h264', t0 + DRIFT_REPUBLISH_COOLDOWN_MS - 1)).toBe(false);
+        expect(driftRepublishAllowed(last, 'screen:1', 'h264', t0 + DRIFT_REPUBLISH_COOLDOWN_MS)).toBe(true);
+    });
+    it('an older record without a codec keeps the old per-source rule', () => {
+        expect(driftRepublishAllowed({ sourceId: 'screen:1', at: t0 }, 'screen:1', 'h264', t0 + 1)).toBe(false);
     });
 });

@@ -18,7 +18,7 @@ export function ConversationPreviewLine({ userId, conversationId, isActive, fall
     if (!draft) return <>{fallback}</>;
     return (
         <span data-testid="conversation-draft-preview" className="italic">
-            <span style={{ color: 'var(--cl-flash)', fontWeight: 800 }}>{DRAFT_PREVIEW_LABEL}</span>{' '}
+            <span style={{ color: 'var(--cl-flash-text)', fontWeight: 800 }}>{DRAFT_PREVIEW_LABEL}</span>{' '}
             {draft}
         </span>
     );

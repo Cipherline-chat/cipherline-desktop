@@ -13,6 +13,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { safeImageSrc } from './safeMediaUrl';
+import { useImageMode } from './a11y/motionPrefs';
 
 /** Cap for an animated upload (matches the API's 10 MiB avatar/banner cap). */
 export const ANIMATED_MAX_BYTES = 10 * 1024 * 1024;
@@ -134,6 +135,11 @@ export function getStill(url: string, source?: Blob): Promise<string | null> {
  */
 export function useStillGate(url: string | null, mime: string | null, animate: boolean): string | null {
     const inFront = useAppInFront();
+    // Settings → Accessibility → Animated images: "Never" freezes every avatar,
+    // server icon and banner, including the speaking / opened-profile cases
+    // that pass animate=true. "Always" and "On hover" leave each surface's own
+    // hover / speaking / profile rules as they were.
+    const allowed = useImageMode('avatar') !== 'never';
     const candidate = !!url && mayBeAnimated(mime);
     const [, bump] = useState(0);
     const need = candidate && !peekStill(url!) && !stillFailed(url!);
@@ -143,7 +149,7 @@ export function useStillGate(url: string | null, mime: string | null, animate: b
         getStill(url).then(() => { if (alive) bump((n) => n + 1); });
         return () => { alive = false; };
     }, [need, url]);
-    return pickDisplayUrl(url, mime, animate && inFront, url ? peekStill(url) : null);
+    return pickDisplayUrl(url, mime, animate && allowed && inFront, url ? peekStill(url) : null);
 }
 
 /**
@@ -152,17 +158,20 @@ export function useStillGate(url: string | null, mime: string | null, animate: b
  * way out rather than eagerly, so a screen full of mostly static emojis decodes
  * nothing in normal use; the image stays as it is until its still is ready.
  */
-export function useFrozenWhenAway(url: string | null): string | null {
+export function useFrozenWhenAway(url: string | null, hovered = false): string | null {
     const inFront = useAppInFront();
+    // Animated images setting: Always = as before; On hover = only while `hovered`; Never = still.
+    const mode = useImageMode('emoji');
+    const play = inFront && (mode === 'always' || (mode === 'hover' && hovered));
     const [, bump] = useState(0);
-    const need = !inFront && !!url && !peekStill(url) && !stillFailed(url);
+    const need = !play && !!url && !peekStill(url) && !stillFailed(url);
     useEffect(() => {
         if (!need || !url) return;
         let alive = true;
         getStill(url).then(() => { if (alive) bump((n) => n + 1); });
         return () => { alive = false; };
     }, [need, url]);
-    if (inFront || !url) return url;
+    if (play || !url) return url;
     return peekStill(url) ?? url;
 }
 
@@ -181,7 +190,7 @@ export async function primeStill(url: string, blob: Blob): Promise<void> {
  * every avatar and banner (a member list can mount hundreds; useWindowFocus
  * would add three listeners each).
  */
-const inFront = { now: true, wired: false, subs: new Set<() => void>() };
+const inFront = { now: true, wired: false, suspended: false, subs: new Set<() => void>() };
 function readInFront(): boolean {
     return typeof document === 'undefined' ? true : !document.hidden && document.hasFocus();
 }
@@ -198,12 +207,23 @@ function subscribeInFront(cb: () => void): () => void {
     return () => { inFront.subs.delete(cb); };
 }
 /**
+ * A full-surface game (the Firewall) is open: animated images everywhere freeze on
+ * their first frame, exactly as when the window is not in front. The rail's active
+ * server icon is not under the game, and a playing GIF/WebP there is decode plus a
+ * repaint on the same main thread / compositor the game needs.
+ */
+export function setAnimationsSuspended(on: boolean): void {
+    if (inFront.suspended === on) return;
+    inFront.suspended = on;
+    inFront.subs.forEach((f) => f());
+}
+/**
  * True while the Cipherline window is focused and visible. Every animated
  * avatar, banner, icon and emoji freezes on its first frame when it is not, like
  * the profile effects do (owner 2026-10-27, widened to all of them 2026-10-31).
  */
 export function useAppInFront(): boolean {
-    return useSyncExternalStore(subscribeInFront, () => (inFront.wired ? inFront.now : readInFront()), () => true);
+    return useSyncExternalStore(subscribeInFront, () => !inFront.suspended && (inFront.wired ? inFront.now : readInFront()), () => true);
 }
 
 /** The pure rule behind `useStillGate`. */

@@ -249,7 +249,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                                 'inline-flex items-center gap-1.5 h-[30px] px-3 rounded-lg border border-solid text-[12.5px] font-semibold outline-none',
                                 'motion-safe:transition-colors focus-visible:ring-2 focus-visible:ring-cl-lume/60',
                                 on
-                                    ? 'bg-cl-lume/[0.14] border-cl-lume/60 text-cl-lume'
+                                    ? 'bg-cl-lume/[0.14] border-cl-lume/60 text-cl-lume-text'
                                     : 'bg-cl-surface/40 border-cl-border/60 text-cl-muted hover:border-cl-lume/35 hover:text-cl-text cursor-pointer',
                             ].join(' ')}
                         >
@@ -264,7 +264,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                         aria-checked
                         onClick={onOpenAdvanced}
                         title="Custom overrides — open the full editor"
-                        className="inline-flex items-center gap-1.5 h-[30px] px-3 rounded-lg border border-solid text-[12.5px] font-semibold bg-cl-glow/[0.10] border-cl-glow/50 text-cl-glow"
+                        className="inline-flex items-center gap-1.5 h-[30px] px-3 rounded-lg border border-solid text-[12.5px] font-semibold bg-cl-glow/[0.10] border-cl-glow/50 text-cl-glow-text"
                     >
                         <SlidersHorizontal size={13} /> Custom
                     </button>
@@ -303,7 +303,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                                                 : 'border-cl-border/60 text-cl-faint hover:text-cl-muted hover:border-cl-lume/30 cursor-pointer',
                                     ].join(' ')}
                                 >
-                                    <span className="w-2 h-2 rounded-full" style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgba(255,255,255,0.25)' }} />
+                                    <span className="w-2 h-2 rounded-full" style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgb(var(--cl-bright-rgb) / 0.25)' }} />
                                     {r.name}
                                     {lock && <Lock size={10} />}
                                 </button>
@@ -312,7 +312,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                         {detected.memberIds.map(uid => (
                             <span key={uid} className="inline-flex items-center gap-1 h-[26px] pl-2.5 pr-1 rounded-full border border-solid border-cl-lume/40 bg-cl-lume/[0.08] text-[12px] text-cl-text">
                                 {memberName(uid)}
-                                <button type="button" onClick={() => removeMember(uid)} aria-label={`Remove ${memberName(uid)}`} className="w-5 h-5 flex items-center justify-center rounded-full text-cl-faint hover:text-cl-flash outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60">
+                                <button type="button" onClick={() => removeMember(uid)} aria-label={`Remove ${memberName(uid)}`} className="w-5 h-5 flex items-center justify-center rounded-full text-cl-faint hover:text-cl-flash-text outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60">
                                     <X size={11} />
                                 </button>
                             </span>
@@ -378,7 +378,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                                                                 : 'text-cl-muted hover:bg-white/[0.05] hover:text-cl-text cursor-pointer',
                                                     ].join(' ')}
                                                 >
-                                                    <span className="w-2 h-2 shrink-0 rounded-full" style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgba(255,255,255,0.25)' }} />
+                                                    <span className="w-2 h-2 shrink-0 rounded-full" style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgb(var(--cl-bright-rgb) / 0.25)' }} />
                                                     <span className="truncate">{r.name}</span>
                                                     {lock && <Lock size={10} className="shrink-0 ml-auto" />}
                                                 </span>
@@ -394,7 +394,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                                     ref={triggerRef}
                                     type="button"
                                     onClick={() => setAdding(true)}
-                                    className="inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full border border-dashed border-cl-border/70 text-[12px] text-cl-faint hover:text-cl-lume hover:border-cl-lume/40 outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
+                                    className="inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full border border-dashed border-cl-border/70 text-[12px] text-cl-faint hover:text-cl-lume-text hover:border-cl-lume/40 outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
                                 >
                                     <Plus size={11} /> Role
                                 </button>
@@ -405,7 +405,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                         <button
                             type="button"
                             onClick={onOpenAdvanced}
-                            className="mt-1.5 text-[11px] text-cl-faint hover:text-cl-lume hover:underline underline-offset-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
+                            className="mt-1.5 text-[11px] text-cl-faint hover:text-cl-lume-text hover:underline underline-offset-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
                         >
                             Members: set in Permissions
                         </button>
@@ -414,7 +414,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
             )}
 
             {selfLockout && (
-                <div className="mt-2 text-[11.5px] text-cl-glow flex items-center gap-1.5" role="alert">
+                <div className="mt-2 text-[11.5px] text-cl-glow-text flex items-center gap-1.5" role="alert">
                     <AlertTriangle size={12} />
                     You won’t be able to see this {scope === 'category' ? 'category' : 'channel'} yourself — add one of your roles.
                 </div>

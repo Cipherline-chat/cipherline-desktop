@@ -63,9 +63,17 @@ interface ClImageCropperProps {
      * images (avatars, profile banners, server icons and banners).
      */
     allowAnimated?: boolean;
+    /**
+     * Keep a transparent background: a still pick with see-through pixels comes
+     * back as a PNG instead of being flattened onto white. For surfaces that
+     * draw the image on their own background (server icons). Opaque picks are
+     * still JPEG.
+     */
+    keepTransparency?: boolean;
     onCancel: () => void;
     /**
-     * Receives the cropped image: a JPEG, or (with `allowAnimated`, for an
+     * Receives the cropped image: a JPEG, a PNG (with `keepTransparency`, for
+     * a pick with transparent pixels), or (with `allowAnimated`, for an
      * animated pick) an animated WebP. Check `blob.type` when uploading. The
      * cropper does not upload anything itself.
      */
@@ -92,7 +100,7 @@ const NUDGE_FAST = 32;
 export const ClImageCropper: React.FC<ClImageCropperProps> = ({
     open, file, outputWidth, outputHeight, shape = 'rect',
     title = 'Adjust your image', hint, confirmLabel = 'Apply',
-    quality = CROP_JPEG_QUALITY, overlayStyle, allowAnimated = false, onCancel, onConfirm,
+    quality = CROP_JPEG_QUALITY, overlayStyle, allowAnimated = false, keepTransparency = false, onCancel, onConfirm,
 }) => {
     const aspect = outputWidth / outputHeight;
     const frameW = frameWidthFor(aspect);
@@ -294,6 +302,7 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
             }
             const blob = await renderCroppedBlob(
                 img, t, frameW, frameH, outputWidth, outputHeight, quality,
+                { keepTransparency },
             );
             onConfirm(blob);
         } catch {

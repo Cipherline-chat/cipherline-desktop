@@ -40,6 +40,7 @@ import {
     SETTLE_GRACE_MS, CHECK_TIMEOUT_MS, RESULT_LINGER_MS,
     type ManualCheckState,
 } from '../utils/manualUpdateCheck';
+import { formatClock } from '../utils/a11y/timeFormat';
 
 /**
  * Settings → Advanced
@@ -201,9 +202,9 @@ export const AdvancedSettings: React.FC = () => {
                 </div>
 
                 {channel === 'staging' && (
-                    <div className="mt-4 flex items-start gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(255,201,77,.08)', border: '1px solid rgba(255,201,77,.2)' }}>
-                        <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-glow)' }} />
-                        <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow)' }}>
+                    <div className="mt-4 flex items-start gap-2.5 px-3 py-2.5 rounded-xl" style={{ background: 'rgb(var(--cl-glow-rgb) / .08)', border: '1px solid rgb(var(--cl-glow-rgb) / .2)' }}>
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-glow-text)' }} />
+                        <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow-text)' }}>
                             You'll receive pre-release builds. To go back to stable updates,
                             switch to <strong>Stable</strong> here — the next stable release
                             will replace your staging build automatically.
@@ -719,7 +720,7 @@ const CaptureStartupSettings: React.FC = () => {
             )}
 
             {error && (
-                <p className="text-xs mt-2" role="alert" style={{ color: 'var(--cl-danger)', margin: 0 }}>{error}</p>
+                <p className="text-xs mt-2" role="alert" style={{ color: 'var(--cl-danger-text)', margin: 0 }}>{error}</p>
             )}
         </>
     );
@@ -1087,7 +1088,7 @@ const PerformanceLogCard: React.FC = () => {
                     {rows.slice(0, 60).map((r, i) => (
                         <div key={`${r.at}-${r.source}-${i}`} className="sd-row" style={{ borderTop: 'none', padding: '2px 0', gap: 10, opacity: isStall(r) ? 1 : 0.75 }}>
                             <span className="sd-mono" style={{ fontSize: 12, color: 'var(--cl-muted)', flex: 'none' }}>
-                                {new Date(r.at).toLocaleTimeString()} {rowLabel(r)}
+                                {formatClock(new Date(r.at), undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })} {rowLabel(r)}
                             </span>
                             <span className="sd-mono" style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.activity}>{r.activity}</span>
                             {(isStall(r) || r.ms > 0) && <span className="sd-mono" style={{ fontSize: 12, flex: 'none' }}>{r.ms} ms</span>}

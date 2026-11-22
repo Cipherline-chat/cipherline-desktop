@@ -77,6 +77,28 @@ describe('useRailMembrane', () => {
         expect(ind().style.height).toBe('44px');
     });
 
+    it('a first frame stamped BEFORE the loop started cannot throw it off the rail (server first-open bug)', () => {
+        // A rAF stamp is the frame's vsync. After a long commit (the first open of a
+        // server) the first frame the loop receives began before the effect ran;
+        // the old loop subtracted performance.now() from it and stepped backwards.
+        render(0, true);
+        render(100, true);
+        const painted: Array<[number, number]> = [];
+        const at = (ts: number) => { const due = frames; frames = []; act(() => { due.forEach(f => f(ts)); }); painted.push([parseFloat(ind().style.top), parseFloat(ind().style.height)]); };
+        const t0 = performance.now();
+        at(t0 - 50);                                 // began 50 ms before the effect
+        for (let i = 1; i <= 60; i++) at(t0 - 50 + i * 16);
+        for (const [top, h] of painted) {
+            expect(Number.isFinite(top) && Number.isFinite(h)).toBe(true);
+            expect(top).toBeGreaterThanOrEqual(-0.01);           // never above the DM tile
+            expect(top + h).toBeLessThanOrEqual(144.01);          // never past the target's bottom
+        }
+        // it moved on its very first frame, and it lands
+        expect(painted[0][1]).toBeGreaterThan(44);
+        expect(ind().style.top).toBe('100px');
+        expect(ind().style.height).toBe('44px');
+    });
+
     it('a move between visible tiles still travels and stretches', () => {
         render(0, true);
         render(100, true);

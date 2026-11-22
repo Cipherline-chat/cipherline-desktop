@@ -12,9 +12,10 @@ import { useVoiceSettings } from '../src/hooks/useVoiceSettings';
 import { VoiceVideoSettings } from '../src/components/VoiceVideoSettings';
 
 /**
- * Voice gate "Automatic" harness: the REAL VoiceVideoSettings + useVoiceSettings + the settings CSS.
+ * Voice gate harness: the REAL VoiceVideoSettings + useVoiceSettings + the settings CSS. (The Automatic gate it was
+ * built for was removed 2026-11-17; it now shows the new engine's MANUAL noise gate.)
  *   npx vite --config harness/voice-gate.vite.config.ts      (serves :5312)
- *   ?auto=1 (default) | ?auto=0     &manual=-60
+ *   ?gate=1 (manual gate on) | 0 (default)     &db=-55      (the new audio engine is the only engine now)
  */
 loadWebFonts();
 const q = new URLSearchParams(location.search);
@@ -23,12 +24,12 @@ const q = new URLSearchParams(location.search);
 const Pane: React.FC = () => {
     const voice = useVoiceSettings('harness-user');
     React.useEffect(() => {
-        voice.setVoiceGateAuto(q.get('auto') !== '0');
-        voice.setVoiceGateThreshold(Number(q.get('manual') ?? -60));
+        voice.setVoiceGateManual(q.get('gate') === '1');
+        voice.setVoiceGateManualDb(Number(q.get('db') ?? -55));
     }, []);
     return (
         <div className="sd-root sd-win" style={{ minHeight: 0, height: 'auto', display: 'block', background: 'var(--cl-bg, #0B0F1E)' }}>
-            <main className="sd-main" style={{ width: 720, margin: '0 auto', padding: 24 }}>
+            <main className="sd-main" style={{ width: 'min(720px, calc(100vw - 48px))', margin: '0 auto', padding: 24 }}>
                 <div className="sd-col"><section className="sd-pane"><VoiceVideoSettings voice={voice} /></section></div>
             </main>
         </div>

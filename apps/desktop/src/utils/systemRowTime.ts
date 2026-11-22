@@ -8,6 +8,7 @@
  * Pure and clock-injected so it is testable without a DOM.
  */
 import { formatHourMinute, formatNumericDate } from './messageTimeFormat';
+import { formatDateTime } from './a11y/timeFormat';
 
 export interface SystemRowTime { label: string; full: string }
 
@@ -24,6 +25,6 @@ export function systemRowTime(ms: number, now: Date = new Date()): SystemRowTime
     const label = sameDay(d, now) ? `Today at ${time}`
         : sameDay(d, yesterday) ? `Yesterday at ${time}`
         : `${formatNumericDate(d)} ${time}`;
-    const full = d.toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' });
+    const full = formatDateTime(d, undefined, { dateStyle: 'full', timeStyle: 'short' });
     return { label, full };
 }

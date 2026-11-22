@@ -20,6 +20,8 @@ import { parseSystemInfoReply } from '../../utils/diagnostics/ipc';
 import { createScrubber } from '../../utils/diagnostics/scrub';
 import { collectSensitiveTerms } from '../../utils/diagnostics/sensitiveTerms';
 import { CallRatingCard } from './CallRatingCard';
+import secureLocalStore from '../../utils/secureLocalStore';
+import { storeLoadFailedEvent } from '../../utils/storeHealthReport';
 
 /**
  * The closed-beta diagnostics host. Mounted once for the signed-in app
@@ -206,6 +208,20 @@ export const BetaDiagnosticsHost: React.FC = () => {
         if (wasAuthScreenShown()) return;
         if (startupMs.current >= STARTUP_SLOW_MS) reportBeta('startup_slow', { ms: startupMs.current, gate_timeout: gateTimedOut.current });
     }, [active, hydrated]);
+
+    // Store load trouble at boot (utils/storeLoadRetry.ts): once per app
+    // session, labels only. It happened before collection could be on, so it
+    // is read from the store when collection turns on rather than reported live.
+    // A store that never loaded usually reads this toggle as off too, so most
+    // of what arrives is retries that recovered; the unrecovered case reaches
+    // us through Report a problem (settings.storage_status).
+    const storeLoadReported = useRef(false);
+    useEffect(() => {
+        if (!active || storeLoadReported.current) return;
+        storeLoadReported.current = true;
+        const ev = storeLoadFailedEvent(secureLocalStore.loadHealth());
+        if (ev) reportBeta('store_load_failed', ev);
+    }, [active]);
 
     // No consent pop-up (owner, 2026-11-08): sharing is a toggle in
     // Settings > Advanced > Help & feedback ("Share beta diagnostics"), off by

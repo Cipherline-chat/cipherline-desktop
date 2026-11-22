@@ -11,13 +11,15 @@
  * defines the toLocale* methods as exactly that construction) at a small
  * fraction of the cost.
  */
+import { formatDateTime } from './a11y/timeFormat';
+
 const cache = new Map<string, Intl.DateTimeFormat>();
 
 function fmt(key: string, options: Intl.DateTimeFormatOptions | undefined): Intl.DateTimeFormat {
     let f = cache.get(key);
     if (!f) {
         // `[]` = the runtime default locale, same as the calls this replaces.
-        f = new Intl.DateTimeFormat([], options);
+        f = new Intl.DateTimeFormat([], options); // time-format-ok: date-only / validity / parse
         cache.set(key, f);
     }
     return f;
@@ -25,7 +27,8 @@ function fmt(key: string, options: Intl.DateTimeFormatOptions | undefined): Intl
 
 /** = `d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })` */
 export function formatHourMinute(d: Date): string {
-    return fmt('hm', { hour: '2-digit', minute: '2-digit' }).format(d);
+    // Through the shared time formatter so Settings > Accessibility > Time format applies.
+    return formatDateTime(d, [], { hour: '2-digit', minute: '2-digit' });
 }
 
 /** = `d.toLocaleDateString()` (numeric year/month/day in the default locale) */

@@ -166,7 +166,7 @@ export const SaveCoachMark: React.FC<Props> = ({
                 <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                         <p className="text-[13px] font-semibold text-white leading-tight m-0 flex items-center gap-1.5">
-                            <Save size={13} className="text-cl-lume shrink-0" aria-hidden="true" /> {copy.title}
+                            <Save size={13} className="text-cl-lume-text shrink-0" aria-hidden="true" /> {copy.title}
                         </p>
                         <p className="text-[12px] text-cl-muted leading-snug m-0 mt-1">{copy.body}</p>
                         <p className="text-[11px] text-cl-faint leading-snug m-0 mt-1">{copy.hint}</p>

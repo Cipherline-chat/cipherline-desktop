@@ -4,12 +4,14 @@
  * Behaviour:
  *   • Window unfocused → GIF frozen on current frame, no play icon.
  *   • Window focused + autoPlayGifs=true (default) → GIF plays; no play icon.
- *   • Window focused + autoPlayGifs=false → GIF frozen until hovered; a small
- *     play icon sits in the top-right corner to signal "hover to play".  The
- *     icon disappears as soon as the cursor enters, and the GIF animates.
+ *   • Window focused + mode "On hover" (the old "Automatically play GIFs" off) →
+ *     GIF frozen until hovered or its badge focused; a small play icon sits in
+ *     the top-right corner to signal "hover to play".
+ *   • Mode "Never" → first frame only; the badge is a button that plays or
+ *     pauses that one GIF.
  *
- * OS "reduce motion" (prefers-reduced-motion: reduce) is treated exactly like
- * autoPlayGifs=false: frozen until hovered, with the play badge.
+ * Reduced motion (OS or Settings → Accessibility) turns "Always" into
+ * "On hover", exactly as the OS setting always did.
  *
  * Implementation: a hidden `<canvas>` holds the frozen frame (drawn via
  * drawImage when the transition play→pause is detected, or on first load).
@@ -18,10 +20,9 @@
  * When playing the img is shown and the canvas is hidden.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Play } from 'lucide-react';
-import { useGifSettings } from '../hooks/useGifSettings';
+import { Play, Pause } from 'lucide-react';
 import { useWindowFocus } from '../hooks/useWindowFocus';
-import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { useImageMode, imagePlays } from '../utils/a11y/motionPrefs';
 import { safeImageSrc } from '../utils/safeMediaUrl';
 
 export interface GifPlayerProps {
@@ -46,14 +47,20 @@ export interface GifPlayerProps {
 }
 
 
+const BADGE_ICON: React.CSSProperties = { color: '#fff', fill: '#fff' };
+
 export const GifPlayer: React.FC<GifPlayerProps> = ({
     src, alt, imgStyle, draggable = false, onClick, onLoad, onLoadImg, onError, referrerPolicy, wrapperStyle,
 }) => {
-    const { settings: { autoPlayGifs: autoPlaySetting } } = useGifSettings();
-    const reducedMotion = usePrefersReducedMotion();
-    const autoPlayGifs = autoPlaySetting && !reducedMotion;
+    // Settings → Accessibility → Animated images (Always / On hover / Never).
+    // The legacy "Automatically play GIFs" toggle and reduced motion both fold
+    // into this mode (utils/a11y/motionPrefs.ts effectiveImageMode).
+    const mode = useImageMode('gif');
     const windowFocused = useWindowFocus();
     const [isHovered, setIsHovered] = useState(false);
+    const [badgeFocused, setBadgeFocused] = useState(false);
+    /** Click / Enter on the play badge: plays (or pauses) this one GIF. */
+    const [manualPlay, setManualPlay] = useState(false);
     const [imgLoaded, setImgLoaded] = useState(false);
 
     // Only a validated image URL (blob:, data:image/*, KLIPY / Cipherline media
@@ -69,12 +76,12 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     /** shouldPlay = true → show <img> (animates); false → show <canvas> (frozen). */
-    const shouldPlay = windowFocused && (autoPlayGifs || isHovered);
+    const shouldPlay = windowFocused && imagePlays(mode, isHovered || badgeFocused, manualPlay);
 
     // Play icon: only shown when the user has opted out of autoPlay and the
     // cursor is not over the GIF.  Window-unfocus pauses the GIF silently —
     // no icon needed there since it resumes automatically on refocus.
-    const showPlayIcon = imgLoaded && !autoPlayGifs && !isHovered;
+    const showPlayIcon = imgLoaded && mode !== 'always' && !(mode === 'hover' && isHovered && !badgeFocused);
 
     // ── Frame capture ─────────────────────────────────────────────────────────
 
@@ -152,33 +159,45 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    background: 'rgba(255,255,255,0.05)',
+                    background: 'rgb(var(--cl-bright-rgb) / 0.05)',
                     minWidth: 80,
                     minHeight: 50,
                 }} />
             )}
 
-            {/* Top-right play badge — only visible when autoPlay is off and
-                the cursor is not over the GIF.  Tells the user "hover to play." */}
+            {/* Top-right play badge. A real button so it can be reached and
+                operated from the keyboard: in "On hover" mode focusing it plays
+                the GIF, in "Never" mode Enter / click plays or pauses this one. */}
             {showPlayIcon && (
-                <div
+                <button
+                    type="button"
+                    className="gif-play-badge"
+                    aria-label={manualPlay ? 'Pause animation' : 'Play animation'}
+                    aria-pressed={manualPlay}
+                    onClick={e => { e.stopPropagation(); setManualPlay(m => !m); }}
+                    onFocus={() => setBadgeFocused(true)}
+                    onBlur={() => setBadgeFocused(false)}
                     style={{
                         position: 'absolute',
                         top: 6,
                         right: 6,
-                        background: 'rgba(0,0,0,0.6)',
+                        background: 'rgb(var(--cl-shade-rgb) / 0.6)',
                         backdropFilter: 'blur(3px)',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
                         borderRadius: '50%',
                         width: 24,
                         height: 24,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        pointerEvents: 'none',
                     }}
                 >
-                    <Play size={11} style={{ color: '#fff', fill: '#fff', marginLeft: 1 }} />
-                </div>
+                    {manualPlay
+                        ? <Pause size={11} style={BADGE_ICON} />
+                        : <Play size={11} style={{ ...BADGE_ICON, marginLeft: 1 }} />}
+                </button>
             )}
         </div>
     );

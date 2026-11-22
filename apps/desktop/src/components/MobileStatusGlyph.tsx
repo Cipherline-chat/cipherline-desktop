@@ -1,5 +1,5 @@
 import React from 'react';
-import { type UserStatus, STATUS_CONFIG } from '../utils/userStatusModel';
+import { type UserStatus, STATUS_CONFIG, statusDotColor } from '../utils/userStatusModel';
 
 /**
  * The "on mobile" form of the status dot: a small phone, filled with the
@@ -29,7 +29,7 @@ export const MobileStatusGlyph: React.FC<{ status: UserStatus; size?: number }> 
                 width: w,
                 height: h,
                 borderRadius: radius,
-                backgroundColor: STATUS_CONFIG[status]?.color ?? '#6b7280',
+                backgroundColor: statusDotColor(status),
                 flexShrink: 0,
             }}
         >

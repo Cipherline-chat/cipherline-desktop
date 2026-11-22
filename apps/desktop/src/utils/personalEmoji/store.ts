@@ -22,7 +22,7 @@
  * fake; `realIO()` binds the real secureLocalStore + Electron IPC.
  */
 
-import { PERSONAL_EMOJI_MAX_BYTES, isPersonalEmojiId, sniffImageMime, b64ToBytes, bytesToB64 } from './token';
+import { PERSONAL_BLOB_MAX_BYTES, isPersonalEmojiId, sniffImageMime, b64ToBytes, bytesToB64 } from './token';
 
 export const CACHE_MAX_ENTRIES = 300;
 export const CACHE_MAX_BYTES = 24 * 1024 * 1024;
@@ -145,7 +145,7 @@ export class EmojiBlobStore {
      */
     async put(id: string, bytes: Uint8Array, meta: PutMeta): Promise<void> {
         if (!isPersonalEmojiId(id) || !this.io.uid()) return;
-        if (bytes.length === 0 || bytes.length > PERSONAL_EMOJI_MAX_BYTES || !sniffImageMime(bytes)) return;
+        if (bytes.length === 0 || bytes.length > PERSONAL_BLOB_MAX_BYTES || !sniffImageMime(bytes)) return;
         if (this.has(id) && this.getKeyB64(id) && await this.read(id)) { this.touch(id); return; }
         const { sealed, keyB64 } = await sealBytes(bytes);
         await this.io.writeFile(emojiFileName(id), sealed);

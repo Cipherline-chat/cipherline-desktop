@@ -95,7 +95,9 @@ import { openExternalLink } from '../../utils/openExternalLink';
 import { ClButton } from '../ClButton';
 import { ClModal } from '../cl/ClModal';
 import type { KeysSignal } from '../mascot/Keys';
-import { STRIPE_APPEARANCE, STRIPE_FONTS } from './stripeAppearance';
+import { STRIPE_FONTS } from './stripeAppearance';
+import { stripeAppearanceFor } from './stripeThemeAppearance';
+import { getTheme } from '../../theme/engine';
 import { DESKTOP_PAYMENT_ELEMENT_OPTIONS, desktopPaymentMethodTypes } from './checkoutPaymentMethods';
 import { CheckoutShell, CheckoutSummary } from './CheckoutLayout';
 import { RenewalConsent } from './RenewalConsent';
@@ -104,8 +106,9 @@ import { checkoutIntervals, quoteFor, type IntervalPrices } from './planInterval
 import { useCheckoutWide } from './useCheckoutLayout';
 
 // Shared with the card-update modal (and available to the website) so the
-// three Elements surfaces can't drift apart — see stripeAppearance.ts.
-const APPEARANCE = STRIPE_APPEARANCE;
+// three Elements surfaces can't drift apart — see stripeAppearance.ts. The
+// appearance follows the active theme (stripeThemeAppearance.ts; Dark = the
+// shared look unchanged), read when the checkout mounts.
 const FONTS = STRIPE_FONTS;
 
 export interface InAppCheckoutProps {
@@ -188,7 +191,7 @@ export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess
                         // tab appeared that the server then refuses. The server's
                         // list can only narrow this, never widen it.
                         paymentMethodTypes: desktopPaymentMethodTypes(cfg.payment_method_types),
-                        appearance: APPEARANCE,
+                        appearance: stripeAppearanceFor(getTheme()),
                         fonts: FONTS,
                     },
                 });
@@ -680,7 +683,7 @@ const CheckoutForm: React.FC<{
             {phase === 'error' && errorMsg && (
                 <motion.div
                     className="text-[13px] mb-3 flex items-start gap-1.5"
-                    style={{ color: 'var(--cl-flash)' }}
+                    style={{ color: 'var(--cl-flash-text)' }}
                     role="alert"
                     initial={{ opacity: 0, x: reduced ? 0 : -6 }} animate={{ opacity: 1, x: 0 }}
                 >
@@ -693,7 +696,7 @@ const CheckoutForm: React.FC<{
                 <div className="h-2 rounded-full overflow-hidden mb-3" style={{ background: 'var(--cl-surface)' }}>
                     <motion.div
                         className="h-full rounded-full"
-                        style={{ background: 'linear-gradient(90deg, var(--cl-lume-deep), var(--cl-lume))', boxShadow: '0 0 12px rgba(37,224,200,0.6)' }}
+                        style={{ background: 'linear-gradient(90deg, var(--cl-lume-deep), var(--cl-lume))', boxShadow: '0 0 12px rgb(var(--cl-lume-rgb) / 0.6)' }}
                         initial={{ width: '8%' }}
                         animate={{ width: ['8%', '70%', '92%'] }}
                         transition={{ duration: 2.4, ease: 'easeInOut' }}

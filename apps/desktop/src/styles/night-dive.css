@@ -78,9 +78,9 @@
 /* Home deck (home-deck.css: surface light falling into the deep). */
 :root .hd-host {
   background:
-    radial-gradient(56% 320px at 32% -40px, rgba(37, 224, 200, calc(.075 * var(--nd-sun))), transparent 70%),
-    radial-gradient(40% 260px at 78% -60px, rgba(37, 224, 200, calc(.05 * var(--nd-sun))), transparent 70%),
-    linear-gradient(160deg, transparent 0 30%, rgba(37, 224, 200, calc(.012 * var(--nd-sun))) 42%, transparent 54%),
+    radial-gradient(56% 320px at 32% -40px, rgb(var(--cl-lume-rgb) / calc(.075 * var(--nd-sun))), transparent 70%),
+    radial-gradient(40% 260px at 78% -60px, rgb(var(--cl-lume-rgb) / calc(.05 * var(--nd-sun))), transparent 70%),
+    linear-gradient(160deg, transparent 0 30%, rgb(var(--cl-lume-rgb) / calc(.012 * var(--nd-sun))) 42%, transparent 54%),
     linear-gradient(180deg, color-mix(in oklab, var(--nd-home) 94%, var(--nd-home-tint)) 0, var(--nd-home) 420px);
   background-color: var(--nd-home);
   transition:
@@ -96,6 +96,48 @@
     --nd-sea-0 var(--nd-fade) var(--nd-ease-out), --nd-sea-1 var(--nd-fade) var(--nd-ease-out),
     --nd-sea-2 var(--nd-fade) var(--nd-ease-out), --nd-sea-3 var(--nd-fade) var(--nd-ease-out),
     --nd-sea-4 var(--nd-fade) var(--nd-ease-out);
+}
+
+/* ── Every theme except plain Dark: the backgrounds are the theme's own ─────
+   The registered properties above start at DARK's navy (an @property
+   initial-value cannot be a var()), and the rules above paint from them by day
+   too, so before this block every other theme kept Dark's navy title bar, chat
+   feed, Friends page and rail ring cut-outs (the feed behind Light's dark ink
+   was unreadable; 0.1.3-staging.257, owner 2026-11-21). The harnesses never
+   load this file, which is why they showed the right colours. The night dive
+   only runs in plain Dark (hooks/useNightDive.ts), so here the paint comes
+   straight from the tokens and never goes through an --nd-* property: those
+   keep their initial values in every theme, so switching theme never starts
+   their 5 s fade. Dark is untouched (none of these selectors match it). */
+:root:not([data-theme="dark"]) [data-layout="drift"] > .drag-region,
+:root[data-custom-theme] [data-layout="drift"] > .drag-region {
+  background-color: var(--cl-abyss);
+}
+/* The rail's ring cut-outs: the theme's own page colour, as everywhere else. */
+:root:not([data-theme="dark"]) [data-layout="drift"] .app-rail,
+:root[data-custom-theme] [data-layout="drift"] .app-rail {
+  --cl-abyss: inherit;
+}
+/* The feed's gradient is an inline style (ChatPane.tsx) reading --nd-feed-*;
+   outrank it with the same gradient on the theme's tokens. */
+:root:not([data-theme="dark"]) .chat-pane-root,
+:root[data-custom-theme] .chat-pane-root {
+  background: linear-gradient(180deg, var(--cl-deep) 0%, var(--cl-abyss) 100%) !important;
+}
+:root:not([data-theme="dark"]) .friends-pane-root,
+:root[data-custom-theme] .friends-pane-root {
+  background-color: var(--cl-abyss);
+}
+/* Home in the other DARK-scheme themes: home-deck.css's own atmosphere on the
+   theme's tokens (light-scheme themes have their flat page in home-deck.css). */
+:root[data-scheme="dark"]:not([data-theme="dark"]) .hd-host,
+:root[data-scheme="dark"][data-custom-theme] .hd-host {
+  background:
+    radial-gradient(56% 320px at 32% -40px, rgb(var(--cl-lume-rgb) / .075), transparent 70%),
+    radial-gradient(40% 260px at 78% -60px, rgb(var(--cl-lume-rgb) / .05), transparent 70%),
+    linear-gradient(160deg, transparent 0 30%, rgb(var(--cl-lume-rgb) / .012) 42%, transparent 54%),
+    linear-gradient(180deg, color-mix(in oklab, var(--cl-deep) 94%, rgb(var(--cl-lume-rgb))) 0, var(--cl-deep) 420px);
+  background-color: var(--cl-deep);
 }
 
 /* ── Night values ──────────────────────────────────────────────────────────── */
@@ -138,9 +180,12 @@
    the layer behind everything is what you see between and through the cards.
    (Its first frame on the way down and its last on the way up are exactly the
    daylight water, so this swap is invisible.) */
-:root[data-nd-sea] [data-layout="drift"],
-:root[data-nd-sea] [data-layout="drift"] .app-mainrow,
-:root[data-nd-sea] [data-layout="drift"] .app-pane3-sheet {
+/* Plain Dark only: leaving Dark at night unmounts the sea through its ~6 s
+   ascent, and until then any other theme would show Dark's navy sea between
+   its cards (and under its feed). */
+:root[data-nd-sea][data-theme="dark"]:not([data-custom-theme]) [data-layout="drift"],
+:root[data-nd-sea][data-theme="dark"]:not([data-custom-theme]) [data-layout="drift"] .app-mainrow,
+:root[data-nd-sea][data-theme="dark"]:not([data-custom-theme]) [data-layout="drift"] .app-pane3-sheet {
   background: transparent;
 }
 
@@ -161,11 +206,15 @@
   /* The daylight water (Dashboard root / title bar: --cl-abyss). */
   background: #0B0F1E;
 }
+/* Only plain Dark dives: any other theme never shows this layer (it can still
+   be mounted for the ~6 s ascent right after leaving Dark at night). */
+:root:not([data-theme="dark"]) .nds,
+:root[data-custom-theme] .nds { display: none; }
 /* Daylight glow: the drift row's surface light, placed exactly where the row
    paints it (below the 34 px title bar). */
 .nds-dayglow {
   position: absolute; left: 0; right: 0; top: 34px; bottom: 0;
-  background: radial-gradient(120% 90% at 18% 0%, rgba(37, 224, 200, .05), transparent 55%);
+  background: radial-gradient(120% 90% at 18% 0%, rgb(var(--cl-lume-rgb) / .05), transparent 55%);
 }
 /* The night sea: blacker, cooler, darker still toward the floor. Oversized so
    the descent's drift never shows an edge. */

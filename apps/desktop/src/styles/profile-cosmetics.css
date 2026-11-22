@@ -93,11 +93,11 @@
 .pc-chip {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
   padding: 3px 10px 3px 6px; border-radius: 999px; font-size: 12px; font-weight: 600;
-  color: var(--cl-muted); background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1);
+  color: var(--cl-muted); background: rgb(var(--cl-bright-rgb) / .06); border: 1px solid rgb(var(--cl-bright-rgb) / .1);
 }
 .pc-chip--game { padding: 3px 10px; }
 .pc-chip--link { font-family: inherit; cursor: default; }
 button.pc-chip--link { cursor: pointer; }
-button.pc-chip--link:hover { background: rgba(255, 255, 255, .1); color: var(--cl-text); }
-button.pc-chip--link:focus-visible { outline: 2px solid var(--cl-lume, #25e0c8); outline-offset: 2px; }
+button.pc-chip--link:hover { background: rgb(var(--cl-bright-rgb) / .1); color: var(--cl-text); }
+button.pc-chip--link:focus-visible { outline: 2px solid var(--cl-lume, var(--cl-lume)); outline-offset: 2px; }
 .pc-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -8,7 +8,7 @@
  * as the avatar hook it used to share would spend.
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Smile, Ghost } from 'lucide-react';
 import { useServerEmojiUrl } from '../../hooks/useServerEmojiUrl';
 import { evictEmoji } from '../../utils/serverEmojiLoader';
@@ -129,7 +129,8 @@ export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB
         [serverId, attachmentId, keyB64, nonceB64],
     );
     const url = useServerEmojiUrl(ref, token);
-    const shown = useFrozenWhenAway(url);
+    const [hovered, setHovered] = useState(false);
+    const shown = useFrozenWhenAway(url, hovered);
     const ctx = useContextMenu();
     const { push } = useToast();
 
@@ -144,6 +145,8 @@ export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB
                 style={style}
                 decoding="async"
                 draggable={false}
+                onMouseEnter={() => setHovered(true)}
+                onMouseLeave={() => setHovered(false)}
                 onContextMenu={saveable ? (e) => {
                     ctx.open(e, [saveToMyEmojisItem(false, async () => {
                         // The server already stored it at <=128 px and <=256 KB.

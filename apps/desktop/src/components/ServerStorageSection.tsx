@@ -106,7 +106,7 @@ export const ServerStorageSection: React.FC<{ data: ServerStorageData }> = ({ da
         <div className="sd-card" data-testid="server-storage">
             <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-3">
-                    <Server className="w-5 h-5" style={{ color: 'var(--cl-lume)' }} />
+                    <Server className="w-5 h-5" style={{ color: 'var(--cl-lume-text)' }} />
                     <h3 className="text-base" style={SECTION_TITLE_STYLE}>Server storage</h3>
                 </div>
                 {rows.length > 0 && (
@@ -121,7 +121,7 @@ export const ServerStorageSection: React.FC<{ data: ServerStorageData }> = ({ da
             </p>
 
             {rows.length === 0 ? (
-                <div role="status" className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                <div role="status" className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                     {loading
                         ? 'Loading your servers…'
                         : error
@@ -150,7 +150,7 @@ export const ServerStorageSection: React.FC<{ data: ServerStorageData }> = ({ da
                                         className="w-8 h-8 rounded-lg text-[11px] shrink-0 overflow-hidden"
                                     />
                                 ) : (
-                                    <span className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center" style={{ background: 'rgba(255,255,255,.05)', color: 'var(--cl-faint)' }}>
+                                    <span className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center" style={{ background: 'rgb(var(--cl-bright-rgb) / .05)', color: 'var(--cl-faint)' }}>
                                         <Archive className="w-4 h-4" aria-hidden="true" />
                                     </span>
                                 )}

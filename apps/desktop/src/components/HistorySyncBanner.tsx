@@ -527,13 +527,13 @@ export const HistorySyncBanner: React.FC<Props> = ({
                 <div style={{
                     width: 56, height: 56, borderRadius: 16,
                     background: state === 'done' ? 'rgba(34,197,94,.12)' : 'rgba(37,224,200,.1)',
-                    border: `1px solid ${state === 'done' ? 'rgba(34,197,94,.25)' : 'rgba(37,224,200,.2)'}`,
+                    border: `1px solid ${state === 'done' ? 'rgba(34,197,94,.25)' : 'rgb(var(--cl-lume-rgb) / .2)'}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                    {state === 'importing' && <Loader2 size={24} style={{ color: 'var(--cl-lume)' }} className="animate-spin" />}
+                    {state === 'importing' && <Loader2 size={24} style={{ color: 'var(--cl-lume-text)' }} className="animate-spin" />}
                     {state === 'done' && <CheckCircle2 size={24} style={{ color: '#22c55e' }} />}
-                    {(state === 'timed_out' || state === 'declined' || state === 'blocked') && <AlertTriangle size={24} style={{ color: 'var(--cl-glow)' }} />}
-                    {(state === 'idle' || state === 'picking_device' || state === 'requesting') && <Download size={24} style={{ color: 'var(--cl-lume)' }} />}
+                    {(state === 'timed_out' || state === 'declined' || state === 'blocked') && <AlertTriangle size={24} style={{ color: 'var(--cl-glow-text)' }} />}
+                    {(state === 'idle' || state === 'picking_device' || state === 'requesting') && <Download size={24} style={{ color: 'var(--cl-lume-text)' }} />}
                 </div>
 
                 {/* idle */}
@@ -645,9 +645,9 @@ export const HistorySyncBanner: React.FC<Props> = ({
                             border: '1px solid var(--cl-border)', padding: '12px 16px',
                             display: 'flex', alignItems: 'center', gap: 10,
                         }}>
-                            <Loader2 size={16} style={{ color: 'var(--cl-lume)', flexShrink: 0 }} className="animate-spin" />
+                            <Loader2 size={16} style={{ color: 'var(--cl-lume-text)', flexShrink: 0 }} className="animate-spin" />
                             <span style={{ fontSize: 13, color: 'var(--cl-muted)', flex: 1 }}>Listening for response…</span>
-                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--cl-lume)', fontVariantNumeric: 'tabular-nums' }}>{countdown}s</span>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--cl-lume-text)', fontVariantNumeric: 'tabular-nums' }}>{countdown}s</span>
                         </div>
                         <ClButton fullWidth variant="ghost" onClick={dismiss}>Cancel</ClButton>
                     </>

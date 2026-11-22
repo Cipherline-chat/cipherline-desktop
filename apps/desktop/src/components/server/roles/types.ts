@@ -12,6 +12,14 @@ export interface Role {
     mentionable: boolean;
     hoisted: boolean;     // legacy — universal top-role grouping ignores this
     is_everyone: boolean;
+    /** Gradient end colour (packed RGB, -1/absent = solid). Newer APIs only. */
+    secondary_color?: number;
+    /** Role icon: a single unicode emoji, or an uploaded image (id + the
+     *  server-held key/nonce). At most one is set. Newer APIs only. */
+    icon_emoji?: string | null;
+    icon_attachment_id?: string | null;
+    icon_key_b64?: string | null;
+    icon_nonce_b64?: string | null;
 }
 
 /** Sub-tab keys inside the role editor. */

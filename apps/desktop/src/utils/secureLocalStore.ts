@@ -58,7 +58,25 @@
  * Backed by the shared `cipherline` IndexedDB (`kv_enc` store).
  */
 
-import { openDb, KV_STORE } from './attachmentCache';
+import { openDb, dropDbConnection, KV_STORE } from './attachmentCache';
+import {
+    STORE_LOAD_RETRY_DELAYS_MS, StoreLoadStageError, classifyStoreLoadError,
+    type StoreLoadFailureInfo,
+} from './storeLoadRetry';
+
+/**
+ * What the boot-time load went through, for diagnostics. Labels only: a stage,
+ * an error NAME (never its message), and counts. See storeLoadRetry.ts.
+ */
+export interface StoreLoadFailureRecord extends Omit<StoreLoadFailureInfo, 'transient'> {
+    /** Attempts made by the load this record is about. */
+    attempts: number;
+    /** True when a later attempt succeeded, so the store did load. */
+    recovered: boolean;
+}
+
+/** The store's health as one label, for reports: see SecureLocalStore.loadHealth. */
+export type StoreHealthStatus = 'ok' | 'locked' | 'unread' | 'account_unread';
 
 /**
  * Resolution state of the device master key for this session, as main reports
@@ -240,6 +258,10 @@ class SecureLocalStore {
     private unreadAccount: string | null = null;
     private storeUnread = false;
     private loadFailureListeners = new Set<() => void>();
+    private loadRetryListeners = new Set<(attempt: number) => void>();
+    /** Delays between load attempts; replaced only by tests. */
+    private loadRetryDelays: readonly number[] = STORE_LOAD_RETRY_DELAYS_MS;
+    private lastLoadFailure: StoreLoadFailureRecord | null = null;
     private hydrated = false;
     private locked = false;
     private status: MasterKeyStatus = 'absent';
@@ -323,43 +345,42 @@ class SecureLocalStore {
             return;
         }
 
-        try {
-            const records = [...(await this.readAllRecords())];
-
-            // One IPC round trip per tier rather than one per record: main
-            // decrypts the whole batch and returns the plaintexts together.
-            // Batching is what keeps the round-trip count proportional to
-            // hydrate phases instead of to the number of stored keys.
-            const decryptInto = async (entries: Array<[string, KvRecord]>) => {
-                for (const [k, plain] of await this.openRecords(entries)) this.map.set(k, plain);
-            };
-
-            // Tier 1 — master-tier records (owner null). These include the
-            // bootstrap pointer `cipherline_user_id`, so decrypt them first.
-            await decryptInto(records.filter(([, rec]) => rec.o === null));
-
-            this.activeUserId = this.map.get('cipherline_user_id') ?? null;
-
-            // Tier 2 — per-account records for the active user only. Message
-            // history is held back for hydrateMessages() so first paint isn't
-            // gated on it (see DEFERRED_PREFIXES). Main selects the per-account
-            // subkey from each record's own owner field, so there is no key to
-            // pass and no way for the two to disagree.
-            if (this.activeUserId) {
-                const mine = records.filter(([, rec]) => rec.o === this.activeUserId);
-                this.deferred = mine.filter(([k]) => isDeferredKey(k));
-                await decryptInto(mine.filter(([k]) => !isDeferredKey(k)));
+        // Transient refusals (something holding the database files for a moment
+        // at login, a connection closing under us, main not ready) get a few
+        // more tries before the session is declared unread: see
+        // storeLoadRetry.ts. The load is read-only, so a retry is safe, and it
+        // starts from an empty map so nothing from a failed attempt survives.
+        for (let attempt = 1; ; attempt++) {
+            try {
+                await this.loadInitialRecords();
+                if (this.lastLoadFailure) this.lastLoadFailure = { ...this.lastLoadFailure, attempts: attempt, recovered: true };
+                break;
+            } catch (e) {
+                const info = classifyStoreLoadError(e);
+                this.lastLoadFailure = { stage: info.stage, name: info.name, attempts: attempt, recovered: false };
+                const delay = this.loadRetryDelays[attempt - 1];
+                if (info.transient && delay !== undefined) {
+                    console.warn(`[secureLocalStore] load attempt ${attempt} failed (${info.stage}/${info.name}) — retrying in ${delay} ms`);
+                    for (const fn of [...this.loadRetryListeners]) { try { fn(attempt); } catch { /* isolate */ } }
+                    this.map.clear();
+                    this.deferred = [];
+                    this.activeUserId = null;
+                    this.readyUserId = null;
+                    // A connection that failed mid-read may be the stale one:
+                    // the next attempt opens afresh.
+                    dropDbConnection();
+                    await new Promise<void>(r => setTimeout(r, delay));
+                    continue;
+                }
+                // A read/decrypt failure must not crash boot, so the app comes up
+                // on what did load. Nothing is deleted, and nothing built on this
+                // can reach disk: see `unreadAccount`. No active account here means
+                // the failure was at or before the master tier, so the whole store
+                // is unread rather than one account.
+                console.error('[secureLocalStore] hydrate failed — continuing without those records', e);
+                this.noteLoadFailure(this.activeUserId);
+                break;
             }
-            this.readyUserId = this.activeUserId;
-
-        } catch (e) {
-            // A read/decrypt failure must not crash boot, so the app comes up
-            // on what did load. Nothing is deleted, and nothing built on this
-            // can reach disk: see `unreadAccount`. No active account here means
-            // the failure was at or before the master tier, so the whole store
-            // is unread rather than one account.
-            console.error('[secureLocalStore] hydrate failed — continuing without those records', e);
-            this.noteLoadFailure(this.activeUserId);
         }
 
         this.hydrated = true;
@@ -367,6 +388,43 @@ class SecureLocalStore {
         // survives. (Not done when locked — we touch nothing in that state.)
         if (!this.locked) this.purgeLegacyPlaintext();
         this.installQuitFlush();
+    }
+
+    /** One attempt at hydrate()'s load: master tier, then the active account. Throws on failure. */
+    private async loadInitialRecords(): Promise<void> {
+        const records = [...(await this.readAllRecords())];
+
+        // One IPC round trip per tier rather than one per record: main
+        // decrypts the whole batch and returns the plaintexts together.
+        // Batching is what keeps the round-trip count proportional to
+        // hydrate phases instead of to the number of stored keys.
+        const decryptInto = async (entries: Array<[string, KvRecord]>) => {
+            let opened: Array<[string, string]>;
+            try {
+                opened = await this.openRecords(entries);
+            } catch (e) {
+                throw new StoreLoadStageError('ipc', e);
+            }
+            for (const [k, plain] of opened) this.map.set(k, plain);
+        };
+
+        // Tier 1 — master-tier records (owner null). These include the
+        // bootstrap pointer `cipherline_user_id`, so decrypt them first.
+        await decryptInto(records.filter(([, rec]) => rec.o === null));
+
+        this.activeUserId = this.map.get('cipherline_user_id') ?? null;
+
+        // Tier 2 — per-account records for the active user only. Message
+        // history is held back for hydrateMessages() so first paint isn't
+        // gated on it (see DEFERRED_PREFIXES). Main selects the per-account
+        // subkey from each record's own owner field, so there is no key to
+        // pass and no way for the two to disagree.
+        if (this.activeUserId) {
+            const mine = records.filter(([, rec]) => rec.o === this.activeUserId);
+            this.deferred = mine.filter(([k]) => isDeferredKey(k));
+            await decryptInto(mine.filter(([k]) => !isDeferredKey(k)));
+        }
+        this.readyUserId = this.activeUserId;
     }
 
     /**
@@ -709,6 +767,29 @@ class SecureLocalStore {
     /** True when the whole store failed to load, including the session pointers,
      *  so the app cannot tell a signed-out device from an unreadable one. */
     isStoreUnread(): boolean { return this.storeUnread; }
+
+    /** True when any load failed this session — the whole store or the active
+     *  account. Either way nothing recovers in-session: only a relaunch does. */
+    hasLoadFailure(): boolean { return this.storeUnread || this.unreadAccount !== null; }
+
+    /**
+     * The store's health as labels, for diagnostics and reports: the state, and
+     * the last boot-load failure (stage, error name, attempts, whether a retry
+     * recovered it). Never a path, an id or a message.
+     */
+    loadHealth(): { status: StoreHealthStatus; lastFailure: StoreLoadFailureRecord | null } {
+        const status: StoreHealthStatus = this.locked ? 'locked'
+            : this.storeUnread ? 'unread'
+            : this.unreadAccount !== null ? 'account_unread'
+            : 'ok';
+        return { status, lastFailure: this.lastLoadFailure ? { ...this.lastLoadFailure } : null };
+    }
+
+    /** Be told each time the boot-time load is about to retry (`attempt` = the one that failed). */
+    onLoadRetry(fn: (attempt: number) => void): () => void {
+        this.loadRetryListeners.add(fn);
+        return () => { this.loadRetryListeners.delete(fn); };
+    }
 
     /** Be told about a failed load: now if one has happened, else when it does.
      *  Returns the unsubscribe. */
@@ -1139,9 +1220,19 @@ class SecureLocalStore {
 
     private async readAllRecords(): Promise<Map<string, KvRecord>> {
         const out = new Map<string, KvRecord>();
-        const db = await openDb();
+        let db: IDBDatabase;
+        try {
+            db = await openDb();
+        } catch (e) {
+            throw new StoreLoadStageError('open', e);
+        }
         await new Promise<void>((resolve, reject) => {
-            const tx = db.transaction(KV_STORE, 'readonly');
+            const fail = (e: unknown) => reject(new StoreLoadStageError('read', e));
+            let tx: IDBTransaction;
+            try {
+                // Throws InvalidStateError synchronously when the connection is closing.
+                tx = db.transaction(KV_STORE, 'readonly');
+            } catch (e) { fail(e); return; }
             const store = tx.objectStore(KV_STORE);
             const req = store.openCursor();
             req.onsuccess = () => {
@@ -1150,8 +1241,9 @@ class SecureLocalStore {
                 out.set(String(cursor.key), cursor.value as KvRecord);
                 cursor.continue();
             };
-            req.onerror = () => reject(req.error);
-            tx.onerror = () => reject(tx.error);
+            req.onerror = () => fail(req.error);
+            tx.onerror = () => fail(tx.error);
+            tx.onabort = () => fail(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
         });
         return out;
     }
@@ -1175,6 +1267,9 @@ class SecureLocalStore {
     }
 
     // ── Test hooks ───────────────────────────────────────────────────────────
+    /** @internal replace the delays between load attempts (tests only). */
+    _setLoadRetryDelaysForTest(delays: readonly number[]): void { this.loadRetryDelays = delays; }
+
     /** @internal reset in-memory state (tests only). */
     _resetForTest(): void {
         this.map.clear();
@@ -1191,6 +1286,11 @@ class SecureLocalStore {
         this.unreadAccount = null;
         this.storeUnread = false;
         this.loadFailureListeners.clear();
+        this.loadRetryListeners.clear();
+        this.lastLoadFailure = null;
+        // Tests run the retries without the real seconds-long waits; a test of
+        // the backoff itself sets its own (see _setLoadRetryDelaysForTest).
+        this.loadRetryDelays = STORE_LOAD_RETRY_DELAYS_MS.map(() => 0);
         if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
         if (this.rebindTimer) { clearTimeout(this.rebindTimer); this.rebindTimer = null; }
         this.rebind.clear();

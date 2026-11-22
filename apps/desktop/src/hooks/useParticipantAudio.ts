@@ -47,6 +47,7 @@
  *     chain rebuilds. Since usePersistentNsEnabled is a single source of
  *     truth per identity, callers always pass the same value — no thrashing.
  */
+import { useShareAudioHelper } from './useShareAudioHelper';
 import secureLocalStore from '../utils/secureLocalStore';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { Participant, RemoteParticipant, RemoteTrackPublication, Track } from 'livekit-client';
@@ -376,6 +377,8 @@ function pathFor(identity: string, type: 'mic' | 'screen', nsEnabled: boolean): 
 // the talker onto the Web Audio path (latency cost, see utils/avSync.ts).
 // See audio/receiveLeveler.js for why this cannot fight the sender's AGC.
 const levelBoostLatched = new Set<string>();
+/** How long a talker's boost latch outlives their chain (a path change releases and re-acquires within a frame or two). */
+export const BOOST_LATCH_FORGET_MS = 5000;
 const levelBoostListeners = new Set<() => void>();
 function subscribeLevelBoost(cb: () => void): () => void {
     levelBoostListeners.add(cb);
@@ -870,7 +873,16 @@ function releaseMicChain(identity: string): void {
         if (isIncomingLevelerEnabled()) levelerMemory.set(identity, { snap: chain.leveler.snapshot(), at: Date.now() });
         teardownMicInternals(chain);
         micChains.delete(identity);
-        levelBoostLatched.delete(identity);
+        // The boost latch is NOT dropped here. Latching changes the talker's playback path, the hook's effect re-runs
+        // on that, and when it is the only holder its cleanup lands here: dropping the latch sent the re-acquire
+        // straight back to the element path, which latched again RX_BOOST_LATCH_SEC later, so the talker's whole chain
+        // was torn down and rebuilt every ~3.3 s for the rest of the call (call reports 245dd270, 05713bab, 25b4800b,
+        // 2026-11-21: one av_sync_playback_path reason=join per talker every 3.3 s). It goes once the talker is gone.
+        setTimeout(() => {
+            if (micChains.has(identity) || micChainBuilds.has(identity) || !levelBoostLatched.has(identity)) return;
+            levelBoostLatched.delete(identity);
+            notifyLevelBoost();
+        }, BOOST_LATCH_FORGET_MS);
         syncLevelerTimer();
     }
 }
@@ -902,13 +914,14 @@ function teardownSSAudioInternals(chain: Pick<SSAudioChain, 'attachedEl' | 'src'
     try { chain.pub.track?.detach(chain.attachedEl); } catch { /* ignore */ }
 }
 
-function acquireSSAudioChain(p: RemoteParticipant): SSAudioChain | null {
+/** `source` = whichever remote participant carries the share audio: the sharer, or (phone sharers) their share-audio helper connection. */
+function acquireSSAudioChain(p: RemoteParticipant, source: RemoteParticipant = p): SSAudioChain | null {
     const path = pathFor(p.identity, 'screen', false);
     const ctx = path === 'webaudio' ? getSharedAudioContext() : null;
     if (path === 'webaudio' && !ctx) return null;
     if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => { /* ignore */ });
 
-    const pub = p.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
+    const pub = source.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
     const track = pub?.track?.mediaStreamTrack;
     if (!pub || !track) return null;
 
@@ -982,7 +995,10 @@ export function useParticipantAudio(
     // because RemoteParticipant doesn't expose change events through React.
     const remote = p as RemoteParticipant;
     const micTrack = remote.getTrackPublication?.(Track.Source.Microphone)?.track?.mediaStreamTrack;
-    const ssAudioTrack = remote.getTrackPublication?.(Track.Source.ScreenShareAudio)?.track?.mediaStreamTrack;
+    // A phone sharer's share audio arrives on its helper connection (utils/shareAudioHelper.ts); everyone else's on their own.
+    const helper = useShareAudioHelper(p.identity);
+    const ssSource: RemoteParticipant = helper?.getTrackPublication?.(Track.Source.ScreenShareAudio) ? helper : remote;
+    const ssAudioTrack = ssSource.getTrackPublication?.(Track.Source.ScreenShareAudio)?.track?.mediaStreamTrack;
 
     // Playback path (element vs Web Audio — see "Playback path" above). Only
     // used as an effect trigger: the chain itself decides from the persisted
@@ -1079,7 +1095,7 @@ export function useParticipantAudio(
         // Not watching → never attach. (Not received either: see the header.)
         if (!screenShareSubscribed) return;
         if (!ssAudioTrack) return;
-        const chain = acquireSSAudioChain(remote);
+        const chain = acquireSSAudioChain(remote, ssSource);
         if (!chain) return;
         return () => releaseSSAudioChain(p.identity);
         // eslint-disable-next-line react-hooks/exhaustive-deps

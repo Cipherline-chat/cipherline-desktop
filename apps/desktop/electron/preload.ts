@@ -190,7 +190,54 @@ function subscribeNoArgs(channel: string, cb: () => void): () => void {
     return () => { ipcRenderer.removeListener(channel, wrapped); };
 }
 
+// Theme, before the page loads (electron/theme-boot.ts): one synchronous ask,
+// then `data-theme` on <html> as early as the element exists, so index.html's
+// boot backdrop (and the window behind it) is already in the stored theme —
+// Light never flashes Dark on a restart. The engine (src/theme/engine.ts)
+// takes over from bootThemeId before React renders.
+// The built-in theme ids, and which of them are light-scheme / high-contrast
+// (a sandboxed preload cannot import theme-boot.ts or src/theme/themes.ts;
+// electron/theme-boot.test.ts pins these copies to the theme data).
+const PRELOAD_THEME_IDS: readonly string[] = ['dark', 'light', 'midnight', 'hc-dark', 'hc-light'];
+const PRELOAD_LIGHT_SCHEME_IDS: readonly string[] = ['light', 'hc-light'];
+const PRELOAD_HIGH_CONTRAST_IDS: readonly string[] = ['hc-dark', 'hc-light'];
+const bootThemeState = (() => {
+    try { return ipcRenderer.sendSync('theme:get-sync') as { id?: unknown; pref?: unknown; custom?: unknown } | null; } catch { return null; }
+})();
+// A built-in id, or a custom theme's BASE id ('dark' | 'light': main sends the base as `id`).
+const bootThemeId: string = bootThemeState && typeof bootThemeState.id === 'string' && PRELOAD_THEME_IDS.includes(bootThemeState.id)
+    ? bootThemeState.id : 'dark';
+// The active custom theme's device copy (electron/theme-custom-boot.ts, validated by main;
+// the engine re-validates it): plain data, handed to the engine before the first render.
+const bootCustomTheme: unknown = bootThemeState && bootThemeState.pref === 'custom' && bootThemeState.custom && typeof bootThemeState.custom === 'object'
+    ? JSON.parse(JSON.stringify(bootThemeState.custom)) : undefined;
+(() => {
+    try {
+        const mark = (): boolean => {
+            const el = document.documentElement;
+            if (!el) return false;
+            if (!el.hasAttribute('data-theme')) {
+                el.setAttribute('data-theme', bootThemeId);
+                // The KIND of theme (src/theme/engine.ts applyTheme sets the same before React renders).
+                el.setAttribute('data-scheme', PRELOAD_LIGHT_SCHEME_IDS.includes(bootThemeId) ? 'light' : 'dark');
+                if (PRELOAD_HIGH_CONTRAST_IDS.includes(bootThemeId)) el.setAttribute('data-contrast', 'high');
+            }
+            // A custom theme: its own boot backdrop colours (index.html #cl-boot), before the bundle loads.
+            const g = (bootCustomTheme as { boot?: { gradient?: unknown } } | undefined)?.boot?.gradient;
+            if (Array.isArray(g) && g.length === 3 && g.every((c) => typeof c === 'string' && /^#[0-9A-Fa-f]{6}$/.test(c))) {
+                el.style.setProperty('--boot-custom-gradient', `linear-gradient(180deg,${g[0]} 0%,${g[1]} 45%,${g[2]} 100%)`);
+                el.setAttribute('data-custom-theme', 'boot');
+            }
+            return true;
+        };
+        if (mark()) return;
+        const mo = new MutationObserver(() => { if (mark()) mo.disconnect(); });
+        mo.observe(document, { childList: true });
+    } catch { /* no DOM yet: the engine sets it before React renders */ }
+})();
+
 contextBridge.exposeInMainWorld('electronAPI', {
+    bootThemeId,
     // basic template for future IPC
     // The page's callback is never registered directly (see subscribeNoArgs): it would be
     // called with the IpcRendererEvent, whose `sender` is this preload's ipcRenderer. And
@@ -319,6 +366,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // caches the refusal for the life of the process). Resolves false when
     // refused (no refused wallet, or asked again within the cooldown).
     retryKeyringUnlock: (): Promise<boolean> => ipcRenderer.invoke('secure:keyring-action', { action: 'retry' }),
+
+    // "Import from Discord" (structure only). Everything that touches the bot
+    // token happens in the main process; none of these ever returns it.
+    discordImport: {
+        status: () => ipcRenderer.invoke('discord-import:status'),
+        connect: (token: string) => ipcRenderer.invoke('discord-import:connect', { token }),
+        // Re-read the token's application (its id builds the invite link; its flags say which intents are on).
+        checkApp: () => ipcRenderer.invoke('discord-import:check-app'),
+        forget: () => ipcRenderer.invoke('discord-import:forget'),
+        listGuilds: () => ipcRenderer.invoke('discord-import:list-guilds'),
+        snapshot: (guildId: string) => ipcRenderer.invoke('discord-import:snapshot', { guildId }),
+        image: (req: { guildId: string; kind: 'icon' | 'banner' | 'emoji' | 'role_icon' | 'sticker'; emojiId?: string; role?: number; stickerId?: string }) => ipcRenderer.invoke('discord-import:image', req),
+        cancel: () => ipcRenderer.invoke('discord-import:cancel'),
+        // History import (phase 2): one channel's window + pins by snapshot
+        // channel number, and the bytes of a file the renderer got a ref for.
+        history: (req: { guildId: string; channel: number }) => ipcRenderer.invoke('discord-import:history', req),
+        media: (req: { ref: string }) => ipcRenderer.invoke('discord-import:media', req),
+        // An import is running in the background: quitting asks first (discord-import/quit-guard.ts).
+        setRunning: (running: boolean) => ipcRenderer.invoke('discord-import:running', { running }),
+    },
 
     // Backup / restore helpers — enumerate prefix-scoped secure-store entries
     // and read/write the on-disk GIF library so the encrypted vault can round-trip them.
@@ -509,7 +576,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
 
     // Display refresh rates — the hard ceiling on screen-share frame rate.
-    getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>> =>
+    getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; hostsWindow?: boolean; captureFpsCeiling?: number | null }>> =>
         ipcRenderer.invoke('display:get-refresh-rates'),
 
     // Does a capture here go through the desktop's own portal chooser (a native
@@ -523,6 +590,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // capture timing. Both read-only. Shapes: src/env.d.ts.
     getScreenShareDiagnostics: (sourceId: string, sharedRect?: { x: number; y: number; width: number; height: number } | null): Promise<unknown> =>
         ipcRenderer.invoke('screenshare:get-diagnostics', sourceId, sharedRect ?? null),
+    // A window share Windows would not capture: the window's state and the screens holding it
+    // (main: 'screen-share:window-geometry'; src/utils/windowShareFallback.ts narrows it).
+    getWindowShareGeometry: (sourceId: string, windowOnly?: boolean): Promise<unknown> =>
+        ipcRenderer.invoke('screen-share:window-geometry', sourceId, windowOnly === true),
     // HDR screen shares (Windows): our own tone-mapped capture of a screen in
     // HDR mode (electron/hdr-share.ts, src/utils/hdrSharePipeline.ts).
     hdrShare: {
@@ -802,14 +873,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // System-wide HOLD keys (push-to-talk / push-to-mute): main watches whether the chosen combo is held (works
     // while Cipherline is unfocused) and sends down/up. `combo` null stops that slot's watch. ok:false /
     // 'unsupported' = this session or an older native build has no watcher: the renderer's focused-window
-    // listener is then the only path. `slot`: 'push-to-talk' | 'push-to-mute'.
-    setGlobalHoldKey: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null): Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed' }> =>
+    // listener is then the only path (`detail` says why). `slot`: 'push-to-talk' | 'push-to-mute'.
+    setGlobalHoldKey: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null): Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed'; detail?: string }> =>
         ipcRenderer.invoke('hold-key:set', slot, combo),
     onGlobalHoldState: (callback: (slot: 'push-to-talk' | 'push-to-mute', down: boolean) => void): (() => void) => {
         const wrapped = (_e: Electron.IpcRendererEvent, slot: 'push-to-talk' | 'push-to-mute', down: boolean) => callback(slot, down === true);
         ipcRenderer.on('hold-key:state', wrapped);
         return () => ipcRenderer.removeListener('hold-key:state', wrapped);
     },
+    // Dry run: would this hold key work while another app has focus on this system? (no watch is started)
+    checkGlobalHoldKey: (combo: string): Promise<unknown> => ipcRenderer.invoke('hold-key:check', combo),
+    // Windows: true while the focused window is an elevated program that hides the key state from us.
+    onHoldKeyElevation: (callback: (blocked: boolean) => void): (() => void) => {
+        const wrapped = (_e: Electron.IpcRendererEvent, blocked: boolean) => callback(blocked === true);
+        ipcRenderer.on('hold-key:elevation', wrapped);
+        return () => ipcRenderer.removeListener('hold-key:elevation', wrapped);
+    },
+    // Problem report: hold-key backend and watcher status (no key text).
+    getHoldKeyDiagnostics: (): Promise<unknown> => ipcRenderer.invoke('hold-key:diagnostics'),
 
     // Custom window controls (Windows / Linux)
     minimizeWindow: () => ipcRenderer.send('win:minimize'),
@@ -1110,6 +1191,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPendingDeepLinkRef: (): Promise<string | null> =>
         ipcRenderer.invoke('deep-link:get-pending-ref'),
 
+    // ── Theme deep-link (cipherline://theme#clth1.…) ─────────────────────────
+    // The website /theme page's "Open in Cipherline". Main checks the shape
+    // only; the renderer decodes and previews, and saves nothing on its own.
+    onDeepLinkTheme: (cb: (code: string) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, code: string) => cb(code);
+        ipcRenderer.on('deep-link:theme', listener);
+        return () => ipcRenderer.removeListener('deep-link:theme', listener);
+    },
+    getPendingDeepLinkTheme: (): Promise<string | null> =>
+        ipcRenderer.invoke('deep-link:get-pending-theme'),
+
     // ── Install hand-off (first launch only) ─────────────────────────────────
     // Resolves to `{ kind: 'ref' | 'invite', code }` when the clipboard holds
     // exactly one of our own landing-page links, else null. Never returns raw
@@ -1210,8 +1302,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** Resolves with the state re-read from the OS after the write. */
     setStartWithWindows: (enabled: boolean): Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean }> =>
         ipcRenderer.invoke('app:set-start-with-windows', enabled),
+    // Interface size (Settings → Accessibility; electron/ui-scale.ts). The
+    // whole scale contract: get, set(step), and a change event (Ctrl/Cmd +
+    // = / - / 0, or a display that holds a different maximum). The event
+    // payload is re-shaped here so the page only ever sees four plain fields.
+    getUiScale: (): Promise<unknown> => ipcRenderer.invoke('ui-scale:get'),
+    setUiScale: (percent: number): Promise<unknown> => ipcRenderer.invoke('ui-scale:set', percent),
+    onUiScaleChanged: (cb: (state: { percent: number; effective: number; max: number; source: string }) => void): (() => void) => {
+        const wrapped = (_e: unknown, raw: unknown) => {
+            if (!raw || typeof raw !== 'object') return;
+            const r = raw as Record<string, unknown>;
+            const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 100);
+            cb({ percent: num(r.percent), effective: num(r.effective), max: num(r.max), source: typeof r.source === 'string' ? r.source : 'set' });
+        };
+        ipcRenderer.on('ui-scale:changed', wrapped);
+        return () => { ipcRenderer.removeListener('ui-scale:changed', wrapped); };
+    },
     getStartMinimized: (): Promise<boolean> => ipcRenderer.invoke('app:get-start-minimized'),
     setStartMinimized: (enabled: boolean): Promise<void> => ipcRenderer.invoke('app:set-start-minimized', enabled),
+    // Theme (electron/theme-boot.ts host contract): the device's theme id.
+    getTheme: (): Promise<{ id: string; pref: string }> => ipcRenderer.invoke('theme:get'),
+    setTheme: (pref: string): Promise<{ id: string; pref: string }> => ipcRenderer.invoke('theme:set', pref),
+    // Custom themes (electron/theme-custom-boot.ts): the device copy of the active one.
+    bootCustomTheme,
+    setCustomTheme: (payload: unknown): Promise<unknown> => ipcRenderer.invoke('theme:set-custom', payload),
+    // Live theme preview (src/theme/engine.ts startThemePreview): main paints the
+    // window from the payload and STORES NOTHING; -end repaints the stored theme.
+    previewTheme: (payload: unknown): Promise<unknown> => ipcRenderer.invoke('theme:preview', payload),
+    endThemePreview: (): Promise<unknown> => ipcRenderer.invoke('theme:preview-end'),
+    onThemeChanged: (cb: (state: { id: string; pref: string; custom?: unknown }) => void): (() => void) => {
+        const wrapped = (_e: unknown, state: { id?: unknown; pref?: unknown; custom?: unknown } | null) => {
+            const custom = state?.pref === 'custom' && state.custom && typeof state.custom === 'object' ? JSON.parse(JSON.stringify(state.custom)) : undefined;
+            cb({ id: String(state?.id ?? 'dark'), pref: String(state?.pref ?? state?.id ?? 'dark'), ...(custom ? { custom } : {}) });
+        };
+        ipcRenderer.on('theme:changed', wrapped);
+        return () => { ipcRenderer.removeListener('theme:changed', wrapped); };
+    },
     getMinimizeToTray: (): Promise<boolean> => ipcRenderer.invoke('app:get-minimize-to-tray'),
     setMinimizeToTray: (enabled: boolean): Promise<void> => ipcRenderer.invoke('app:set-minimize-to-tray', enabled),
 
@@ -1347,3 +1473,14 @@ if (process.platform === 'linux' || process.env.CIPHERLINE_NATIVE_SHARE_ENCODER 
     ipcRenderer.on('native-share:port', (e) => { window.postMessage({ kind: 'cl:native-share-port' }, '*', [...e.ports]); });
     ipcRenderer.on('native-share:exit', (_e, x) => { window.postMessage({ kind: 'cl:native-share-exit', code: x?.code, reason: x?.reason }, '*'); });
 }
+
+// Native audio engine ("Strong" noise suppression in a utility process, electron/audio-engine-ipc.ts). The page can only ask three things.
+// The MessagePort to the utility process cannot cross contextBridge, so it is handed over with window.postMessage (the standard Electron
+// pattern); the page forwards it into its AudioWorklet and nothing else ever touches it.
+contextBridge.exposeInMainWorld('audioEngine', {
+    available: (): Promise<{ available: boolean; reason?: string }> => ipcRenderer.invoke('audio-engine:available'),
+    open: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('audio-engine:open'),
+    close: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('audio-engine:close'),
+});
+ipcRenderer.on('audio-engine:port', (e) => { window.postMessage({ kind: 'cl:audio-engine-port' }, '*', [...e.ports]); });
+ipcRenderer.on('audio-engine:exit', (_e, x) => { window.postMessage({ kind: 'cl:audio-engine-exit', reason: typeof x?.reason === 'string' ? x.reason.slice(0, 40) : 'exit' }, '*'); });

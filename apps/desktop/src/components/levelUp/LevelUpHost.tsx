@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../../utils/a11y/motionPrefs';
 import { useAuth } from '../../contexts/AuthContext';
 import { secureLocalStore } from '../../utils/secureLocalStore';
 import { ACHIEVEMENT_UNLOCK_EVENT } from '../../utils/achievements/keys';
@@ -22,7 +23,7 @@ export const LEVEL_UP_ACK_REFRESH_MS = 400;
 export const LEVEL_UP_POLL_MS = 1_000;
 
 const reducedMotion = (): boolean => {
-    try { return !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
+    try { return celebrationReducedNow(); } catch { return false; }
 };
 
 interface Pending {

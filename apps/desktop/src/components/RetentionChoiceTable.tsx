@@ -30,7 +30,7 @@ export const RetentionChoiceTable: React.FC<{ rows: RetentionRowData[] }> = ({ r
         <div
             className="rounded-2xl px-4 pt-3 pb-4"
             style={{
-                background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                background: 'rgb(var(--cl-bright-rgb) / 0.04)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.07)',
                 display: 'grid', gridTemplateColumns: 'minmax(94px,auto) 1fr 1fr',
                 columnGap: 10, rowGap: 11, alignItems: 'center',
             }}

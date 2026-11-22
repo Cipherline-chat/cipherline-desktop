@@ -48,14 +48,17 @@ describe('deafen is independent of the microphone', () => {
     });
 
     it('the carried "my mute" intent no longer treats a server deafen as a forced mute (only a server MUTE is)', () => {
-        expect(conf).toMatch(/serverForcedMute: localServerMutedAudio,/);
+        expect(conf).toMatch(/serverForcedMute: localServerMutedAudio && !selfMutedChoice,/);
         expect(conf).not.toMatch(/serverForcedMute: [^,]*baseServerDeafened/);
     });
 
-    it('the mic button is disabled by a server MUTE only, not by a server deafen', () => {
+    it('the mic button is disabled by neither a server mute nor a server deafen (a server mute toggles the user\'s own choice)', () => {
         const line = between(controlBar, 'const micDisabled', ';\n');
-        expect(line).toContain('serverMutedAudio');
+        // Server mute vs self mute (utils/serverMuteGate.ts): while server-muted
+        // the button stays live and flips the user's OWN choice; the SFU holds the mic.
+        expect(line).not.toContain('serverMutedAudio');
         expect(line).not.toContain('isServerDeafened');
+        expect(controlBar).toContain('serverMutedAudio && !micDisabled ? serverMutedMicView(selfMutedChoice) : null');
         // ...and its tooltip no longer claims "unmute is blocked" for a deafen.
         expect(controlBar).not.toContain("You've been server deafened — unmute is blocked");
     });
@@ -97,11 +100,12 @@ describe('no notices for server mute / unmute / deafen / undeafen', () => {
         expect(conf).not.toContain('A moderator removed your server mute');
     });
 
-    it('the server-mute effect still restores the mic silently, with no toast between its transition and its end', () => {
-        const effect = between(conf, 'const prevServerMutedAudioRef = React.useRef(false);', '[localServerMutedAudio]');
+    it('the server-mute effect restores the mic silently (through the gate), with no toast between its transition and its end', () => {
+        const effect = between(conf, 'const result = serverMuteGate.setServerMuted(', '[localServerMutedAudio, localParticipant, serverMuteGate]');
         expect(effect).not.toContain('toast.push');
         expect(effect).not.toContain('playSound');
-        expect(effect).toContain('setMicrophoneEnabled(true)');
+        // The gate re-enables through this adapter (utils/serverMuteGate.test.ts pins when).
+        expect(effect).toContain('setEnabled: (on) => lp.setMicrophoneEnabled(on)');
     });
 
     it('none of the moderation actions in the panel toast on success', () => {

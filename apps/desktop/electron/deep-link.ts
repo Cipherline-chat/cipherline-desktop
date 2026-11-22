@@ -45,6 +45,29 @@ export function parseReferralUrl(url: unknown): string | null {
 }
 
 /**
+ * Theme links carry a whole (small) theme in the fragment, so they get their
+ * own, larger cap. A normalised theme encodes to at most ~520 characters
+ * (src/theme/themeLink.ts THEME_LINK_CODE_MAX = 1024 is the renderer's cap).
+ */
+export const THEME_DEEP_LINK_CODE_MAX = 1024;
+const THEME_DEEP_LINK_RE = /^cipherline:\/\/theme\/?#(clth1\.[A-Za-z0-9_-]+)$/i;
+export const MAX_THEME_DEEP_LINK_LENGTH = 'cipherline://theme/#'.length + THEME_DEEP_LINK_CODE_MAX;
+
+/**
+ * `cipherline://theme#clth1.<code>` → the share code, or null. SHAPE ONLY
+ * (prefix, base64url, length): main never decodes a theme. The renderer
+ * decodes it with the import dialog's validator and shows a preview; nothing
+ * is saved or applied without the user pressing Save.
+ */
+export function parseThemeDeepLink(url: unknown): string | null {
+    if (typeof url !== 'string' || url.length > MAX_THEME_DEEP_LINK_LENGTH) return null;
+    const m = THEME_DEEP_LINK_RE.exec(url);
+    if (!m || m[1].length > THEME_DEEP_LINK_CODE_MAX) return null;
+    // `clth1.` is case-sensitive in the code itself.
+    return m[1].startsWith('clth1.') ? m[1] : null;
+}
+
+/**
  * The first `cipherline://` argument in a process argv (Windows/Linux pass the
  * URL as an argument on a protocol launch). Only an argument that is itself a
  * plausible URL is returned; switches are never interpreted here.
@@ -53,7 +76,8 @@ export function extractDeepLinkFromArgv(argv: readonly unknown[]): string | null
     for (const arg of argv) {
         if (typeof arg !== 'string') continue;
         if (!arg.startsWith('cipherline://')) continue;
-        if (arg.length > MAX_DEEP_LINK_LENGTH || /[\s"]/.test(arg)) continue;
+        const max = /^cipherline:\/\/theme[/#]/i.test(arg) ? MAX_THEME_DEEP_LINK_LENGTH : MAX_DEEP_LINK_LENGTH;
+        if (arg.length > max || /[\s"]/.test(arg)) continue;
         return arg;
     }
     return null;

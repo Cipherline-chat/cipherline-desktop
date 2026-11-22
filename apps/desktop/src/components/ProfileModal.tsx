@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { formatMemberSince, memberSinceDayOf } from '../utils/memberSince';
 import type { GameDetail } from '../utils/richPresence';
 import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Share2, Plus } from 'lucide-react';
 import { ImageLightbox } from './ImageLightbox';
@@ -14,6 +15,8 @@ import { getVerificationState } from '../utils/keyVerification';
 import { fetchProfile as fetchProfileCached, peekProfile, __profilePrefetchTuning, type PublicProfile } from '../utils/profileCache';
 import { lookupUserAvatarId, lookupUserBannerId } from '../utils/peerIdentityCache';
 import { roleColorHexFromInt } from '../utils/roleColor';
+import { roleIconOf, roleSwatchBackground } from '../utils/roleStyle';
+import { RoleIconBadge } from './server/roles/RoleIconBadge';
 import { ClButton, ClInput } from './cl';
 import { ProfileCardSection } from './ProfileCardParts';
 import { ProfilePopoutCard, OpenProfileButton } from './profile/ProfilePopoutCard';
@@ -502,7 +505,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                             <X size={13} />
                         </ClButton>
                     </div>
-                    {nicknameError && <p className="text-[11px] text-cl-flash m-0" role="alert">{nicknameError}</p>}
+                    {nicknameError && <p className="text-[11px] text-cl-flash-text m-0" role="alert">{nicknameError}</p>}
                     <p className="text-[11px] text-cl-faint m-0">Leave blank to use their username.</p>
                 </div>
             ) : (
@@ -569,7 +572,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                                 backgroundColor: hex ? `${hex}1f` : 'rgba(255,255,255,0.06)',
                             }}
                         >
-                            <i style={{ backgroundColor: hex ?? 'rgba(255,255,255,0.35)' }} aria-hidden="true" />
+                            <i style={{ background: roleSwatchBackground(r) ?? 'rgba(255,255,255,0.35)' }} aria-hidden="true" />
+                            {(() => {
+                                const icon = roleIconOf(r, serverId ?? null);
+                                return icon ? <RoleIconBadge icon={icon} token={token} size={13} decorative /> : null;
+                            })()}
                             {r.name}
                             {removable && (
                                 <button
@@ -607,10 +614,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         </ProfileCardSection>
     ) : null;
 
-    // The preview shows server context only while it matters there: the roles, and the nickname while it is being edited.
-    const previewExtras = profile && (rolesSection || nicknameEditOpen) ? <>{nicknameEditOpen && nicknameSection}{rolesSection}</> : null;
-    const fullExtras = profile && (nicknameSection || rolesSection) ? (
-        <section className="pfp-panel-card pfp-server">{nicknameSection}{rolesSection}</section>
+    // "Member since" in this server: a Discord-imported first-join day
+    // (member_since, given on claim) when there is one, else the day they
+    // joined here. Display only; unread state never reads member_since.
+    const since = serverId ? memberSinceDayOf(liveRoster?.members.find(m => m.user_id === userId)) : null;
+    const memberSinceSection = profile && since ? (
+        <ProfileCardSection title="Member since" testId="profile-member-since">
+            <p className="pcd-since m-0 text-[13px]" style={{ color: 'var(--cl-text)' }}>
+                {formatMemberSince(since.day)}
+                {since.imported && <span style={{ color: 'var(--cl-faint)' }}> · joined on Discord</span>}
+            </p>
+        </ProfileCardSection>
+    ) : null;
+
+    // The preview shows server context only while it matters there: the roles, the member-since day, and the nickname while it is being edited.
+    const previewExtras = profile && (rolesSection || memberSinceSection || nicknameEditOpen) ? <>{nicknameEditOpen && nicknameSection}{rolesSection}{memberSinceSection}</> : null;
+    const fullExtras = profile && (nicknameSection || rolesSection || memberSinceSection) ? (
+        <section className="pfp-panel-card pfp-server">{nicknameSection}{rolesSection}{memberSinceSection}</section>
     ) : null;
 
     const messageOrAdd = (fullWidth: boolean) => profile && !isOwnProfile ? (

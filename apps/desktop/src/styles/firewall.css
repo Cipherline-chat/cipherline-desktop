@@ -45,6 +45,26 @@
    state are kept. */
 [data-fw-covered] { content-visibility: hidden; }
 
+/* The rail and titlebar stay visible beside the game and are NOT covered above, so
+   their looping decoration kept ticking on the main thread and compositor while the
+   game ran (utils/idleMotion.ts setGameOpen puts data-cl-game on <html>). The Keys
+   mascot animates 12 SVG children (main-thread style + paint every frame); the rest
+   are small, but each one is a frame the window has to produce. Decoration only: calls,
+   unread badges and toasts keep working, and the overlay's own copy is excluded. */
+:root[data-cl-game="on"] .k2-leg:not(.fw-root *),
+:root[data-cl-game="on"] .k2-fore:not(.fw-root *),
+:root[data-cl-game="on"] .k2-foot:not(.fw-root *),
+:root[data-cl-game="on"] .k2-zzz text:not(.fw-root *),
+:root[data-cl-game="on"] .status-online:not(.fw-root *)::after,
+:root[data-cl-game="on"] .update-ready-pulse:not(.fw-root *)::after,
+:root[data-cl-game="on"] .season-flake:not(.fw-root *) { animation: none; }
+:root[data-cl-game="on"] .dock-bead:not(.fw-root *),
+:root[data-cl-game="on"] .cl-rail-ping:not(.fw-root *),
+:root[data-cl-game="on"] .tb-lap-bob:not(.fw-root *),
+:root[data-cl-game="on"] .cl-dot--online:not(.fw-root *),
+:root[data-cl-game="on"] .dot.onl:not(.fw-root *),
+:root[data-cl-game="on"] .cl-incall-badge:not(.fw-root *) svg { animation-play-state: paused; }
+
 .fw-stage { position: absolute; inset: 0; }
 .fw-canvas {
   position: absolute;

@@ -39,6 +39,10 @@ let calls: Call[] = [];
 let channelOverrides: Record<string, unknown[]> = {};
 let failOverridePatch = false;
 let failPost = false;
+/** An API that predates `permission_overrides`: the create refuses the property (forbidNonWhitelisted). */
+let legacyApi = false;
+/** The create (with overrides) is refused as a whole, e.g. a bit the caller lacks. */
+let refuseOverrides = false;
 let myPerms = '';
 
 const roles = [
@@ -73,8 +77,15 @@ vi.mock('axios', () => ({
             const p = path(url);
             calls.push(['POST', p, body]);
             if (failPost) throw { response: { status: 500, data: { message: 'boom' } } };
+            if (legacyApi && 'permission_overrides' in body) {
+                throw { response: { status: 400, data: { statusCode: 400, error: 'Bad Request', message: ['property permission_overrides should not exist'] } } };
+            }
+            if (refuseOverrides && 'permission_overrides' in body) {
+                throw { response: { status: 403, data: { code: 'OVERRIDE_MISSING_PERMISSION', message: 'You can only change permissions you have here yourself' } } };
+            }
             const id = `new-${calls.length}`;
-            return { data: { channel_id: id, server_id: 's1', position: 1000, topic: null, icon_emoji: null, icon_name: null, active_call_session_id: null, member_limit: null, max_calls: null, parent_category_id: null, ...body } };
+            const { permission_overrides: _applied, ...row } = body;
+            return { data: { channel_id: id, server_id: 's1', position: 1000, topic: null, icon_emoji: null, icon_name: null, active_call_session_id: null, member_limit: null, max_calls: null, parent_category_id: null, ...row } };
         }),
         patch: vi.fn(async (url: string, body: { target_kind: string; target_id: string }) => {
             const p = path(url);
@@ -103,6 +114,8 @@ beforeEach(() => {
     channelOverrides = {};
     failOverridePatch = false;
     failPost = false;
+    legacyApi = false;
+    refuseOverrides = false;
     myPerms = s((1n << 30n) - 1n);
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -187,19 +200,54 @@ describe('create', () => {
         expect(body).toEqual({ name: 'general', kind: 'text' });
     });
 
-    it('"Staff only" sends @everyone deny View FIRST, then View for each staff role', async () => {
+    it('"Staff only" creates the channel WITH its overrides in ONE request (@everyone deny first) and PATCHes nothing', async () => {
         const h = await mount({ defaultKind: 'text' });
         await click(radio('Staff only'));
         await typeName('mod-chat');
         await press(nameInput(), 'Enter');
         await flush(30);
+        expect(posts()).toHaveLength(1);
+        expect(patches()).toHaveLength(0);
+        const body = posts()[0][2] as { name: string; kind: string; permission_overrides: { target_id: string; allow_bits: string; deny_bits: string }[] };
+        expect(body).toMatchObject({ name: 'mod-chat', kind: 'text' });
+        const p = body.permission_overrides;
+        expect(p[0]).toMatchObject({ target_kind: 'role', target_id: EV, allow_bits: '0', deny_bits: s(P.VIEW_CHANNEL) });
+        expect(p.slice(1).map(x => x.target_id).sort()).toEqual([MOD, HELPER].sort());
+        for (const x of p.slice(1)) expect(x).toMatchObject({ allow_bits: s(P.VIEW_CHANNEL), deny_bits: '0' });
+        expect(h.onSaved).toHaveBeenCalledTimes(1);
+        expect(h.onCreated).toHaveBeenCalledTimes(1);
+    });
+
+    it('an API that predates permission_overrides: retries the create without it, then falls back to the old PATCH sequence', async () => {
+        legacyApi = true;
+        const h = await mount({ defaultKind: 'text' });
+        await click(radio('Staff only'));
+        await typeName('mod-chat');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+        // First POST carried the field and was refused; the second is the old plain create.
+        expect(posts()).toHaveLength(2);
+        expect(posts()[0][2]).toHaveProperty('permission_overrides');
+        expect(posts()[1][2]).toEqual({ name: 'mod-chat', kind: 'text' });
         const p = patches().map(c => c[2] as { target_id: string; allow_bits: string; deny_bits: string });
         expect(p[0]).toMatchObject({ target_id: EV, allow_bits: '0', deny_bits: s(P.VIEW_CHANNEL) });
         expect(p.slice(1).map(x => x.target_id).sort()).toEqual([MOD, HELPER].sort());
-        for (const x of p.slice(1)) expect(x).toMatchObject({ allow_bits: s(P.VIEW_CHANNEL), deny_bits: '0' });
-        // Keys are minted AFTER the overrides landed.
-        const createdAt = h.onCreated.mock.invocationCallOrder[0];
-        expect(createdAt).toBeGreaterThan(0);
+        expect(h.onSaved).toHaveBeenCalledTimes(1);
+    });
+
+    it('a create refused WITH its overrides is not retried without them: nothing is created, the error is shown, the dialog stays open', async () => {
+        refuseOverrides = true;
+        const h = await mount({ defaultKind: 'text' });
+        await click(radio('Staff only'));
+        await typeName('secret');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+        expect(posts()).toHaveLength(1); // no second, unrestricted POST
+        expect(patches()).toHaveLength(0);
+        expect(h.onSaved).not.toHaveBeenCalled();
+        expect(h.onCreated).not.toHaveBeenCalled();
+        expect(h.onClose).not.toHaveBeenCalled();
+        expect(document.querySelector('[role="alert"]')?.textContent).toBeTruthy();
     });
 
     it('"Create another" keeps the dialog and its settings open for the next one', async () => {
@@ -220,10 +268,13 @@ describe('create', () => {
         await press(nameInput(), 'Enter');
         await flush(30);
         expect(posts().map(c => (c[2] as { name: string }).name)).toEqual(['one', 'two']);
-        expect(patches()).toHaveLength(6); // 3 per channel
+        // Overrides ride with each create: 3 per channel, no PATCH at all.
+        expect(posts().map(c => (c[2] as { permission_overrides: unknown[] }).permission_overrides.length)).toEqual([3, 3]);
+        expect(patches()).toHaveLength(0);
     });
 
-    it('a failed override keeps the dialog open as the new channel’s editor, only the failure still dirty', async () => {
+    it('(older API) a failed override keeps the dialog open as the new channel’s editor, only the failure still dirty', async () => {
+        legacyApi = true;
         failOverridePatch = true;
         const h = await mount({ defaultKind: 'text' });
         await click(radio('Staff only'));
@@ -704,7 +755,8 @@ describe('navigate into the new channel (override-carrying create, waits for ser
         expect(onNavigateToCreated).toHaveBeenCalledTimes(1);
     });
 
-    it('does not navigate when some overrides failed (dialog stays open as the editor)', async () => {
+    it('does not navigate when some overrides failed (older API; dialog stays open as the editor)', async () => {
+        legacyApi = true;
         failOverridePatch = true;
         const onNavigateToCreated = vi.fn();
         await mount({ defaultKind: 'text', onNavigateToCreated });
@@ -724,5 +776,104 @@ describe('navigate into the new channel (override-carrying create, waits for ser
         await press(nameInput(), 'Enter');
         await flush(60);
         expect(onNavigateToCreated).not.toHaveBeenCalled();
+    });
+});
+
+describe('Moderation: Slowmode + Age-restricted (text channels)', () => {
+    // jsdom has no scrollIntoView; ClSelect calls it when its menu opens.
+    beforeEach(() => { (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = () => {}; });
+    const card = () => $('[data-testid="channel-moderation"]');
+    const ageSw = () => $<HTMLButtonElement>('button[role="switch"][aria-label="Age-restricted"]')!;
+    const slowTrigger = () => $<HTMLButtonElement>('[data-testid="slowmode-picker"] button[aria-label="Slowmode"]')!;
+    const channelPatches = () => calls.filter(c => c[0] === 'PATCH' && !/overrides$/.test(c[1]));
+    const saveBtn = () => [...document.querySelectorAll('button')].find(b => /^Save/.test(b.textContent?.trim() ?? '')) as HTMLButtonElement;
+    const remount = () => { act(() => root.unmount()); root = createRoot(host); calls = []; };
+    const pickSlow = async (label: string) => {
+        await click(slowTrigger());
+        const opt = [...document.querySelectorAll('[role="option"]')].find(o => o.textContent?.trim() === label);
+        await click(opt);
+        await flush(260); // ClSelect defers onChange 170 ms (row flash) before closing
+    };
+
+    it('is shown for a text channel, not for a Calls channel', async () => {
+        await mount({ defaultKind: 'text' });
+        expect(card()).toBeTruthy();
+        expect(card()!.textContent).toContain('Slowmode');
+        expect(card()!.textContent).toContain('Age-restricted');
+        remount();
+        await mount({ defaultKind: 'huddle' });
+        expect(card()).toBeNull();
+    });
+
+    it('offers exactly the Discord ladder, Off first', async () => {
+        await mount({ defaultKind: 'text' });
+        await click(slowTrigger());
+        const labels = [...document.querySelectorAll('[role="option"]')].map(o => o.textContent?.trim());
+        expect(labels).toEqual(['Off', '5 seconds', '10 seconds', '15 seconds', '30 seconds', '1 minute', '2 minutes', '5 minutes', '10 minutes', '15 minutes', '30 minutes', '1 hour', '2 hours', '6 hours']);
+    });
+
+    it('reflects the channel as the server sent it (absent = off)', async () => {
+        await mount({ channel: { ...channel, slowmode_seconds: 300, age_restricted: true } });
+        expect(slowTrigger().textContent).toContain('5 minutes');
+        expect(ageSw().getAttribute('aria-checked')).toBe('true');
+        remount();
+        await mount({ channel });
+        expect(slowTrigger().textContent).toContain('Off');
+        expect(ageSw().getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('create: left alone sends NEITHER field (an older API rejects unknown ones); set sends them', async () => {
+        await mount({ defaultKind: 'text' });
+        await typeName('plain');
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        const plain = posts()[0][2] as Record<string, unknown>;
+        expect(plain).not.toHaveProperty('slowmode_seconds');
+        expect(plain).not.toHaveProperty('age_restricted');
+
+        remount();
+        await mount({ defaultKind: 'text' });
+        await pickSlow('30 seconds');
+        await click(ageSw());
+        await typeName('spicy');
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        expect(posts()[0][2]).toMatchObject({ name: 'spicy', kind: 'text', slowmode_seconds: 30, age_restricted: true });
+    });
+
+    it('edit: an unrelated change sends neither; a change sends exactly the new values and onSaved carries them', async () => {
+        await mount({ channel });
+        await typeName('renamed');
+        await click(saveBtn());
+        await flush(20);
+        expect(channelPatches()[0][2]).not.toHaveProperty('slowmode_seconds');
+        expect(channelPatches()[0][2]).not.toHaveProperty('age_restricted');
+
+        remount();
+        const h = await mount({ channel });
+        await pickSlow('1 hour');
+        await click(ageSw());
+        expect(saveBtn().disabled).toBe(false);
+        await click(saveBtn());
+        await flush(20);
+        expect(channelPatches()).toHaveLength(1);
+        expect(channelPatches()[0][2]).toMatchObject({ slowmode_seconds: 3600, age_restricted: true });
+        expect(h.onSaved.mock.calls[0][0]).toMatchObject({ slowmode_seconds: 3600, age_restricted: true });
+
+        remount();
+        await mount({ channel: { ...channel, slowmode_seconds: 3600, age_restricted: true } });
+        await pickSlow('Off');
+        await click(saveBtn());
+        await flush(20);
+        expect(channelPatches()[0][2]).toMatchObject({ slowmode_seconds: 0 });
+        expect(channelPatches()[0][2]).not.toHaveProperty('age_restricted');
+    });
+
+    it('both controls are keyboard reachable', async () => {
+        await mount({ channel });
+        slowTrigger().focus();
+        expect(document.activeElement).toBe(slowTrigger());
+        ageSw().focus();
+        expect(document.activeElement).toBe(ageSw());
     });
 });

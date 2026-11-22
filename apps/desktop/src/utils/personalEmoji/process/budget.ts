@@ -25,7 +25,9 @@ export function decimateFrames<F>(frames: TimedFrame<F>[], k: number): TimedFram
     return out;
 }
 
-const STATIC_SIDES = [128, 112, 96, 80, 64];
+/** Sides tried for a still, largest first: 1, 7/8, 3/4, 5/8, 1/2 of the profile's side
+ *  (128 -> 128, 112, 96, 80, 64 for an emoji; 320 -> 320 ... 160 for a sticker). */
+const STATIC_SIDE_STEPS = [1, 0.875, 0.75, 0.625, 0.5];
 const STATIC_QUALITIES = [0.92, 0.82, 0.7, 0.55];
 
 /** Smallest-first search; returns the first encode <= `target`, else the smallest seen. */
@@ -35,7 +37,9 @@ export async function fitStatic(
     maxSide: number,
 ): Promise<{ bytes: Uint8Array; side: number; quality: number }> {
     let best: { bytes: Uint8Array; side: number; quality: number } | null = null;
-    for (const side of STATIC_SIDES.filter(s => s <= maxSide).concat(maxSide < 64 ? [maxSide] : [])) {
+    const top = Math.max(maxSide, 64);
+    const sides = STATIC_SIDE_STEPS.map(k => Math.round(top * k)).filter(s => s <= maxSide);
+    for (const side of sides.concat(maxSide < 64 ? [maxSide] : [])) {
         for (const quality of STATIC_QUALITIES) {
             const bytes = await encode(quality, side);
             if (!best || bytes.length < best.bytes.length) best = { bytes, side, quality };

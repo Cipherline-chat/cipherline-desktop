@@ -1,0 +1,84 @@
+/* ============================================================================
+   Accessibility readability settings (utils/a11y/readability.ts, applied to
+   <html> by components/a11y/A11yRuntime.tsx): message density, font, line and
+   letter spacing, always-on focus outline, underlined links.
+
+   Every rule is behind a data attribute whose default value changes nothing,
+   so the app is exactly as before until a setting is chosen. Tokens only for
+   colour (--cl-*), so the themes slice can retint it without edits.
+   ============================================================================ */
+
+/* ── Bundled fonts (OFL-1.1, latin subset, woff2; licences in public/licenses/fonts).
+      Atkinson Hyperlegible's faces live in formatting.css (the per-message font).
+      font-src 'self' covers these: they ship inside the app, nothing is fetched. */
+@font-face{font-family:'Cipherline Lexend';font-style:normal;font-weight:400;font-display:swap;src:url('../assets/fonts/lexend-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Lexend';font-style:normal;font-weight:700;font-display:swap;src:url('../assets/fonts/lexend-latin-700-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline OpenDyslexic';font-style:normal;font-weight:400;font-display:swap;size-adjust:88%;src:url('../assets/fonts/opendyslexic-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline OpenDyslexic';font-style:normal;font-weight:700;font-display:swap;size-adjust:88%;src:url('../assets/fonts/opendyslexic-latin-700-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+
+/* ── Font. UI text and messages follow --cl-font-body / --cl-font-display; Tailwind's
+      font-sans / font-display classes name Nunito / Fredoka directly, so they are re-pointed
+      too. Code (--cl-font-mono / font-mono) and per-message fonts ([data-msg-font]) are
+      untouched. The fallback is the Default stack, so a font that fails to load looks like today. */
+:root[data-a11y-font="atkinson"]{--cl-font-body:'Cipherline Atkinson Hyperlegible','Nunito',sans-serif;--cl-font-display:'Cipherline Atkinson Hyperlegible','Fredoka',sans-serif}
+:root[data-a11y-font="lexend"]{--cl-font-body:'Cipherline Lexend','Nunito',sans-serif;--cl-font-display:'Cipherline Lexend','Fredoka',sans-serif}
+:root[data-a11y-font="opendyslexic"]{--cl-font-body:'Cipherline OpenDyslexic','Nunito',sans-serif;--cl-font-display:'Cipherline OpenDyslexic','Fredoka',sans-serif}
+:root[data-a11y-font="atkinson"] .font-sans,:root[data-a11y-font="lexend"] .font-sans,:root[data-a11y-font="opendyslexic"] .font-sans{font-family:var(--cl-font-body)}
+:root[data-a11y-font="atkinson"] .font-display,:root[data-a11y-font="lexend"] .font-display,:root[data-a11y-font="opendyslexic"] .font-display{font-family:var(--cl-font-display)}
+/* Message text that sets no face of its own inherits the app body font; a message
+   written in a per-message font keeps it (formatting.css [data-msg-font]). */
+
+/* ── Line spacing. 1.7 vs Nunito's "normal" (~1.364) = 1.25x; the long-message collapse
+      height scales with it so the same number of lines show before "Show more". */
+:root[data-a11y-leading="relaxed"]{--cl-msg-leading:1.7;--cl-msg-leading-mult:1.25}
+
+/* ── Letter spacing (messages and the message box). */
+:root[data-a11y-tracking="wide"] .cl-msg-body,
+:root[data-a11y-tracking="wide"] .cl-composer [contenteditable]{letter-spacing:.06em;word-spacing:.08em}
+
+/* ── Underline links in messages (always on for people who need more than colour). */
+:root[data-a11y-links="on"] .cl-msg-body a,
+:root[data-a11y-links="on"] .cl-msg-body .cl-fmt-link{text-decoration:underline !important;text-decoration-thickness:2px;text-underline-offset:3px;text-decoration-color:currentColor !important}
+
+/* ── Always show the focus outline: a strong 2px ring on whatever has focus, also after a
+      mouse click. Off (default) leaves the app's own :focus-visible behaviour alone. */
+:root[data-a11y-focus="on"] :is(button,a[href],input,textarea,select,summary,[contenteditable="true"],[role="button"],[role="tab"],[role="radio"],[role="checkbox"],[role="switch"],[role="menuitem"],[role="option"],[tabindex]:not([tabindex="-1"])):focus{
+  outline:2px solid var(--cl-lume) !important;outline-offset:2px !important}
+
+/* ── Message density. Rows are the same markup either way; Compact only tightens them.
+      Cozy (default) = today. The gap above each new author is --cl-msg-group-gap in both
+      densities (12px = Tailwind mt-3 until the user chooses another). */
+.cl-msg-row--head{margin-top:var(--cl-msg-group-gap,12px)}
+.cl-msg-gutter{position:relative}
+.cl-msg-gutter::before{content:attr(data-t);display:none}
+
+:root[data-a11y-density="compact"] .cl-msg-row{gap:8px;padding-top:1px;padding-bottom:1px;padding-left:10px}
+:root[data-a11y-density="compact"] .cl-msg-av{width:24px;height:24px;margin-top:1px}
+:root[data-a11y-density="compact"] .cl-msg-gutter{width:24px}
+:root[data-a11y-density="compact"] .cl-msg-gutter::before{
+  display:block;position:absolute;right:0;top:50%;transform:translateY(-50%);
+  font-size:10px;line-height:1;white-space:nowrap;color:var(--cl-faint);font-variant-numeric:tabular-nums;
+  opacity:0;transition:opacity .12s;pointer-events:none;user-select:none}
+:root[data-a11y-density="compact"] .cl-msg-row:hover .cl-msg-gutter::before{opacity:1}
+/* A pinned / saved grouped row draws its icons in this gutter; they win over the hover time. */
+:root[data-a11y-density="compact"] .cl-msg-row:has(.cl-msg-gutter-icons) .cl-msg-gutter::before{display:none}
+:root[data-a11y-density="compact"] .cl-msg-head{margin-bottom:0;gap:6px}
+:root[data-a11y-density="compact"] .cl-msg-head > span:first-child{font-size:13px}
+
+/* ── Settings → Accessibility controls (components/settings/panes/ReadabilityCards.tsx) ── */
+.a11y-rc{flex-wrap:wrap;justify-content:flex-end}
+.a11y-row--stack{flex-wrap:wrap}
+.a11y-row--stack .sd-rl{flex:1 1 60%}
+.a11y-row--stack .sd-rc{flex:1 1 100%;justify-content:flex-start;padding-left:50px}
+.a11y-choice{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:12px;background:var(--cl-sink);box-shadow:inset 0 0 0 1px var(--cl-border)}
+.a11y-choice>button{border:none;cursor:pointer;border-radius:9px;padding:7px 14px;background:transparent;
+  font-family:inherit;font-weight:800;font-size:13px;color:var(--cl-muted);transition:background .15s,color .15s}
+.a11y-choice>button:hover{color:var(--cl-text)}
+.a11y-choice>button[data-on]{background:var(--cl-lume);color:var(--cl-on-lume)}
+.a11y-choice>button:focus-visible{outline:2px solid var(--cl-lume);outline-offset:2px}
+.a11y-gap{display:flex;align-items:center;gap:14px;width:100%;max-width:420px}
+.a11y-gap .cls{flex:1 1 auto;min-width:120px}
+.a11y-gap .a11y-value{min-width:3em}
+.a11y-sample-feed{padding:10px 8px 12px;color:var(--cl-text)}
+.a11y-chat-sample{margin-top:10px}
+.a11y-pv-av--alt{background:var(--cl-glow)}

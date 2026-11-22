@@ -70,7 +70,7 @@ describe('share button while a share is starting', () => {
     });
     it('busy keeps its normal colours — it is not the greyed "no permission" state', () => {
         const [btn] = shareButtons(render({ sharing: false, starting: true }));
-        expect(btn).not.toContain('rgba(255,255,255,0.28)');
+        expect(btn).not.toContain('rgb(var(--cl-bright-rgb) / 0.28)');
         const disabled = renderToStaticMarkup(React.createElement(ControlBar, {
             localParticipant: { isScreenShareEnabled: false, getTrackPublication: () => undefined },
             isLocalDeafened: false, onToggleMic: noop, onToggleDeafen: noop, onToggleCamera: noop,
@@ -78,7 +78,7 @@ describe('share button while a share is starting', () => {
             canScreenShare: false,
         }));
         // control: the permission-disabled button IS greyed, so the check can fail
-        expect(shareButtons(disabled)[0]).toContain('rgba(255,255,255,0.28)');
+        expect(shareButtons(disabled)[0]).toContain('rgb(var(--cl-bright-rgb) / 0.28)');
     });
     it('live → restarting (change source / audio): stop face and options both locked, spinner shown', () => {
         const html = render({ sharing: true, starting: true });

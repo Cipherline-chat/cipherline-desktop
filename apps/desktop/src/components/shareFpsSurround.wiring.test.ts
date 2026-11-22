@@ -60,7 +60,7 @@ describe('single-screen (cropped) publish', () => {
     it('is only taken for a slice layout on a runtime that has the breakout box; otherwise the whole display is shared', () => {
         expect(SC).toContain("const sliceLayout = wantsSlice && supportsCropPipeline() ? wantsSlice : null;");
         // (between them: the HDR screen branch, which publishes its own generated track - hdrSharePipeline.ts)
-        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout, reusedCapture\);[^\n]*\s*\} else if \(hdrPipe\) \{[\s\S]{0,1500}?\} else \{\s*settledStart = await publishScreenShareSettled\(localParticipant,/);
+        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout, reusedCapture\);[^\n]*\s*\} else if \(hdrPipe\) \{[\s\S]{0,1500}?\} else \{\s*defaultCapturePath = true;\s*resolveOutcomeRef\.current = null;\s*settledStart = await publishScreenShareSettled\(localParticipant,/);
     });
 
     it('asks the capturer for the display at native size (box far above any display) at the paced capture rate', () => {

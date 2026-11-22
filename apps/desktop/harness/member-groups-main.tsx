@@ -27,6 +27,7 @@ import type { ChannelInfo, ServerInfo } from '../src/hooks/useServers';
  *   ?w=<px>                   right panel width (default 300)
  *   ?long=1                   a few long names / nicknames / many role groups, to stress ellipsis
  *   ?stalehidden=1            legacy cipherline_member_list_hidden_<uid>='1' in the store: the list must still show
+ *   ?game=1                   online members show a long game title (60+ chars) and one 60+ char title with no spaces (activity-line ellipsis check)
  *   ?broken=1                 positive control: a deliberately overflowing child inside the panel
  *   ?deleted=1                the stored list also names a role that no longer exists (prune check)
  *
@@ -76,6 +77,15 @@ axios.defaults.adapter = async (config) => {
     return { data, status: 200, statusText: 'OK', headers: {}, config } as any;
 };
 
+const LONG_GAME = 'The Legend of Extraordinarily Long Game Titles: Definitive Remastered Collectors Edition Part II';
+const LONG_GAME_NOSPACE = 'SuperExtraordinarilyLongGameTitleWithoutAnySpacesWhatsoever_Remastered_Edition_2026';
+const GAME_STATUSES: Record<string, any> = q.get('game')
+    ? Object.fromEntries(members.filter(m => m.status !== 'offline').map((m, i) => [m.user_id, {
+        status: m.status, custom_status_text: null, custom_status_emoji: null,
+        current_game: i % 2 ? LONG_GAME_NOSPACE : LONG_GAME,
+    }]))
+    : {};
+
 const noop = () => {};
 const NONE: never[] = [];
 const EMPTY = {};
@@ -123,7 +133,7 @@ function Frame() {
                             server={SERVER} channel={CHANNEL} token="harness" userId={ME}
                             myPermissions={DEFAULT_EVERYONE_PERMISSIONS}
                             allChannels={channels} categories={NONE} dividers={NONE}
-                            voiceParticipants={EMPTY} friendStatuses={EMPTY} presenceAuthoritative={false}
+                            voiceParticipants={EMPTY} friendStatuses={GAME_STATUSES} presenceAuthoritative={!!q.get('game')}
                             myStatus="online" myCurrentGame={null}
                             globalFriends={null} conversations={NONE} sentFriendRequests={SET} setSentFriendRequests={noop}
                             huddleCalls={EMPTY} searchableMessages={NONE} channelPermissionsMap={EMPTY}

@@ -11,7 +11,7 @@ let level = 0; // RMS-ish amplitude every analyser reports, 0..1
 const contexts: FakeCtx[] = [];
 class FakeAnalyser {
     fftSize = 256; smoothingTimeConstant = 0; frequencyBinCount = 128;
-    getByteTimeDomainData(buf: Uint8Array) { for (let i = 0; i < buf.length; i++) buf[i] = 128 + Math.round((i % 2 ? 1 : -1) * level * 127); }
+    getFloatTimeDomainData(buf: Float32Array) { for (let i = 0; i < buf.length; i++) buf[i] = (i % 2 ? 1 : -1) * level; }
     disconnect() {}
 }
 class FakeSource { connect() {} disconnect() {} }
@@ -124,6 +124,46 @@ describe('speakingAnalyser', () => {
         expect(sa.speakingAnalyserStats().contextOpen).toBe(false);
         sa.acquireSpeakingAnalyser('c', track('t3'), () => {});
         expect(contexts).toHaveLength(2);
+    });
+
+    it('lights the ring for any audible sound: room noise at -50 dBFS counts, -70 dBFS does not', async () => {
+        const sa = await load();
+        const seen: boolean[] = [];
+        sa.acquireSpeakingAnalyser('a', track('t'), s => seen.push(s));
+        level = 10 ** (-70 / 20); vi.advanceTimersByTime(sa.POLL_MS * 3);
+        expect(seen.at(-1)).toBe(false);
+        level = 10 ** (-50 / 20); vi.advanceTimersByTime(sa.POLL_MS);
+        expect(seen.at(-1)).toBe(true);
+        // the old speech threshold (-35 dBFS) is far above this level
+        expect(10 ** (-50 / 20)).toBeLessThan(0.018);
+    });
+
+    it('logs ring_level once a minute: share lit, level lit / not lit, and never for a silent track', async () => {
+        vi.resetModules();
+        const log = await import('./callEventLog');
+        log.clearCallEvents();
+        const sa = await import('./speakingAnalyser');
+        sa.acquireSpeakingAnalyser('a', track('t'), () => {});
+        sa.acquireSpeakingAnalyser('me', track('t2'), () => {}, true);
+        const polls = sa.RING_LEVEL_LOG_MS / sa.POLL_MS;
+        level = 0.1; vi.advanceTimersByTime(sa.POLL_MS * (polls / 2));
+        level = 10 ** (-72 / 20); vi.advanceTimersByTime(sa.POLL_MS * (polls / 2));
+        const ev = log.getCallEvents().filter(e => e.kind === 'ring_level');
+        expect(ev).toHaveLength(2);
+        const d = ev[0].detail!;
+        expect(d.slot).toMatch(/^remote-av-\d+$/);
+        expect(ev[1].detail!.slot).toBe('self-mic');
+        expect(d.thr_db).toBe(-60);
+        expect(d.lit_pct).toBeGreaterThanOrEqual(50);
+        expect(d.lit_pct).toBeLessThan(53); // + the 300 ms release tail
+        expect(d.lit_db as number).toBeGreaterThan(-21);
+        expect(d.quiet_db).toBeCloseTo(-72, 0);
+        expect(d.quiet_max_db as number).toBeLessThan(d.thr_db as number); // nothing audible went without a ring
+        for (const e of ev) expect(log.validateCallEvent(e)).toEqual([]);
+        // digital silence for a whole window (muted): nothing is logged
+        log.clearCallEvents();
+        level = 0; vi.advanceTimersByTime(sa.RING_LEVEL_LOG_MS * 2 + 1000);
+        expect(log.getCallEvents().filter(e => e.kind === 'ring_level')).toHaveLength(0);
     });
 
     it('falls back to a default context where sinkId:none is rejected', async () => {

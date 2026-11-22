@@ -61,7 +61,7 @@ export const ChannelMessageSearch: React.FC<Props> = ({ channelId, messages, onJ
                 __excerpt: (
                     <>
                         <span className="text-cl-muted">{before}</span>
-                        <span className="text-cl-lume font-semibold">{match}</span>
+                        <span className="text-cl-lume-text font-semibold">{match}</span>
                         <span className="text-cl-muted">{after}</span>
                     </>
                 ),

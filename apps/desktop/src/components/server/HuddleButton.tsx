@@ -24,9 +24,12 @@ import { Volume2, ChevronDown, ChevronRight, Plus, Lock, Loader2, ShieldAlert } 
 import { ChannelIconRenderer } from './ChannelIconPicker';
 import { FlatIconBtn } from '../primitives/HoverActions';
 import { START_CALLS_DENIED_MESSAGE } from '../../utils/startCallsGate';
+import { MutedGlyph } from './muteMenu';
 
 interface Props {
     name: string;
+    /** Muted by the viewer (utils/channelMute.ts): dim the name, show the muted glyph. */
+    muted?: boolean;
     iconName?: string | null;
     iconEmoji?: string | null;
     /** Aggregate participant count across all calls under this Huddle. */
@@ -80,7 +83,7 @@ interface Props {
 interface RippleState { id: number; x: number; y: number; }
 
 export const HuddleButton: React.FC<Props> = ({
-    name, iconName, iconEmoji,
+    name, muted = false, iconName, iconEmoji,
     activeParticipantCount, activeCallCount, maxCalls,
     canConnect, canStart = true, atCallLimit = false, cooldownSecs, isActiveForMe, encryptionState, expanded, onToggleExpanded, onSpawn, onContextMenu, children,
 }) => {
@@ -149,7 +152,7 @@ export const HuddleButton: React.FC<Props> = ({
     // call (someone else's, seen from outside) gets the neutral gray tint.
     const iconBg = isLive && !mergedTeal
         ? 'bg-white/[0.12] text-cl-muted'
-        : 'bg-cl-lume/15 text-cl-lume';
+        : 'bg-cl-lume/15 text-cl-lume-text';
 
     const nameColor = 'text-white/85';
 
@@ -237,9 +240,10 @@ export const HuddleButton: React.FC<Props> = ({
                 {/* Name + status */}
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                        <span className={`text-[12px] font-medium truncate ${nameColor}`}>
+                        <span className={`text-[12px] font-medium truncate ${nameColor}${muted ? ' opacity-60' : ''}`}>
                             {name}
                         </span>
+                        {muted && <MutedGlyph size={11} />}
                         {!canConnect && <Lock size={10} className="text-cl-faint shrink-0" />}
                     </div>
                     {/* The "…" of a truncated line takes the colour of the element that
@@ -292,7 +296,7 @@ export const HuddleButton: React.FC<Props> = ({
                                                 aria-label="Not fully encrypted — someone is on an older version"
                                                 title="Not fully encrypted — someone in this call is on an older version of Cipherline and their audio and video are not end-to-end encrypted."
                                             >
-                                                <ShieldAlert size={9} className="text-cl-danger" />
+                                                <ShieldAlert size={9} className="text-cl-danger-text" />
                                             </span>
                                         )}
                                     </span>
@@ -306,7 +310,7 @@ export const HuddleButton: React.FC<Props> = ({
 
                 {/* + spawn button — hidden while you're already in a call here */}
                 {canSpawn && !isActiveForMe && (
-                    <div data-testid="huddle-start" className="w-6 h-6 rounded-md flex items-center justify-center bg-cl-lume/15 text-cl-lume shrink-0 transition-transform hover:scale-110">
+                    <div data-testid="huddle-start" className="w-6 h-6 rounded-md flex items-center justify-center bg-cl-lume/15 text-cl-lume-text shrink-0 transition-transform hover:scale-110">
                         <Plus size={13} />
                     </div>
                 )}

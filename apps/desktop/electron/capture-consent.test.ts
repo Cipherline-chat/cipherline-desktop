@@ -367,8 +367,67 @@ describe('turning audio on in the middle of a share (the "Enable audio" button) 
         expect(confirm).not.toHaveBeenCalled();
     });
 
-    it('protection kept: the live share is for ONE source - audio for a different source is refused', async () => {
+    it('protection kept: the live share is for ONE source - another SCREEN\'s audio is refused', async () => {
         const { c, click } = await shareWithoutAudio(); // sharing SCREEN
+        click();
+        const g = mint(c, WIN, 'screen:1:0', true);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === 'screen:1:0')).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+
+    // A window Windows would not capture falls back to a capture of its SCREEN (src/utils/windowShareFallback.ts:
+    // the monitor cropped to the window, or "share the whole screen instead"); the window's own audio stays.
+    // Nothing is widened: with that screen share live, a trusted screen grant already starts ALL system audio.
+    it('window capture fell back to a screen: the window\'s audio rides on the live screen share (trusted grant)', async () => {
+        const { c, click, confirm } = await shareWithoutAudio(); // sharing SCREEN
+        click();
+        const g = mint(c, WIN, WINDOW.id, true);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
+        // ... and is part of the live share from then on: an automatic restart continues it without a click.
+        const cont = c.continueLive(WIN, WINDOW.id, true);
+        expect(cont).toMatchObject({ ok: true, audio: true });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('protection kept: the screen-fallback audio still needs a TRUSTED grant', async () => {
+        const { c, advance } = await shareWithoutAudio();
+        advance(PRESENCE_WINDOW_MS + CONTINUATION_MS + 1); // no click, no recent capture of the window
+        const g = mint(c, WIN, WINDOW.id, true);
+        expect(g.trusted).toBe(false);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toMatchObject({ allowed: false, why: 'untrusted' });
+    });
+
+    it('protection kept: a window\'s audio never rides on ANOTHER WINDOW\'s share (only a screen share covers it)', async () => {
+        const { c, click } = setup();
+        click();
+        const v = mint(c, WIN, 'window:999:0');
+        expect((await c.authorizeVideo(WIN, v.token, { id: 'window:999:0', name: 'Other' }, false)).allowed).toBe(true);
+        click();
+        const g = mint(c, WIN, WINDOW.id, true);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+
+    it('the fallback window stays live only while a screen entry does (evicted screen = no continuation)', async () => {
+        const { c, click } = await shareWithoutAudio(); // SCREEN live
+        click();
+        const g = mint(c, WIN, WINDOW.id, true);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id).allowed).toBe(true);
+        // positive control: while the screen is live, the window's audio continues
+        expect(c.continueLive(WIN, WINDOW.id, true)).toMatchObject({ ok: true });
+        // three more WINDOW shares push the screen out of the 4-entry live set (oldest first)
+        for (const id of ['window:11:0', 'window:12:0', 'window:13:0']) {
+            click();
+            const v = mint(c, WIN, id);
+            expect((await c.authorizeVideo(WIN, v.token, { id, name: 'Other' }, false)).allowed).toBe(true);
+        }
+        // the screen is gone, so the window that rode on it is too
+        expect(c.continueLive(WIN, WINDOW.id, true)).toEqual({ ok: false, reason: 'no_share' });
+        // ...while a window share live in its own right still continues
+        expect(c.continueLive(WIN, 'window:13:0', false)).toMatchObject({ ok: true });
+    });
+
+    it('protection kept: the screen-fallback audio needs the screen share to be LIVE (ended = refused)', async () => {
+        const { c, click } = await shareWithoutAudio();
+        c.endShare(WIN);
         click();
         const g = mint(c, WIN, WINDOW.id, true);
         expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toMatchObject({ allowed: false, why: 'no_share' });
@@ -757,7 +816,7 @@ describe('wiring in main.ts / preload / renderer', () => {
         const sc = readFileSync(join(__dirname, '..', 'src', 'components', 'SidebarConference.tsx'), 'utf8');
         const fn = sc.slice(sc.indexOf('const applyAudioOnlyChange = async ('), sc.indexOf('// The body of a share start.'));
         const mintAt = fn.indexOf('await mintShareGrant(options);');
-        const startAt = fn.indexOf('await startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle);');
+        const startAt = fn.indexOf('await startNativeWindowAudio(nativeMode, options.audioWindowId ?? options.sourceId, options.appAudio?.handle);');
         expect(mintAt).toBeGreaterThan(-1);
         expect(startAt).toBeGreaterThan(mintAt);
     });
@@ -795,12 +854,19 @@ describe('wiring in main.ts / preload / renderer', () => {
         //  the 7th: acquireCaptureFirst, the Wayland portal's new source asked for before the live
         //  share is touched - a capture like any other, so it presents its own grant;
         //  the 8th: the retry of a transient NotReadableError after a quality-change teardown - the failed
-        //  attempt spent the grant, so each retry mints its own, still inside the click's presence window)
+        //  attempt spent the grant, so each retry mints its own, still inside the click's presence window;
+        //  the 9th: a window Windows would not capture, retried at 1080p30 (windowShareFallback.ts). The display
+        //  capture behind a crop mints for what it captures - mintShareGrant(captureOptions): the share's own
+        //  source, or the screen holding a window that could not be captured)
         expect(sc.match(/await mintShareGrant\(options\);/g)).toHaveLength(8);
+        expect(sc.match(/await mintShareGrant\(captureOptions\);/g)).toHaveLength(1);
         expect(sc).toContain('resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined)');
-        expect(sc).toContain('startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId))');
+        // The audio start presents the share's grant for that source, or (a window whose video fell back to a
+        // screen capture) the window's own grant, continued or minted - never none when one can be had.
+        expect(sc).toContain('let audioToken = grantTokenFor(shareGrantRef.current, sourceId) ?? grantTokenFor(windowAudioGrantRef.current, sourceId);');
+        expect(sc).toContain('startWindowAudioCapture(rootPid, wasapiMode, audioToken)');
         // every parked pending share carries the grant
-        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(7);
+        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(8);
         expect(sc).not.toMatch(/pendingScreenShareRef\.current = \{ \.\.\.options/);
     });
 });

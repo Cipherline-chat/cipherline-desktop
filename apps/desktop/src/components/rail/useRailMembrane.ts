@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import {
-    stepMembrane, membraneSettled, membraneShape, initialMembrane,
+    stepMembrane, membraneSettled, membraneShape, initialMembrane, frameStep,
     type MembraneState, type RestBox,
 } from './railMembrane';
 
@@ -91,12 +91,16 @@ export function useRailMembrane(
         if (running.current) return;
 
         running.current = true;
-        let last = performance.now();
+        // rAF stamps only — never performance.now() here. Mixing the two is
+        // what threw the indicator off the rail on a server's first open; see
+        // `frameStep` in railMembrane.ts.
+        let last: number | null = null;
         const step = (now: number) => {
-            const dt = (now - last) / 1000;
+            const dt = frameStep(last, now);
             last = now;
-            // No dt clamp: the analytic integrator is exact at any dt, and a
-            // clamp would make a slow frame animate in slow motion instead.
+            // No upper dt clamp: the analytic integrator is exact at any
+            // positive dt, and a clamp would make a slow frame animate in slow
+            // motion instead.
             const next = stepMembrane(st.current, targetRef.current,
                 restRef.current?.height ?? 0, dt);
             if (membraneSettled(next, targetRef.current)) {

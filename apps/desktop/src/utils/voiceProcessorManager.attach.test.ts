@@ -126,6 +126,56 @@ describe('voiceProcessorManager — processor only while a stage needs it', () =
     });
 });
 
+// The new audio engine ('v2'): the manager swaps the processor when the chain it was built for is not the one the settings ask for.
+describe('voiceProcessorManager — audio engine switch and fallback', () => {
+    const V2 = { ...ALL_OFF, noiseSuppression: true, audioEngine: 'v2' as const };
+    // The fake host track never runs init(), so the processor has no graph and cannot know it was built for the other engine; say so.
+    const claimStale = (stale: () => boolean) => {
+        const proc = getCurrentProcessor()!;
+        proc.needsEngineRebuild = () => stale();
+        return proc;
+    };
+
+    it("v2 with only the (default-on) voice gate: no processor at all (original sound is a true bypass)", async () => {
+        const t = new FakeMicTrack();
+        await bindMicTrack('call-1', t, { ...ALL_OFF, voiceGate: true, audioEngine: 'v2' });
+        expect(t.calls).toEqual([]);
+        expect(t.getProcessor()).toBeUndefined();
+    });
+
+    it('the engine changed mid-call: the processor is stopped and set again on the same track (replaceTrack, no unpublish)', async () => {
+        const t = new FakeMicTrack();
+        await bindMicTrack('call-1', t, { ...ALL_OFF, noiseSuppression: true, audioEngine: 'legacy' });
+        let stale = false;
+        const proc = claimStale(() => stale);
+        stale = true;
+        updateSettings(V2);
+        await bindMicTrackSettled();
+        expect(t.calls).toEqual(['set', 'stop', 'set']);
+        expect(t.getProcessor()).toBe(proc);
+        // settled: a further settings change does not rebuild again
+        stale = false;
+        updateSettings({ ...V2, micVolume: 120 });
+        await bindMicTrackSettled();
+        expect(t.calls).toEqual(['set', 'stop', 'set']);
+    });
+
+    it("the engine failing at runtime re-attaches the processor (it then builds the legacy chain)", async () => {
+        const t = new FakeMicTrack();
+        await bindMicTrack('call-1', t, V2);
+        let stale = false;
+        const proc = claimStale(() => stale);
+        stale = true; // what needsEngineRebuild reports once the worklet said 'failed'
+        const cb = (proc as unknown as { _callbacks: { onEngineFallback?: (i: { error: string }) => void } })._callbacks;
+        const seen = vi.fn();
+        updateCallbacks({ onEngineFallback: seen });
+        cb.onEngineFallback!({ error: 'unreachable' });
+        await bindMicTrackSettled();
+        expect(seen).toHaveBeenCalledWith({ error: 'unreachable' });
+        expect(t.calls).toEqual(['set', 'stop', 'set']);
+    });
+});
+
 /** Let the manager's serialised reconcile chain settle. */
 async function bindMicTrackSettled() {
     for (let i = 0; i < 5; i++) await Promise.resolve();

@@ -41,9 +41,12 @@ import { useOverrideEditor } from './channelPerms/useOverrideEditor';
 import { computeGuard } from './channelPerms/editorGuard';
 import { roleFromWire, type PermTier } from './channelPerms/effectivePermissions';
 import { countTargets, draftFromRows, draftsEqual, type DraftMap } from './channelPerms/overrideDraft';
-import { describeFailures, saveOverrideDiff } from './channelPerms/saveOverrides';
+import { describeFailures, saveOverrideDiff, type SaveResult } from './channelPerms/saveOverrides';
+import { createWithOverrides } from './channelPerms/createWithOverrides';
 import { CallNamingSection } from './CallNamingSection';
 import { CallBehaviorSection } from './CallBehaviorSection';
+import { ChannelModerationSection } from './ChannelModerationSection';
+import { slowmodeSecondsOf } from '../../utils/channelModeration';
 import { endsWhenStarterLeaves } from '../../utils/endCallOnLeave';
 import {
     callNamingOf, callNamingEqual, callNamingFormError, callNamingPayload, isDefaultCallNaming,
@@ -112,12 +115,12 @@ const LimitField: React.FC<LimitFieldProps> = ({ icon, label, sublabel, value, m
         if (!isNaN(n) && n >= 1 && n <= max) onChange(n);
     };
     const chipBase = 'text-[12px] font-semibold px-2.5 h-[26px] rounded-lg border border-solid motion-safe:transition-colors cursor-pointer tabular-nums';
-    const chipOn   = 'bg-cl-lume/15 border-cl-lume/50 text-cl-lume';
+    const chipOn   = 'bg-cl-lume/15 border-cl-lume/50 text-cl-lume-text';
     const chipOff  = 'bg-transparent border-cl-border/50 text-cl-faint hover:border-cl-lume/30 hover:text-cl-muted';
     return (
         <div className="flex items-center gap-3 px-3 py-2.5 flex-wrap">
             <div className="flex items-center gap-2 min-w-[170px]">
-                <div className="w-6 h-6 rounded-md bg-cl-lume/10 text-cl-lume/80 flex items-center justify-center shrink-0">{icon}</div>
+                <div className="w-6 h-6 rounded-md bg-cl-lume/10 text-cl-lume-text/80 flex items-center justify-center shrink-0">{icon}</div>
                 <div className="min-w-0">
                     <div className="text-[12.5px] font-semibold text-cl-text leading-tight">{label}</div>
                     <div className="text-[10.5px] text-cl-faint leading-snug">{sublabel}</div>
@@ -219,6 +222,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     const [maxCalls, setMaxCalls] = useState(channel?.max_calls ?? 0);
     const [callNaming, setCallNaming] = useState<CallNamingSettings>(() => callNamingOf(channel));
     const [endCallWhenStarterLeaves, setEndCallWhenStarterLeaves] = useState(() => endsWhenStarterLeaves(channel));
+    const [slowmode, setSlowmode] = useState(() => slowmodeSecondsOf(channel));
+    const [ageRestricted, setAgeRestricted] = useState(() => channel?.age_restricted === true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [createAnother, setCreateAnother] = useState(false);
@@ -318,6 +323,10 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     const endCallDirty = kind === 'huddle' && (isEdit
         ? endCallWhenStarterLeaves !== endsWhenStarterLeaves(editing)
         : endCallWhenStarterLeaves);
+    // Slowmode / age-restricted (text channels). Only a CHANGE is sent on an
+    // edit; a create sends each only when switched on (off is the server default).
+    const slowmodeDirty = kind === 'text' && (isEdit ? slowmode !== slowmodeSecondsOf(editing) : slowmode !== 0);
+    const ageRestrictedDirty = kind === 'text' && (isEdit ? ageRestricted !== (editing!.age_restricted === true) : ageRestricted);
     const overviewDirty = isEdit
         ? (name.trim() !== (editing!.name ?? '')
             || (iconName ?? null) !== (editing!.icon_name ?? null)
@@ -325,7 +334,9 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
             || parentId !== (editing!.parent_category_id ?? '')
             || (kind === 'huddle' && (memberLimit !== (editing!.member_limit ?? 0) || maxCalls !== (editing!.max_calls ?? 0)))
             || callNamingDirty
-            || endCallDirty)
+            || endCallDirty
+            || slowmodeDirty
+            || ageRestrictedDirty)
         : name.trim().length > 0;
     const permsDirty = !draftsEqual(baseline, editor.draft);
     const dirty = overviewDirty || permsDirty;
@@ -404,8 +415,10 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
             // Omitted when left at the defaults (the server's default anyway).
             if (callNamingDirty) body.call_naming = callNamingPayload(callNaming);
             if (endCallDirty) body.end_call_when_starter_leaves = true;
-        } else if (topic.trim()) {
-            body.topic = topic;
+        } else {
+            if (topic.trim()) body.topic = topic;
+            if (slowmodeDirty) body.slowmode_seconds = slowmode;
+            if (ageRestrictedDirty) body.age_restricted = true;
         }
         // Optimistic: no overrides to send, so the channel's final shape is
         // exactly what was typed. Show it now, finish in the background.
@@ -419,6 +432,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 parent_category_id: parentId || null, active_call_session_id: null,
                 member_limit: kind === 'huddle' && memberLimit > 0 ? memberLimit : null,
                 max_calls: kind === 'huddle' && maxCalls > 0 ? maxCalls : null,
+                ...(kind === 'text' ? { slowmode_seconds: slowmode, age_restricted: ageRestricted } : {}),
             });
             const request = axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
             const keepOpenChosen = !!(createAnother && onCreatedKeepOpen);
@@ -450,16 +464,25 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
             });
             return;
         }
-        const res = await axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
-        const saved: ChannelInfo = res.data;
+        // Overrides ride WITH the create (one transaction, announced only to
+        // members who can see it): a private channel is never listed to
+        // anyone half-restricted. An API that predates the field falls back
+        // to the old create-then-PATCH inside createWithOverrides.
+        const created = await createWithOverrides<ChannelInfo>({
+            post: b => axios.post(apiUrl`/servers/${serverId}/channels`, b, auth),
+            body, draft: editor.draft, everyoneRoleId,
+        });
+        const saved: ChannelInfo = created.data;
         // Moment: a second #general. Names of this server's channels only.
         if (isSecondGeneral(saved, channels)) requestMoment('double-general');
 
-        const result = await saveOverrideDiff({
-            http: { patch: (u, b) => axios.patch(u, b, auth), delete: u => axios.delete(u, auth) },
-            base: overridesBase(saved.channel_id),
-            baseline: {}, draft: editor.draft, everyoneRoleId, resolveMine: guard.resolveMine,
-        });
+        const result: SaveResult = created.overridesSent
+            ? { applied: 0, failed: [] }
+            : await saveOverrideDiff({
+                http: { patch: (u, b) => axios.patch(u, b, auth), delete: u => axios.delete(u, auth) },
+                base: overridesBase(saved.channel_id),
+                baseline: {}, draft: editor.draft, everyoneRoleId, resolveMine: guard.resolveMine,
+            });
         // The channel exists either way — key distribution follows whatever
         // audience actually landed.
         const keyed = Promise.resolve(onCreated?.(saved)).catch(() => { /* non-fatal */ });
@@ -505,6 +528,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                     : { topic }),
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
                 ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
+                ...(slowmodeDirty ? { slowmode_seconds: slowmode } : {}),
+                ...(ageRestrictedDirty ? { age_restricted: ageRestricted } : {}),
             };
             const next: Partial<ChannelInfo> = {
                 name: name.trim(),
@@ -515,6 +540,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 max_calls: kind === 'huddle' ? (maxCalls === 0 ? null : maxCalls) : null,
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
                 ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
+                ...(slowmodeDirty ? { slowmode_seconds: slowmode } : {}),
+                ...(ageRestrictedDirty ? { age_restricted: ageRestricted } : {}),
             };
             // Optimistic: no override changes ride along, so the row is exactly
             // `next`. Show it, close, and roll back with a toast on refusal.
@@ -523,6 +550,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                     name: ch.name, icon_name: ch.icon_name, topic: ch.topic,
                     parent_category_id: ch.parent_category_id, member_limit: ch.member_limit, max_calls: ch.max_calls,
                     call_naming: ch.call_naming, end_call_when_starter_leaves: ch.end_call_when_starter_leaves,
+                    slowmode_seconds: ch.slowmode_seconds, age_restricted: ch.age_restricted,
                 };
                 optimism.patch(ch.channel_id, next);
                 handleClose();
@@ -546,6 +574,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 max_calls: kind === 'huddle' ? (maxCalls === 0 ? null : maxCalls) : null,
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
                 ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
+                ...(slowmodeDirty ? { slowmode_seconds: slowmode } : {}),
+                ...(ageRestrictedDirty ? { age_restricted: ageRestricted } : {}),
             };
             setEditing(saved);
         }
@@ -595,7 +625,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         if (data.rolesState === 'error') {
             return (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 py-16">
-                    <div className="text-[12.5px] text-cl-flash">{data.rolesError}</div>
+                    <div className="text-[12.5px] text-cl-flash-text">{data.rolesError}</div>
                     <ClButton size="sm" variant="ghost" onClick={data.retry}>Retry</ClButton>
                 </div>
             );
@@ -603,7 +633,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         if (data.ownError) {
             return (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 py-16">
-                    <div className="text-[12.5px] text-cl-flash">{data.ownError}</div>
+                    <div className="text-[12.5px] text-cl-flash-text">{data.ownError}</div>
                     <ClButton size="sm" variant="ghost" onClick={() => { void data.reloadOwn(); }}>Retry</ClButton>
                 </div>
             );
@@ -650,7 +680,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 <div className="flex flex-col min-h-0 flex-1" onKeyDown={onDialogKeyDown}>
                     {/* ── Header: identity + tabs + close, one row ─────────── */}
                     <div className="flex items-center gap-3 px-5 py-3 border-b border-cl-border/40 shrink-0">
-                        <div className="w-8 h-8 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume border border-solid border-cl-lume/20 shrink-0">
+                        <div className="w-8 h-8 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume-text border border-solid border-cl-lume/20 shrink-0">
                             {kind === 'huddle' ? <Volume2 size={15} /> : <Hash size={15} />}
                         </div>
                         <div className="min-w-0 flex-1">
@@ -718,9 +748,9 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                                                             on ? 'bg-cl-lume/[0.08] border-cl-lume/50' : 'bg-cl-surface/40 border-cl-border/50 hover:border-cl-lume/30'
                                                         }`}
                                                     >
-                                                        <span className={on ? 'text-cl-lume' : 'text-cl-muted'}>{icon}</span>
+                                                        <span className={on ? 'text-cl-lume-text' : 'text-cl-muted'}>{icon}</span>
                                                         <span className="min-w-0">
-                                                            <span className={`block text-[13px] font-semibold ${on ? 'text-cl-lume' : 'text-cl-text'}`}>{title}</span>
+                                                            <span className={`block text-[13px] font-semibold ${on ? 'text-cl-lume-text' : 'text-cl-text'}`}>{title}</span>
                                                             <span className="block text-[10.5px] leading-snug text-cl-faint truncate">{desc}</span>
                                                         </span>
                                                     </button>
@@ -778,13 +808,13 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                                             <button
                                                 type="button"
                                                 onClick={() => setTab('permissions')}
-                                                className="text-[11px] text-cl-faint hover:text-cl-lume inline-flex items-center gap-1 mb-1.5"
+                                                className="text-[11px] text-cl-faint hover:text-cl-lume-text inline-flex items-center gap-1 mb-1.5"
                                             >
                                                 <SlidersHorizontal size={11} /> Fine-tune per role
                                             </button>
                                         </div>
                                         {data.rolesState === 'error' ? (
-                                            <div className="text-[12px] text-cl-flash">
+                                            <div className="text-[12px] text-cl-flash-text">
                                                 {data.rolesError} <button type="button" className="underline" onClick={data.retry}>Retry</button>
                                             </div>
                                         ) : !permsReady ? (
@@ -845,6 +875,14 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                                             aria-label="Topic"
                                             className="resize-none w-full"
                                         />
+                                        <div className={`${sectionLabel} mt-4`}>Moderation</div>
+                                        <ChannelModerationSection
+                                            slowmode={slowmode}
+                                            onSlowmode={setSlowmode}
+                                            ageRestricted={ageRestricted}
+                                            onAgeRestricted={setAgeRestricted}
+                                            disabled={saving}
+                                        />
                                     </div>
                                 )}
                             </div>
@@ -868,11 +906,11 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                             {!isEdit && onCreatedKeepOpen && (
                                 <ClCheckbox checked={createAnother} onChange={setCreateAnother} label={<span className="text-[12px] text-cl-muted ml-1.5">Create another</span>} />
                             )}
-                            {createdFlash && <span className="text-[12px] text-cl-lume truncate" role="status">{createdFlash}</span>}
+                            {createdFlash && <span className="text-[12px] text-cl-lume-text truncate" role="status">{createdFlash}</span>}
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
-                            {error && <span className="text-[11.5px] text-cl-flash truncate max-w-[340px]" role="alert" title={error}>{error}</span>}
-                            {isEdit && dirty && !error && <span className="text-[11px] text-cl-glow">Unsaved changes</span>}
+                            {error && <span className="text-[11.5px] text-cl-flash-text truncate max-w-[340px]" role="alert" title={error}>{error}</span>}
+                            {isEdit && dirty && !error && <span className="text-[11px] text-cl-glow-text">Unsaved changes</span>}
                             <ClButton variant="ghost" onClick={requestClose}>Cancel</ClButton>
                             <ClButton onClick={() => { void submit(); }} disabled={!canSubmit} loading={saving} tooltip={isEdit ? 'Save (Ctrl+Enter)' : 'Create (Enter)'}>
                                 {isEdit ? <Save size={14} /> : <Plus size={14} />}

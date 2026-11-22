@@ -8,6 +8,7 @@ import {
 } from '../../utils/streamStatsHud';
 import { getCameraPublishState, subscribeCameraPublishState } from '../../utils/cameraPublish';
 import { applyNativeToSenderHud, getNativeShareLive } from '../../utils/nativeShareLive';
+import { copyText } from '../../utils/clipboard';
 import { getCallEvents, formatCallEvents, type CallEvent } from '../../utils/callEventLog';
 import { estimateAvSync, type AvSyncEstimate, type AvSyncSnapshot, type AvSyncVerdict } from '../../utils/avSync';
 import { recordAvSyncEstimate } from '../../utils/avSyncMonitor';
@@ -173,10 +174,11 @@ const CallLogSection: React.FC = () => {
     const stop = (e: React.SyntheticEvent) => e.stopPropagation();
     const copy = (e: React.MouseEvent) => {
         e.stopPropagation();
-        void navigator.clipboard?.writeText(formatCallEvents(getCallEvents())).then(() => {
+        void copyText(formatCallEvents(getCallEvents())).then(ok => {
+            if (!ok) return;
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-        }).catch(() => {});
+        });
     };
     return (
         <div className="pointer-events-auto mt-1" onClick={stop} onPointerDown={stop} onMouseDown={stop}>

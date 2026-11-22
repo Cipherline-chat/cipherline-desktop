@@ -19,7 +19,7 @@ const ROOT = join(__dirname, '..');
 /** Raw-text reads that are allowed, by file and a fragment of the line, and why. */
 const RAW_TEXT_SITES: { file: string; line: string; why: string }[] = [
     // ── the message body itself ────────────────────────────────────────────
-    { file: 'components/ChatPane.tsx', line: "const sourceText: string = typeof msg.content.text === 'string'", why: 'the rendered message body (FormattedText, after stripBareInviteLinks)' },
+    { file: 'components/ChatPane.tsx', line: "const sourceText: string = typeof msg.content.text === 'string'", why: 'the rendered message body (FormattedText, after stripBareCardLinks)' },
     { file: 'components/ChatPane.tsx', line: "const text: string = msg.content.text ?? '';", why: 'embed URLs, via embedUrlsOf (parses)' },
     { file: 'components/ChatPane.tsx', line: "const t = String(msg.content?.text ?? '').trim();", why: 'where the undelivered "!" sits; nothing shown' },
     { file: 'components/ChatPane.tsx', line: "const sysText  = (msg.content.text as string)", why: 'local system rows: app-authored text, not user formatting' },

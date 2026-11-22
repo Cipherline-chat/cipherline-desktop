@@ -19,7 +19,7 @@ import type { CallEventDetail } from './callEventLog';
 
 export const BREADCRUMB_KINDS: ReadonlySet<string> = new Set([
     'call_join', 'call_leave',
-    'share_picker', 'share_codec', 'share_hdr', 'share_start', 'share_start_check', 'share_fallback',
+    'share_picker', 'share_codec', 'share_hdr', 'share_start', 'share_window_fallback', 'share_start_check', 'share_fallback',
     'share_low_layer', 'share_fps', 'share_clamp', 'h265_switch',
     'share_codec_drift', 'share_capture_stall', 'share_crop',
     // Share rates at both ends (shareNetStats.ts / shareRxStats.ts): numbers, a

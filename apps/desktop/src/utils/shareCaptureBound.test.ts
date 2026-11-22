@@ -22,7 +22,7 @@ describe('CaptureBoundWatch', () => {
         const w = new CaptureBoundWatch();
         const out = rows.map(r => w.observe(sample(r)));
         expect(out.slice(0, 6).every(o => o === null)).toBe(true);
-        expect(out[6]).toEqual({ fps: 57 });
+        expect(out[6]).toEqual({ fps: 57, cause: 'game' });
     });
 
     it('438f97a1 (screen share, DXGI, last share): 55-58 fps with the game in front, tells once', () => {
@@ -37,13 +37,13 @@ describe('CaptureBoundWatch', () => {
         const w = new CaptureBoundWatch();
         const out = rows.map(r => w.observe(sample(r)));
         expect(out.filter(o => o !== null)).toHaveLength(1);
-        expect(out[3]).toEqual({ fps: 55 });
+        expect(out[3]).toEqual({ fps: 55, cause: 'game' });
     });
 
     it('never fires for a static desktop / Cipherline in front (1-13 fps by design)', () => {
         const w = new CaptureBoundWatch();
         for (const src of [7, 8, 12, 13, 10, 9]) expect(w.observe(sample([src, 9, 'none', true, false], 60))).toBeNull();
-        for (const src of [30, 30, 30, 30]) expect(w.observe(sample([src, 29.8, 'none', true, false]))).toBeNull();
+        // (30 fps steady with Cipherline in front is the CONTENT case below, which now speaks - see report b3128344.)
     });
 
     it('never fires for the fullscreen-game collapse (1-10 fps) - that is the "share the game window" hint\'s case', () => {
@@ -80,6 +80,13 @@ describe('CaptureBoundWatch', () => {
         expect(isCaptureBound({ targetFps: 90, srcFps: 56, focused: false, fgCover: true })).toBe(false);
     });
 
+    it('captureBoundNotice for the content case does not blame a game', () => {
+        const t = captureBoundNotice(24, 60, 'screen', false, 'windows', 'content');
+        expect(t).toMatch(/Sharing at ~24 fps/);
+        expect(t).toMatch(/isn’t changing faster than that/);
+        expect(t).not.toMatch(/frame cap|V-Sync/);
+    });
+
     it('the notice names the rate and the likely cause in plain words - and, for a window, the way out', () => {
         const screen = captureBoundNotice(57, 90, 'screen');
         expect(screen).toMatch(/screen is only producing about 57 new frames per second/);
@@ -97,7 +104,7 @@ describe('wiring (SidebarConference)', () => {
         expect(src).toMatch(/new CaptureBoundWatch\(\)/);
         expect(src).toMatch(/captureBound\.observe\(\{/);
         expect(src).toMatch(/claimShareOnce\('capture_bound', shareRef\)/);
-        expect(src).toMatch(/captureBoundNotice\(bound\.fps, share\.frameRate, shareKindOf\(share\.sourceId\), wide, window\.electronAPI\?\.platform\)/);
+        expect(src).toMatch(/captureBoundNotice\(bound\.fps, share\.frameRate, shareKindOf\(share\.sourceId\), wide, window\.electronAPI\?\.platform, bound\.cause\)/);
         expect(src).toMatch(/isUltrawide\(aspectOf\(trackSettings\?\.width, trackSettings\?\.height\)\)/);
     });
 });
@@ -109,7 +116,7 @@ describe('ultra-wide (Surround) shares: capture-bound with no game in front (rep
     it('says so on the 3rd steady sample even though Cipherline was focused and nothing covered the screen', () => {
         const w = new CaptureBoundWatch();
         const out = wideRows.map(r => w.observe({ ...sample(r), wide: true }));
-        expect(out).toEqual([null, null, { fps: 30 }]);
+        expect(out).toEqual([null, null, { fps: 30, cause: 'game' }]);
     });
 
     it('the same rows on a normal-shaped screen stay silent (the gates for a game in front still hold)', () => {
@@ -139,5 +146,50 @@ describe('captureBoundNotice: platform wording', () => {
             expect(t).toContain('share the screen to go higher');
             expect(captureBoundNotice(30, 90, 'screen', true, p)).not.toContain('Windows');
         }
+    });
+});
+
+
+describe('content-limited screen share (report b3128344): DXGI only emits frames when the screen changes', () => {
+    // 3440x1440@165 Hz shared at 1920x804, 60 fps picked, Cipherline focused, nothing covering: capture 18-27 fps,
+    // encoder and sender kept pace, no limit, `share_tx_ring why: src`. [src, enc, limit, focused, fg_cover]
+    const rows: Row[] = [[22, 22, 'none', true, false], [27, 27, 'none', true, false], [18, 18, 'none', true, false], [24, 24, 'none', true, false]];
+
+    it('POSITIVE CONTROL: tells the user on the 2nd steady sample (>= 10 s each) even with Cipherline focused and nothing covering', () => {
+        const w = new CaptureBoundWatch();
+        const out = rows.map(r => w.observe(sample(r, 60)));
+        expect(out[0]).toBeNull();
+        expect(out[1]).toEqual({ fps: 25, cause: 'content' });
+        expect(out[2]).toBeNull();   // once per share
+        expect(out[3]).toBeNull();
+    });
+
+    it('18 fps (under the old 24 floor) counts; a static desktop (1-13 fps) never does', () => {
+        const w = new CaptureBoundWatch();
+        expect(w.observe(sample([18, 18, 'none', true, false], 60))).toBeNull();
+        expect(w.observe(sample([18, 18, 'none', true, false], 60))).toEqual({ fps: 18, cause: 'content' });
+        const s = new CaptureBoundWatch();
+        for (const src of [1, 5, 8, 13, 13, 12]) expect(s.observe(sample([src, src, 'none', true, false], 60))).toBeNull();
+    });
+
+    it('not when the encoder or the network is the limit, or the share asked for under 60 fps', () => {
+        const w = new CaptureBoundWatch();
+        for (const lim of ['cpu', 'bandwidth']) for (let i = 0; i < 3; i++) expect(w.observe(sample([24, 24, lim, true, false], 60))).toBeNull();
+        for (let i = 0; i < 3; i++) expect(w.observe(sample([24, 10, 'none', true, false], 60))).toBeNull();   // encoder behind the capture
+        for (let i = 0; i < 3; i++) expect(w.observe(sample([24, 24, 'none', true, false], 30))).toBeNull();
+    });
+
+    it('not when the capture is already close to the target, and an unsteady rate resets', () => {
+        const w = new CaptureBoundWatch();
+        for (let i = 0; i < 3; i++) expect(w.observe(sample([50, 50, 'none', true, false], 60))).toBeNull();   // > 80% of 60
+        const u = new CaptureBoundWatch();
+        expect([20, 40, 20, 40].map(v => u.observe(sample([v, v, 'none', true, false], 60)))).toEqual([null, null, null, null]);
+    });
+
+    it('a single dip sample between steady ones breaks the run (no nagging on a blip)', () => {
+        const w = new CaptureBoundWatch();
+        expect(w.observe(sample([24, 24, 'none', true, false], 60))).toBeNull();
+        expect(w.observe(sample([5, 5, 'none', true, false], 60))).toBeNull();
+        expect(w.observe(sample([24, 24, 'none', true, false], 60))).toBeNull();
     });
 });

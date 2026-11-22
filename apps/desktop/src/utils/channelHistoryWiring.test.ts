@@ -40,6 +40,7 @@ describe('channel history paging — Dashboard', () => {
         });
         expect(calls).toEqual([
             'q.add(() => refreshChannelHistoryRef.current(sid, cid), P_VISIBLE);',   // reconnect: the open channel only
+            'void refreshChannelHistory(open.server_id, open.channel_id);',          // channel:import_progress: the open channel only
             'void refreshChannelHistoryRef.current(channel.server_id, channel.channel_id);', // entry key pull: open channel only
             'await refreshChannelHistory(channel.server_id, channel.channel_id);',   // handleSelectChannel
             'void refreshChannelHistoryRef.current(sid, cid)',                       // key re-ask check installed the key: open channel only

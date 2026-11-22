@@ -16,9 +16,9 @@
   background: var(--cl-sink); border: 1px solid var(--cl-border); isolation: isolate; }
 .lsi-video video, .lsi-video img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .lsi-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border: none; padding: 0;
-  background: rgba(10,17,32,.35); cursor: pointer; color: var(--cl-on-lume); }
+  background: rgb(var(--cl-sink-rgb) / .35); cursor: pointer; color: var(--cl-on-lume); }
 .lsi-play span { display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 50%;
-  background: var(--cl-lume); box-shadow: 0 8px 24px rgba(0,0,0,.45); transition: transform .3s var(--cl-spring); }
+  background: var(--cl-lume); box-shadow: 0 8px 24px rgb(var(--cl-shade-rgb) / .45); transition: transform .3s var(--cl-spring); }
 .lsi-play span svg { margin-left: 3px; }
 .lsi-play:hover span { transform: scale(1.06); }
 .lsi-play:focus-visible { outline: none; }
@@ -28,13 +28,13 @@
 .lsi-card .lsi-body { margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: var(--cl-muted); }
 .lsi-card .lsi-body b { color: var(--cl-text); font-weight: 800; }
 .lsi-backend { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 10px;
-  background: var(--cl-sink); border: 1px solid rgba(42,53,88,.6); font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
-.lsi-backend svg { flex: none; margin-top: 1px; color: var(--cl-lume); }
-.lsi-backend--vaapi svg, .lsi-backend--gpu svg { color: var(--cl-glow); }
+  background: var(--cl-sink); border: 1px solid rgb(var(--cl-border-rgb) / .6); font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
+.lsi-backend svg { flex: none; margin-top: 1px; color: var(--cl-lume-text); }
+.lsi-backend--vaapi svg, .lsi-backend--gpu svg { color: var(--cl-glow-text); }
 
 .lsi-foot { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .lsi-never { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; line-height: 1.4; color: var(--cl-muted); }
-.lsi-never svg { flex: none; color: var(--cl-ok); }
+.lsi-never svg { flex: none; color: var(--cl-ok-text); }
 .lsi-foot > :last-child { flex: none; }
 
 @media (prefers-reduced-motion: reduce) {

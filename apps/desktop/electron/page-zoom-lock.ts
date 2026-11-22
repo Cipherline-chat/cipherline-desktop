@@ -23,11 +23,18 @@
  *      version would otherwise come back stuck small/large forever, with no
  *      way left to undo it.
  *
- * The reset target is `intendedZoomFactor()`. There is currently NO in-app UI
- * scale / zoom / text-size setting that drives `setZoomFactor` (verified:
- * nothing in src/ or electron/ calls it), so the intended factor is 1.0. If
- * such a setting is ever added, this is the single place it must feed, or the
- * reset here will fight it.
+ * The reset target is `intendedZoomFactor()`. The in-app "Interface size"
+ * setting (Settings → Accessibility; electron/ui-scale.ts) feeds it through
+ * `setIntendedZoomFactor`, and ONLY windows locked with `{ scalable: true }`
+ * (the main window) follow it; every other window stays at APP_ZOOM_FACTOR.
+ * This module stays the only place in electron/ that calls `setZoomFactor`
+ * (page-zoom-lock.wiring.test.ts), so the lock and the setting can't fight.
+ *
+ * The keyboard accelerators are still swallowed before Chromium sees them,
+ * but on a scalable window Ctrl/Cmd + `=` / `-` / `0` are handed to
+ * `onShortcut` so they step the setting (the standard accessibility
+ * expectation) through the same seam. Ctrl+wheel and pinch stay blocked: they
+ * are the accidental inputs that started all this.
  *
  * Structural types only (no runtime `electron` import) so this module is
  * unit-testable under vitest, like the other electron/ policy modules.
@@ -36,9 +43,22 @@
 /** The zoom factor the app is designed for. */
 export const APP_ZOOM_FACTOR = 1;
 
-/** What every window is reset to. Single seam for a future in-app UI scale. */
+/** Bounds for the seam (Chromium's own page-zoom range is wider; ui-scale.ts uses 0.8-2). */
+const MIN_FACTOR = 0.5;
+const MAX_FACTOR = 3;
+
+let intended = APP_ZOOM_FACTOR;
+
+/** What SCALABLE windows are reset to: the single seam for the in-app UI scale. */
 export function intendedZoomFactor(): number {
-    return APP_ZOOM_FACTOR;
+    return intended;
+}
+
+/** Set by electron/ui-scale.ts only. Out-of-range / non-finite values are refused (returns false). */
+export function setIntendedZoomFactor(factor: number): boolean {
+    if (typeof factor !== 'number' || !Number.isFinite(factor) || factor < MIN_FACTOR || factor > MAX_FACTOR) return false;
+    intended = factor;
+    return true;
 }
 
 /** The subset of Electron's `Input` this filter reads. */
@@ -54,7 +74,6 @@ export interface ZoomKeyInput {
 
 const MINUS_KEYS = new Set(['-', '_', 'Subtract']);
 const PLUS_KEYS = new Set(['=', '+', 'Add']);
-const NUMPAD_CODES = new Set(['NumpadAdd', 'NumpadSubtract']);
 
 /**
  * True for the Chromium page-zoom accelerators:
@@ -72,14 +91,21 @@ const NUMPAD_CODES = new Set(['NumpadAdd', 'NumpadSubtract']);
  *   - keyUp events.
  */
 export function isZoomShortcut(input: ZoomKeyInput): boolean {
-    if (input.type !== 'keyDown') return false;
-    if (!(input.control || input.meta)) return false;
-    if (input.alt) return false;
+    return zoomShortcutAction(input) !== null;
+}
+
+export type ZoomShortcutAction = 'in' | 'out' | 'reset';
+
+/** Which way a zoom accelerator points (same matching as isZoomShortcut), or null. */
+export function zoomShortcutAction(input: ZoomKeyInput): ZoomShortcutAction | null {
+    if (input.type !== 'keyDown') return null;
+    if (!(input.control || input.meta)) return null;
+    if (input.alt) return null;
     const key = input.key;
-    if (MINUS_KEYS.has(key) || PLUS_KEYS.has(key)) return true;
-    if (input.code && NUMPAD_CODES.has(input.code)) return true;
-    if (key === '0' && !input.shift) return true;
-    return false;
+    if (MINUS_KEYS.has(key) || input.code === 'NumpadSubtract') return 'out';
+    if (PLUS_KEYS.has(key) || input.code === 'NumpadAdd') return 'in';
+    if (key === '0' && !input.shift) return 'reset';
+    return null;
 }
 
 const EPSILON = 0.001;
@@ -109,10 +135,26 @@ export function resetZoomToIntended(wc: ZoomLockableContents, factor: number = i
     }
 }
 
+export interface LockPageZoomOptions {
+    /** Follow `intendedZoomFactor()` (the UI scale) instead of the fixed APP_ZOOM_FACTOR. Main window only. */
+    scalable?: boolean;
+    /** Scalable windows: a zoom accelerator was pressed (not on key auto-repeat). */
+    onShortcut?: (action: ZoomShortcutAction) => void;
+}
+
 /** Install every layer on one window's webContents. Call once per window. */
-export function lockPageZoom(wc: ZoomLockableContents): void {
-    wc.on('before-input-event', (event: { preventDefault(): void }, input: ZoomKeyInput) => {
-        if (isZoomShortcut(input)) event.preventDefault();
+export function lockPageZoom(wc: ZoomLockableContents, opts: LockPageZoomOptions = {}): void {
+    const target = opts.scalable ? intendedZoomFactor : () => APP_ZOOM_FACTOR;
+    const reset = () => resetZoomToIntended(wc, target());
+
+    wc.on('before-input-event', (event: { preventDefault(): void }, input: ZoomKeyInput & { isAutoRepeat?: boolean }) => {
+        const action = zoomShortcutAction(input);
+        if (!action) return;
+        event.preventDefault();
+        // Held keys repeat ~30/s: one press = one step, never a fly-through to 200 %.
+        if (opts.scalable && opts.onShortcut && !input.isAutoRepeat) {
+            try { opts.onShortcut(action); } catch { /* never break input */ }
+        }
     });
 
     try {
@@ -123,14 +165,14 @@ export function lockPageZoom(wc: ZoomLockableContents): void {
     // Ctrl+wheel. The reset runs now and again on the next tick, because the
     // level can be applied after this event is delivered.
     wc.on('zoom-changed', () => {
-        resetZoomToIntended(wc);
-        setImmediate(() => resetZoomToIntended(wc));
+        reset();
+        setImmediate(reset);
     });
 
     // Persisted per-host zoom from earlier versions. Zoom is applied to the
     // host as the page commits, so reset at both document milestones.
-    wc.on('dom-ready', () => { resetZoomToIntended(wc); });
-    wc.on('did-finish-load', () => { resetZoomToIntended(wc); });
+    wc.on('dom-ready', reset);
+    wc.on('did-finish-load', reset);
 
-    resetZoomToIntended(wc);
+    reset();
 }

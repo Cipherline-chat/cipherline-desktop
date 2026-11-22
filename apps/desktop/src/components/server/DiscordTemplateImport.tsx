@@ -6,6 +6,7 @@ import { DialogForm, DialogField, DialogStack, DialogNote, DialogSteps } from '.
 import { BusyLabel } from '../dialog/BusyLabel';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../../utils/imageUploadValidation';
 import { ChannelIconRenderer } from './ChannelIconPicker';
+import { slowmodeLabel, slowmodeShort } from '@cipherline/shared';
 import { TemplateImportGuide } from './TemplateImportGuide';
 import { AVATAR_OUTPUT } from '../../utils/imageCrop';
 import {
@@ -317,6 +318,7 @@ export const DiscordTemplateImport: React.FC<DiscordTemplateImportProps> = ({
                 outputWidth={AVATAR_OUTPUT.width}
                 outputHeight={AVATAR_OUTPUT.height}
                 shape="rect"
+                keepTransparency
                 title="Position the server icon"
                 onCancel={() => setCropFile(null)}
                 onConfirm={(blob: Blob) => {
@@ -329,7 +331,7 @@ export const DiscordTemplateImport: React.FC<DiscordTemplateImportProps> = ({
 };
 
 /** The channel tree, arranged the way the new server will show it. */
-const ChannelTree: React.FC<{ preview: DiscordTemplatePreview }> = ({ preview }) => {
+export const ChannelTree: React.FC<{ preview: { blueprint: DiscordTemplatePreview['blueprint'] } }> = ({ preview }) => {
     const tree = useMemo(() => buildPreviewTree(preview.blueprint), [preview]);
     const panel = (title: string, groups: PreviewGroup[], kind: 'text' | 'huddle') => groups.length > 0 && (
         <div className="mb-3 last:mb-0">
@@ -352,6 +354,12 @@ const ChannelTree: React.FC<{ preview: DiscordTemplatePreview }> = ({ preview })
                                         : <Volume2 size={13} className="text-cl-faint shrink-0" aria-hidden="true" />}
                                 <span className="truncate">{c.name}</span>
                                 {c.private && <Lock size={11} className="text-cl-faint shrink-0" aria-label="Private" />}
+                                {!!c.slowmode_seconds && (
+                                    <span className="text-[10px] text-cl-faint shrink-0" title={`Slowmode: ${slowmodeLabel(c.slowmode_seconds)}`}>· slowmode {slowmodeShort(c.slowmode_seconds)}</span>
+                                )}
+                                {c.age_restricted && (
+                                    <span className="text-[10px] text-cl-faint shrink-0" title="Age-restricted">· 18+</span>
+                                )}
                                 {preview.blueprint.server.system_channel_ref === c.ref && (
                                     <span className="text-[10px] text-cl-faint shrink-0">· system</span>
                                 )}

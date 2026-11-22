@@ -30,11 +30,11 @@ export const AttributionClipboardOffer: React.FC<{
             style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12,
                 padding: '12px 14px', borderRadius: 14,
-                background: 'rgba(37,224,200,0.07)',
-                border: '1px solid rgba(37,224,200,0.28)',
+                background: 'rgb(var(--cl-lume-rgb) / 0.07)',
+                border: '1px solid rgb(var(--cl-lume-rgb) / 0.28)',
             }}
         >
-            <span style={{ color: 'var(--cl-lume)', marginTop: 2, flexShrink: 0 }}><Link2 size={16} /></span>
+            <span style={{ color: 'var(--cl-lume-text)', marginTop: 2, flexShrink: 0 }}><Link2 size={16} /></span>
             <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--cl-text)' }}>
                     {isRef ? 'Use your friend’s invite link?' : 'Join the server you were invited to?'}

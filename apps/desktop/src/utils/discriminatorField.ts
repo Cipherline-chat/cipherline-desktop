@@ -10,6 +10,7 @@
  *
  * Valid user-chosen numbers are 0001-9999 (#0000 is not choosable).
  */
+import { formatDateTime } from './a11y/timeFormat';
 
 export const DISCRIMINATOR_ZERO_MESSAGE = '#0000 is not available. Choose a number from 0001 to 9999.';
 export const DISCRIMINATOR_FORMAT_MESSAGE = 'Use all 4 digits, e.g. 0042 (0001-9999).';
@@ -60,7 +61,7 @@ export function discriminatorCooldownFieldMessage(
     const at = nextChangeAt instanceof Date ? nextChangeAt : new Date(nextChangeAt);
     let when = '';
     try {
-        when = at.toLocaleString(opts.locale, { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: opts.timeZone });
+        when = formatDateTime(at, opts.locale, { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: opts.timeZone });
     } catch { /* bad locale/zone: relative only */ }
     return `You can change your #number again in ${formatDiscriminatorCooldown(ms)}${when ? ` (${when})` : ''}.`;
 }

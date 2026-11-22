@@ -73,7 +73,7 @@
 .sd-veil.sd-closing{animation:sd-veilout 240ms ease both}
 @keyframes sd-veilout{from{opacity:1}to{opacity:0}}
 .sd-root.sd-win{position:relative;inset:auto;z-index:auto;width:min(1180px,100%);height:min(820px,100%);
-  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.6);
+  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgb(var(--cl-shade-rgb) / .6);
   animation:sd-winin .55s var(--cl-spring) both}
 /* translateY-only entrance (no scale — text stays crisp), same spring as the kit modal */
 @keyframes sd-winin{from{opacity:0;transform:translateY(38px)}to{opacity:1;transform:none}}
@@ -99,10 +99,10 @@
 .sd-sea{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .sd-sea-grad{position:absolute;left:0;right:0;top:0;height:260vh;
   background:linear-gradient(180deg,
-    #101830 0%, #0C1226 22%, #0B0F1E 45%, #080B17 72%, #05070F 100%);
+    #101830 0%, #0C1226 22%, var(--cl-abyss) 45%, #080B17 72%, #05070F 100%);
   transition:transform 1100ms cubic-bezier(.45,.05,.2,1)}
 .sd-sea-vignette{position:absolute;inset:0;
-  background:radial-gradient(120% 90% at 50% 110%,rgba(255,107,94,.10),transparent 55%);
+  background:radial-gradient(120% 90% at 50% 110%,rgb(var(--cl-flash-rgb) / .10),transparent 55%);
   opacity:0;transition:opacity 900ms ease}
 .sd-root.sd-z-abyss .sd-sea-vignette{opacity:1}
 /* `<canvas>` is a replaced element, like <img> — for an absolutely
@@ -124,7 +124,7 @@
 .sd-gauge{flex:none;width:272px;display:flex;flex-direction:column;min-height:0;
   padding:14px 10px 14px 22px;position:relative}
 .sd-gauge::before{content:"";position:absolute;left:30px;top:88px;bottom:76px;width:2px;
-  background:linear-gradient(180deg,var(--cl-border),rgba(42,53,88,.25));
+  background:linear-gradient(180deg,var(--cl-border),rgb(var(--cl-border-rgb) / .25));
   transform-origin:top;transform:scaleY(0);transition:transform 900ms cubic-bezier(.3,1,.4,1) 150ms}
 .sd-root.sd-arrived .sd-gauge::before{transform:scaleY(1)}
 
@@ -139,10 +139,10 @@
 
 /* the glowing “you are here” bead */
 .sd-bead{position:absolute;left:5px;top:0;width:10px;height:10px;border-radius:50%;
-  background:var(--cl-lume);box-shadow:0 0 10px rgba(37,224,200,.8),0 0 26px rgba(37,224,200,.35);
+  background:var(--cl-lume);box-shadow:0 0 10px rgb(var(--cl-lume-rgb) / .8),0 0 26px rgb(var(--cl-lume-rgb) / .35);
   transform:translateY(-20px);transition:transform var(--cl-spring-dur) var(--cl-spring),background .4s,box-shadow .4s,opacity .25s;
   z-index:2;pointer-events:none}
-.sd-root.sd-z-abyss .sd-bead{background:var(--cl-flash);box-shadow:0 0 10px rgba(255,107,94,.8),0 0 26px rgba(255,107,94,.35)}
+.sd-root.sd-z-abyss .sd-bead{background:var(--cl-flash);box-shadow:0 0 10px rgb(var(--cl-flash-rgb) / .8),0 0 26px rgb(var(--cl-flash-rgb) / .35)}
 
 .sd-zone+.sd-zone{margin-top:12px}
 .sd-zlab{display:flex;align-items:baseline;gap:8px;padding:0 0 4px 22px;opacity:0;transform:translateX(-8px);
@@ -151,7 +151,7 @@
 /* Sentence case, quiet: zone names group the list, they are not headings to read. */
 .sd-zlab b{font-family:var(--cl-font-display);font-weight:500;font-size:12.5px;letter-spacing:.2px;color:var(--cl-faint)}
 .sd-zlab span{font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-faint)}
-.sd-zone--abyss .sd-zlab b{color:var(--cl-flash)}
+.sd-zone--abyss .sd-zlab b{color:var(--cl-flash-text)}
 
 .sd-nitem{display:flex;align-items:center;gap:11px;width:calc(100% - 12px);border:none;background:none;cursor:pointer;
   padding:7px 10px 7px 22px;border-radius:11px;color:var(--cl-muted);font-family:var(--cl-font-body);
@@ -164,11 +164,11 @@
   transition:color 80ms ease,background-color 80ms ease,
     transform .5s var(--cl-spring) var(--sd-enter-delay,0s),opacity .4s ease var(--sd-enter-delay,0s)}
 .sd-nitem svg{flex:none;opacity:.75;transition:opacity 80ms ease}
-.sd-nitem:hover{color:var(--cl-text);background:rgba(37,224,200,.06)}
-.sd-nitem.sd-on{color:var(--cl-lume);background:rgba(37,224,200,.10)}
+.sd-nitem:hover{color:var(--cl-text);background:rgb(var(--cl-lume-rgb) / .06)}
+.sd-nitem.sd-on{color:var(--cl-lume-text);background:rgb(var(--cl-lume-rgb) / .10)}
 .sd-nitem.sd-on svg{opacity:1}
-.sd-zone--abyss .sd-nitem.sd-on{color:var(--cl-flash);background:rgba(255,107,94,.10)}
-.sd-zone--abyss .sd-nitem:hover{background:rgba(255,107,94,.07)}
+.sd-zone--abyss .sd-nitem.sd-on{color:var(--cl-flash-text);background:rgb(var(--cl-flash-rgb) / .10)}
+.sd-zone--abyss .sd-nitem:hover{background:rgb(var(--cl-flash-rgb) / .07)}
 .sd-nitem.sd-hidden{display:none}
 .sd-nitem{opacity:0;transform:translateY(10px)}
 .sd-root.sd-arrived .sd-nitem{opacity:1;transform:none}
@@ -182,7 +182,7 @@
 .sd-gfoot svg{transition:transform .4s var(--cl-spring)}
 .sd-gfoot svg:hover{transform:translateY(-2px)}
 .sd-gfoot small{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-faint);line-height:1.5;user-select:none}
-.sd-gfoot .sd-bday{color:var(--cl-glow);font-weight:700}
+.sd-gfoot .sd-bday{color:var(--cl-glow-text);font-weight:700}
 
 /* ---- content column ---- */
 .sd-main{flex:1;min-width:0;overflow-y:auto;padding:20px 48px 80px;scrollbar-width:thin;scrollbar-color:var(--cl-border) transparent}
@@ -192,8 +192,8 @@
 .sd-root.sd-arrived .sd-chead{opacity:1;transform:none}
 .sd-eyebrow{display:flex;align-items:baseline;gap:10px;margin:0 0 4px}
 .sd-eyebrow b{font-family:var(--cl-font-display);font-weight:500;font-size:13px;letter-spacing:.2px;color:var(--cl-faint)}
-.sd-depth{font-family:var(--cl-font-mono);font-size:11.5px;color:var(--cl-lume);font-variant-numeric:tabular-nums}
-.sd-root.sd-z-abyss .sd-depth{color:var(--cl-flash)}
+.sd-depth{font-family:var(--cl-font-mono);font-size:11.5px;color:var(--cl-lume-text);font-variant-numeric:tabular-nums}
+.sd-root.sd-z-abyss .sd-depth{color:var(--cl-flash-text)}
 .sd-chead h1{margin:0;font-family:var(--cl-font-display);font-weight:600;font-size:30px;letter-spacing:.2px;color:var(--cl-text)}
 .sd-chead h1.sd-pop{animation:sd-hpop .55s var(--cl-spring) 1}
 @keyframes sd-hpop{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:none}}
@@ -247,9 +247,9 @@
 
 .sd-card{background:var(--cl-deep);border:1px solid var(--cl-border);border-radius:20px;padding:22px;margin:0 0 16px}
 .sd-card--bare{background:none;border:none;padding:0}
-.sd-card--danger{border-color:rgba(255,107,94,.4);
-  background:linear-gradient(180deg,rgba(255,107,94,.05),transparent 55%),var(--cl-deep)}
-.sd-card--danger h3{color:var(--cl-flash)}
+.sd-card--danger{border-color:rgb(var(--cl-flash-rgb) / .4);
+  background:linear-gradient(180deg,rgb(var(--cl-flash-rgb) / .05),transparent 55%),var(--cl-deep)}
+.sd-card--danger h3{color:var(--cl-flash-text)}
 .sd-card>h3{margin:0 0 4px;font-family:var(--cl-font-display);font-weight:500;font-size:16.5px;color:var(--cl-text)}
 .sd-card>.sd-sub{margin:0 0 16px;font-size:12.5px;color:var(--cl-faint);font-weight:600}
 
@@ -282,8 +282,8 @@
 .sd-id-av:hover .sd-id-avactions,
 .sd-id-av .sd-id-avactions:focus-within{opacity:1;transform:none}
 .sd-id-av .sd-id-avactions .cap{width:26px;height:26px;background:var(--cl-deep);
-  box-shadow:0 0 0 1px var(--cl-border),0 4px 12px rgba(0,0,0,.5)}
-.sd-id-av .sd-id-avactions .cap:hover{color:var(--cl-flash)}
+  box-shadow:0 0 0 1px var(--cl-border),0 4px 12px rgb(var(--cl-shade-rgb) / .5)}
+.sd-id-av .sd-id-avactions .cap:hover{color:var(--cl-flash-text)}
 .sd-id-who{padding-bottom:4px;min-width:0}
 .sd-id-who b{display:block;font-family:var(--cl-font-display);font-weight:600;font-size:20px;color:var(--cl-text);line-height:1.2}
 .sd-id-who .sd-id-tag{font-family:var(--cl-font-mono);font-size:12.5px;font-weight:600;color:var(--cl-faint)}
@@ -292,21 +292,21 @@
 /* bio counter lives in the field-message slot; color encodes remaining room */
 .sd-bio-count{text-align:right;font-family:var(--cl-font-mono);font-size:11px;color:var(--cl-faint);
   font-variant-numeric:tabular-nums;transition:color .25s}
-.sd-bio-count.sd-warm{color:var(--cl-glow)}
-.sd-bio-count.sd-full{color:var(--cl-flash)}
+.sd-bio-count.sd-warm{color:var(--cl-glow-text)}
+.sd-bio-count.sd-full{color:var(--cl-flash-text)}
 
 /* dirty-state save bar — springs up inside the card when there’s anything to save */
 .sd-savebar{display:flex;align-items:center;gap:12px;padding:12px 22px;margin-top:-4px;
-  background:rgba(37,224,200,.05);border-top:1px solid var(--cl-border)}
+  background:rgb(var(--cl-lume-rgb) / .05);border-top:1px solid var(--cl-border)}
 .sd-savebar p{flex:1;margin:0;font-size:12.5px;font-weight:700;color:var(--cl-muted)}
 .sd-savebar-wrap{overflow:hidden;max-height:0;transition:max-height .45s var(--cl-spring)}
 .sd-savebar-wrap.sd-open{max-height:80px}
 
 /* unified security rows */
 .sd-secrow{display:flex;align-items:center;gap:14px;padding:14px 0}
-.sd-secrow+.sd-secrow{border-top:1px solid rgba(42,53,88,.5)}
+.sd-secrow+.sd-secrow{border-top:1px solid rgb(var(--cl-border-rgb) / .5)}
 .sd-secrow .sd-sic{flex:none;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  background:rgba(37,224,200,.1);border:1px solid rgba(37,224,200,.2);color:var(--cl-lume)}
+  background:rgb(var(--cl-lume-rgb) / .1);border:1px solid rgb(var(--cl-lume-rgb) / .2);color:var(--cl-lume-text)}
 .sd-secrow .sd-smeta{flex:1;min-width:0}
 .sd-secrow .sd-smeta b{display:block;font-size:14px;font-weight:800;color:var(--cl-text)}
 .sd-secrow .sd-smeta span{display:block;margin-top:2px;font-size:12.5px;color:var(--cl-muted);line-height:1.45}
@@ -316,7 +316,7 @@
    Direct-child selectors ONLY — descendant b/span (chips, icons inside the
    title) must keep their own display, or they render as stacked bars. */
 .sd-row{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:13px 0}
-.sd-row+.sd-row{border-top:1px solid rgba(42,53,88,.5)}
+.sd-row+.sd-row{border-top:1px solid rgb(var(--cl-border-rgb) / .5)}
 .sd-row .sd-rl{min-width:0;flex:1}
 .sd-row .sd-rl>b{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;font-weight:800;color:var(--cl-text)}
 .sd-row .sd-rl>span{display:block;margin-top:2px;font-size:12.5px;color:var(--cl-muted);line-height:1.45}
@@ -324,9 +324,9 @@
 
 /* inline chips (device platform, “this device”, status tags) */
 .sd-chip{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:6px;
-  font-size:10.5px;font-weight:800;letter-spacing:.4px;background:rgba(255,255,255,.06);color:var(--cl-muted)}
-.sd-chip--lume{background:rgba(37,224,200,.14);color:var(--cl-lume);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
-.sd-chip--flash{background:rgba(255,107,94,.14);color:var(--cl-flash);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
+  font-size:10.5px;font-weight:800;letter-spacing:.4px;background:rgb(var(--cl-bright-rgb) / .06);color:var(--cl-muted)}
+.sd-chip--lume{background:rgb(var(--cl-lume-rgb) / .14);color:var(--cl-lume-text);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
+.sd-chip--flash{background:rgb(var(--cl-flash-rgb) / .14);color:var(--cl-flash-text);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
 
 /* option cards (update channel) — a kit-radio face on a selectable card */
 .sd-opts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -335,7 +335,7 @@
   transition:box-shadow .2s,background .2s,transform .3s var(--cl-spring)}
 .sd-opt:hover{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
 .sd-opt:active{transform:translateY(1px)}
-.sd-opt.sd-on{background:rgba(37,224,200,.08);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.sd-opt.sd-on{background:rgb(var(--cl-lume-rgb) / .08);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
 .sd-opt:disabled{opacity:.6;cursor:default}
 .sd-opt .sd-opt-head{display:flex;align-items:center;gap:9px;margin:0 0 5px}
 .sd-opt .sd-opt-dot{position:relative;width:18px;height:18px;border-radius:50%;flex:none;
@@ -352,10 +352,10 @@
 .sd-eq{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:6px 2px 0}
 .sd-eq-band{flex:1;display:flex;flex-direction:column;align-items:center;gap:7px;min-width:0}
 .sd-eq-val{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-muted);font-variant-numeric:tabular-nums}
-.sd-eq-band.sd-active .sd-eq-val{color:var(--cl-lume)}
+.sd-eq-band.sd-active .sd-eq-val{color:var(--cl-lume-text)}
 .sd-eq-track{position:relative;width:26px;height:96px;cursor:pointer;touch-action:none}
 .sd-eq-rail{position:absolute;left:50%;top:0;bottom:0;width:7px;transform:translateX(-50%);
-  border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6)}
+  border-radius:99px;background:var(--cl-sink);box-shadow:inset 0 1px 2px rgb(var(--cl-shade-rgb) / .6)}
 .sd-eq-mid{position:absolute;left:50%;top:50%;width:14px;height:1.5px;transform:translate(-50%,-50%);
   background:var(--cl-border);border-radius:1px}
 .sd-eq-fill{position:absolute;left:50%;width:7px;transform:translateX(-50%);border-radius:99px;
@@ -363,8 +363,8 @@
 .sd-eq-thumb{position:absolute;left:50%;width:15px;height:15px;border-radius:50%;
   background:var(--cl-lume);transform:translate(-50%,-50%);
   transition:box-shadow .2s,transform .2s var(--cl-spring)}
-.sd-eq-track:hover .sd-eq-thumb{box-shadow:0 0 10px rgba(37,224,200,.45)}
-.sd-eq-track.sd-grab .sd-eq-thumb{transform:translate(-50%,-50%) scale(1.15);box-shadow:0 0 14px rgba(37,224,200,.6)}
+.sd-eq-track:hover .sd-eq-thumb{box-shadow:0 0 10px rgb(var(--cl-lume-rgb) / .45)}
+.sd-eq-track.sd-grab .sd-eq-thumb{transform:translate(-50%,-50%) scale(1.15);box-shadow:0 0 14px rgb(var(--cl-lume-rgb) / .6)}
 .sd-eq-freq{font-family:var(--cl-font-mono);font-size:9.5px;color:var(--cl-faint)}
 .sd-eq-wrap.sd-disabled{opacity:.35;pointer-events:none}
 .sd-card>.sd-row:first-of-type{padding-top:4px}
@@ -372,10 +372,10 @@
 
 /* icon tile (matches the security rows / recovery card) */
 .sd-tile{flex:none;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  background:rgba(37,224,200,.1);border:1px solid rgba(37,224,200,.2);color:var(--cl-lume)}
+  background:rgb(var(--cl-lume-rgb) / .1);border:1px solid rgb(var(--cl-lume-rgb) / .2);color:var(--cl-lume-text)}
 .sd-tile--dim{background:var(--cl-raise);border-color:var(--cl-border);color:var(--cl-faint)}
-.sd-tile--warm{background:rgba(255,201,77,.1);border-color:rgba(255,201,77,.25);color:var(--cl-glow)}
-.sd-tile--flash{background:rgba(255,107,94,.1);border-color:rgba(255,107,94,.25);color:var(--cl-flash)}
+.sd-tile--warm{background:rgb(var(--cl-glow-rgb) / .1);border-color:rgb(var(--cl-glow-rgb) / .25);color:var(--cl-glow-text)}
+.sd-tile--flash{background:rgb(var(--cl-flash-rgb) / .1);border-color:rgb(var(--cl-flash-rgb) / .25);color:var(--cl-flash-text)}
 
 /* keycap chips */
 .sd-kbd{display:inline-flex;gap:5px}
@@ -384,7 +384,7 @@
   transition:transform .2s var(--cl-spring),border-color .2s}
 .sd-kbd:hover i{border-color:var(--cl-lume)}
 /* recording state: caps breathe while listening for the new combo */
-.sd-kbd.sd-rec i{border-color:var(--cl-lume);color:var(--cl-lume);animation:sd-kbreathe 1.2s ease-in-out infinite}
+.sd-kbd.sd-rec i{border-color:var(--cl-lume);color:var(--cl-lume-text);animation:sd-kbreathe 1.2s ease-in-out infinite}
 @keyframes sd-kbreathe{50%{transform:translateY(1px)}}
 
 /* list rows that arrive after an async load stagger in */
@@ -401,7 +401,7 @@
 .sd-empty{padding:22px 0;text-align:center;font-size:13px;font-weight:700;color:var(--cl-faint)}
 
 /* live mic level meter (Voice & Video) */
-.sd-vu{position:relative;width:100%;height:8px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);overflow:hidden}
+.sd-vu{position:relative;width:100%;height:8px;border-radius:99px;background:var(--cl-sink);box-shadow:inset 0 1px 2px rgb(var(--cl-shade-rgb) / .6);overflow:hidden}
 .sd-vu i{position:absolute;inset:0;right:auto;border-radius:99px;background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-lume));
   width:0%;transition:width 90ms linear}
 .sd-vu.sd-hot i{background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-glow))}
@@ -427,7 +427,7 @@
   .sd-savebar-wrap{transition:none}
   .sx-port svg,.sx-disc-body{animation:none}
   .sx-disc-chev{transition:none}
-  .sx-flash{animation:none;background-color:rgba(37,224,200,.10);box-shadow:0 0 0 8px rgba(37,224,200,.10)}
+  .sx-flash{animation:none;background-color:rgb(var(--cl-lume-rgb) / .10);box-shadow:0 0 0 8px rgb(var(--cl-lume-rgb) / .10)}
 }
 
 /* ============================================================
@@ -444,18 +444,18 @@
 .sd-zone--abyss .sd-nitem:focus-visible{outline-color:var(--cl-flash)}
 
 /* ---- disclosure rows (SettingsDisclosure.tsx) ---- */
-.sx-disc--inset{border-top:1px solid rgba(42,53,88,.5);margin-top:4px}
+.sx-disc--inset{border-top:1px solid rgb(var(--cl-border-rgb) / .5);margin-top:4px}
 .sd-card.sx-disc--card{padding:6px 22px}
 .sd-card.sx-disc--card[data-open="true"]{padding-bottom:16px}
 .sx-disc-head{display:flex;align-items:center;gap:12px;width:calc(100% + 24px);margin:0 -12px;padding:12px;
   border:none;background:none;border-radius:12px;cursor:pointer;text-align:left;color:var(--cl-text);
   font-family:var(--cl-font-body);transition:background-color 120ms ease}
-.sx-disc-head:hover{background-color:rgba(37,224,200,.05)}
-.sx-disc-head:active{background-color:rgba(37,224,200,.08)}
+.sx-disc-head:hover{background-color:rgb(var(--cl-lume-rgb) / .05)}
+.sx-disc-head:active{background-color:rgb(var(--cl-lume-rgb) / .08)}
 .sx-disc-head:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
 .sx-disc-ico{flex:none;width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;
   background:var(--cl-raise);border:1px solid var(--cl-border);color:var(--cl-muted)}
-.sx-disc[data-open="true"] .sx-disc-ico{color:var(--cl-lume)}
+.sx-disc[data-open="true"] .sx-disc-ico{color:var(--cl-lume-text)}
 .sx-disc-txt{flex:1;min-width:0}
 .sx-disc-txt>b{display:block;font-size:14px;font-weight:800}
 .sx-disc-txt>span{display:block;margin-top:2px;font-size:12.5px;line-height:1.45;color:var(--cl-muted)}
@@ -466,7 +466,7 @@
    flattens the toggle-knob slide inside it (see the .sd-card note above). */
 .sx-disc-body{animation:sx-discin 220ms cubic-bezier(.2,.8,.3,1) backwards}
 @keyframes sx-discin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
-.sx-disc-body>.sd-row:first-child{border-top:1px solid rgba(42,53,88,.5)}
+.sx-disc-body>.sd-row:first-child{border-top:1px solid rgb(var(--cl-border-rgb) / .5)}
 .sx-disc-body>.sd-row:last-child{padding-bottom:4px}
 /* a disclosure body's own sub-blocks */
 .sx-sublabel{margin:14px 0 6px;font-size:12px;font-weight:700;color:var(--cl-faint)}
@@ -474,8 +474,8 @@
 /* ---- "take me to it": the one-shot highlight after a search jump ---- */
 .sx-flash{border-radius:12px;animation:sx-flash 1.8s ease-out}
 @keyframes sx-flash{
-  0%,35%{background-color:rgba(37,224,200,.12);box-shadow:0 0 0 8px rgba(37,224,200,.12)}
-  100%{background-color:rgba(37,224,200,0);box-shadow:0 0 0 8px rgba(37,224,200,0)}}
+  0%,35%{background-color:rgb(var(--cl-lume-rgb) / .12);box-shadow:0 0 0 8px rgb(var(--cl-lume-rgb) / .12)}
+  100%{background-color:rgb(var(--cl-lume-rgb) / 0);box-shadow:0 0 0 8px rgb(var(--cl-lume-rgb) / 0)}}
 
 /* ---- compact card header used by merged cards ---- */
 .sx-cardnote{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--cl-faint)}
@@ -491,7 +491,7 @@
 /* A card component rendered INSIDE a disclosure (Advanced → Troubleshooting) sheds
    its own chrome and becomes a hairline-separated block: no card-in-card. */
 .sx-disc-body .sd-card{background:none;border:none;border-radius:0;padding:16px 0 4px;margin:0;
-  border-top:1px solid rgba(42,53,88,.5);animation:none}
+  border-top:1px solid rgb(var(--cl-border-rgb) / .5);animation:none}
 .sx-disc-body>.sd-card:first-child{margin-top:4px}
 
 /* Appearance → Motion: a live thumbnail of Home ambience (motes rise while it is
@@ -528,7 +528,7 @@
 .vv-card>h3{margin:0 0 4px}
 .vv-row{display:grid;grid-template-columns:var(--vv-lab) minmax(0,1fr);align-items:center;column-gap:16px;min-height:48px;padding:4px 0}
 .vv-row--switch{grid-template-columns:minmax(0,1fr) auto}
-.vv-row+.vv-row,.vv-video+.vv-row,.vv-eq+.vv-row,.sx-disc-body>.vv-row:first-child{border-top:1px solid rgba(42,53,88,.5)}
+.vv-row+.vv-row,.vv-video+.vv-row,.vv-eq+.vv-row,.sx-disc-body>.vv-row:first-child{border-top:1px solid rgb(var(--cl-border-rgb) / .5)}
 .vv-lab{display:flex;align-items:center;gap:4px;min-width:0}
 .vv-lab>b{font-size:13.5px;font-weight:800;line-height:1.3;color:var(--cl-text)}
 .vv-ctl{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
@@ -547,7 +547,7 @@
 @media (prefers-reduced-motion:reduce){.vv-gate-drop{animation:none}}
 @container vv (max-width:640px){.vv-gate-drop{padding-left:0;margin-left:0}}
 .vv-dev-edit .vv-gate-drop{--vv-lab:168px}
-.vv-gate-drop+.vv-row{border-top:1px solid rgba(42,53,88,.5)}
+.vv-gate-drop+.vv-row{border-top:1px solid rgb(var(--cl-border-rgb) / .5)}
 .vv-gate:focus-visible{outline:2px solid var(--cl-lume);outline-offset:3px;border-radius:8px}
 .vv-note{margin:0 0 8px calc(var(--vv-lab) + 16px);font-size:12px;font-weight:600;line-height:1.45;color:var(--cl-faint)}
 .vv-actions{display:flex;justify-content:flex-end;padding:4px 0 8px}
@@ -571,31 +571,31 @@
 .vv-head{display:flex;align-items:center;gap:6px;min-height:28px;margin:0 0 4px}
 .vv-head>h3{margin:0;flex:none}
 .vv-for{margin-left:auto;display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:62%;height:26px;padding:0 10px;
-  border-radius:999px;background:rgba(37,224,200,.08);box-shadow:inset 0 0 0 1px rgba(37,224,200,.22);
+  border-radius:999px;background:rgb(var(--cl-lume-rgb) / .08);box-shadow:inset 0 0 0 1px rgb(var(--cl-lume-rgb) / .22);
   font-size:12px;font-weight:600;color:var(--cl-muted);white-space:nowrap}
 .vv-for-k{flex:none;color:var(--cl-faint)}
 .vv-for>b{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:800;color:var(--cl-text)}
-.vv-for-d{flex:none;font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-lume)}
+.vv-for-d{flex:none;font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-lume-text)}
 
 /* Your audio devices (settings/AudioDeviceList.tsx) */
 .vv-devgroup{padding:6px 0 10px}
-.vv-devgroup+.vv-devgroup{border-top:1px solid rgba(42,53,88,.5);padding-top:12px}
+.vv-devgroup+.vv-devgroup{border-top:1px solid rgb(var(--cl-border-rgb) / .5);padding-top:12px}
 .vv-devgroup-title{margin:0 0 6px;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cl-faint)}
 .vv-devlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .vv-dev{border-radius:12px;background:var(--cl-surface);box-shadow:inset 0 0 0 1px var(--cl-border);transition:box-shadow 150ms ease}
-.vv-dev--open{box-shadow:inset 0 0 0 1.5px rgba(37,224,200,.55)}
+.vv-dev--open{box-shadow:inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .55)}
 .vv-dev-main{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:none;background:none;border-radius:12px;
   cursor:pointer;text-align:left;color:var(--cl-text);font-family:var(--cl-font-body);transition:background-color 120ms ease}
-.vv-dev-main:hover{background-color:rgba(37,224,200,.05)}
+.vv-dev-main:hover{background-color:rgb(var(--cl-lume-rgb) / .05)}
 .vv-dev-main:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
 .vv-dev-ico{flex:none;color:var(--cl-faint)}
-.vv-dev--inuse .vv-dev-ico{color:var(--cl-lume)}
+.vv-dev--inuse .vv-dev-ico{color:var(--cl-lume-text)}
 .vv-dev-txt{flex:1;min-width:0;display:flex;flex-direction:column}
 .vv-dev-txt>b{font-size:13.5px;font-weight:800;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vv-dev-txt>span{font-size:12px;font-weight:600;line-height:1.4;color:var(--cl-faint)}
 .vv-dev-chev{flex:none;color:var(--cl-faint);transition:transform 200ms cubic-bezier(.2,.8,.3,1)}
 .vv-dev--open .vv-dev-chev{transform:rotate(180deg);color:var(--cl-muted)}
-.vv-dev-edit{padding:0 14px 4px;border-top:1px solid rgba(42,53,88,.5);animation:sx-discin 220ms cubic-bezier(.2,.8,.3,1) backwards}
+.vv-dev-edit{padding:0 14px 4px;border-top:1px solid rgb(var(--cl-border-rgb) / .5);animation:sx-discin 220ms cubic-bezier(.2,.8,.3,1) backwards}
 .vv-dev-edit .vv-row{--vv-lab:168px}
 
 /* Video: a fixed 16:9 camera tile beside its three rows, whatever the preview
@@ -627,8 +627,8 @@
 .vv-info{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-4px 0;padding:0;
   border:none;border-radius:50%;background:none;color:var(--cl-faint);cursor:help;
   transition:color 120ms ease,background-color 120ms ease}
-.vv-info:hover,.vv-info[data-open="true"]{color:var(--cl-lume);background-color:rgba(37,224,200,.1)}
-.vv-info:active{background-color:rgba(37,224,200,.16)}
+.vv-info:hover,.vv-info[data-open="true"]{color:var(--cl-lume-text);background-color:rgb(var(--cl-lume-rgb) / .1)}
+.vv-info:active{background-color:rgb(var(--cl-lume-rgb) / .16)}
 .vv-info:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
 .vv-tip{box-sizing:border-box;max-width:min(300px,calc(100vw - 16px));padding:10px 12px;border-radius:12px;
   background:var(--cl-surface);border:1px solid var(--cl-border);
@@ -652,3 +652,20 @@
 .sx-disc-top{display:flex;align-items:center;gap:4px}
 .sx-disc-top>.sx-disc-head{flex:1;min-width:0;width:auto;margin-right:0}
 .sx-disc-action{flex:none;padding-left:4px}
+
+/* ============================================================
+   Light theme — the Descent becomes a warm sand shore: cream at the
+   surface, a slightly deeper sand toward the Abyss. No night water,
+   no motes. Dark is untouched (every rule is scoped to Light).
+   ============================================================ */
+:root[data-scheme="light"] .sd-sea-grad{
+  background:linear-gradient(180deg,
+    var(--cl-abyss) 0%, var(--cl-abyss) 30%, var(--cl-surface) 70%, rgb(var(--cl-raise-rgb) / .8) 100%)}
+:root[data-scheme="light"] .sd-sea-vignette{display:none}
+:root[data-scheme="light"] .sd-card{box-shadow:var(--cl-shadow-card)}
+:root[data-scheme="light"] .sd-root.sd-win{box-shadow:0 24px 80px rgb(var(--cl-shade-rgb) / .28)}
+:root[data-scheme="light"] .sd-nitem:hover{background:rgb(var(--cl-bright-rgb) / .05)}
+:root[data-scheme="light"] .sd-nitem.sd-on{background:rgb(var(--cl-lume-rgb) / .2)}
+:root[data-scheme="light"] .sd-bead{box-shadow:0 0 0 3px rgb(var(--cl-lume-rgb) / .25)}
+:root[data-scheme="light"] .sd-root.sd-z-abyss .sd-bead{box-shadow:0 0 0 3px rgb(var(--cl-flash-rgb) / .25)}
+:root[data-scheme="light"] .sd-zone--abyss .sd-nitem.sd-on{background:rgb(var(--cl-flash-rgb) / .16)}

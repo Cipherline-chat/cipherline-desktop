@@ -35,11 +35,11 @@ const StagingLockScreen: React.FC<{
                 <div
                     style={{
                         width: 56, height: 56, borderRadius: 18, margin: '0 auto 16px',
-                        background: 'rgba(255,201,77,0.10)', border: '1.5px solid rgba(255,201,77,0.28)',
+                        background: 'rgb(var(--cl-glow-rgb) / 0.10)', border: '1.5px solid rgb(var(--cl-glow-rgb) / 0.28)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}
                 >
-                    <FlaskConical style={{ width: 26, height: 26, color: 'var(--cl-glow)' }} />
+                    <FlaskConical style={{ width: 26, height: 26, color: 'var(--cl-glow-text)' }} />
                 </div>
                 <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 8 }}>
                     Staging build
@@ -52,7 +52,7 @@ const StagingLockScreen: React.FC<{
             <div
                 style={{
                     background: 'var(--cl-deep)', border: '1px solid var(--cl-border)',
-                    borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+                    borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgb(var(--cl-shade-rgb) / 0.4)',
                 }}
             >
                 <StagingPasswordForm onUnlocked={onUnlocked} initialRetryAfterMs={initialRetryAfterMs} />

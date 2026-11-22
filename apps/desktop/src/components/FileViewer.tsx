@@ -122,7 +122,7 @@ const PREVIEW_CHARS  = 600;
 
 // ── Shared styles ────────────────────────────────────────────────────────────
 const cardBase: React.CSSProperties = {
-    width: '100%', maxWidth: '340px', background: 'rgba(0,0,0,0.35)',
+    width: '100%', maxWidth: '340px', background: 'rgb(var(--cl-shade-rgb) / 0.35)',
     border: '1px solid var(--cl-border)',
     borderRadius: '12px', overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
@@ -131,13 +131,13 @@ const cardHeader: React.CSSProperties = {
     display: 'flex', alignItems: 'center', gap: '8px',
     padding: '9px 12px',
     borderBottom: '1px solid var(--cl-border)',
-    background: 'rgba(255,255,255,0.03)',
+    background: 'rgb(var(--cl-bright-rgb) / 0.03)',
 };
 const cardFooter: React.CSSProperties = {
     display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px',
     padding: '7px 10px',
-    borderTop: '1px solid rgba(255,255,255,0.05)',
-    background: 'rgba(255,255,255,0.02)',
+    borderTop: '1px solid rgb(var(--cl-bright-rgb) / 0.05)',
+    background: 'rgb(var(--cl-bright-rgb) / 0.02)',
 };
 const badge = (color: string): React.CSSProperties => ({
     fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px',
@@ -157,8 +157,8 @@ function DownloadLink({ href, filename }: { href: string; filename: string }) {
                 display: 'inline-flex', alignItems: 'center', gap: '5px',
                 fontSize: '0.72rem', textDecoration: 'none', padding: '4px 8px',
                 borderRadius: '6px', border: 'none', cursor: 'pointer',
-                color: hov ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.5)',
-                background: hov ? 'rgba(255,255,255,0.07)' : 'transparent',
+                color: hov ? 'rgb(var(--cl-bright-rgb) / 0.9)' : 'rgb(var(--cl-bright-rgb) / 0.5)',
+                background: hov ? 'rgb(var(--cl-bright-rgb) / 0.07)' : 'transparent',
                 transition: 'color 150ms, background 150ms',
             }}
             onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}>
@@ -190,15 +190,15 @@ function SheetTable({ rows, totalRows, totalCols }: {
                     {rows.map((row, ri) => (
                         <tr key={ri} style={{
                             background: ri === 0
-                                ? 'rgba(255,255,255,0.05)'
-                                : ri % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'transparent',
+                                ? 'rgb(var(--cl-bright-rgb) / 0.05)'
+                                : ri % 2 === 0 ? 'rgb(var(--cl-bright-rgb) / 0.015)' : 'transparent',
                         }}>
                             {Array.from({ length: colCount }).map((_, ci) => {
                                 const Tag = ri === 0 ? 'th' : 'td';
                                 return (
                                     <Tag key={ci} style={{
                                         padding: '4px 8px',
-                                        borderBottom: '1px solid rgba(255,255,255,0.04)',
+                                        borderBottom: '1px solid rgb(var(--cl-bright-rgb) / 0.04)',
                                         fontWeight: ri === 0 ? 600 : 400,
                                         opacity: ri === 0 ? 0.85 : 0.65,
                                         overflow: 'hidden', textOverflow: 'ellipsis',
@@ -452,7 +452,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
     // ── Loading ──────────────────────────────────────────────────────────────
     if (!objectUrl) {
         return (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px', background: 'rgb(var(--cl-bright-rgb) / 0.05)', borderRadius: '12px' }}>
                 <div style={{ width: '16px', height: '16px', border: '2px solid var(--cl-border)', borderTopColor: 'var(--cl-lume)', borderRadius: '50%', animation: 'spin 1s linear infinite', flexShrink: 0 }} />
                 <span style={{ fontSize: '0.9rem', opacity: 0.7 }}>Decrypting {filename}…</span>
                 <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -648,8 +648,8 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
                             <ClButton key={i} variant="ghost" size="sm" active={i === activeSheet} onClick={() => setActiveSheet(i)} style={{
                                 padding: '3px 10px', fontSize: '0.7rem', borderRadius: '5px 5px 0 0',
                                 whiteSpace: 'nowrap',
-                                background: i === activeSheet ? 'rgba(29,111,66,0.25)' : 'rgba(255,255,255,0.05)',
-                                color: i === activeSheet ? '#1d6f42' : 'rgba(255,255,255,0.5)',
+                                background: i === activeSheet ? 'rgba(29,111,66,0.25)' : 'rgb(var(--cl-bright-rgb) / 0.05)',
+                                color: i === activeSheet ? '#1d6f42' : 'rgb(var(--cl-bright-rgb) / 0.5)',
                                 fontWeight: i === activeSheet ? 600 : 400,
                             }}>
                                 {s.name}
@@ -700,7 +700,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
 
                 <div style={{
                     padding: '10px 12px', fontSize: '0.75rem', lineHeight: '1.6',
-                    color: 'rgba(255,255,255,0.75)', whiteSpace: 'pre-wrap',
+                    color: 'rgb(var(--cl-bright-rgb) / 0.75)', whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word', overflowY: 'hidden',
                     minHeight: wordText === null ? '72px' : undefined,
                     display: 'flex', flexDirection: 'column',
@@ -787,7 +787,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
                     fontFamily: '"JetBrains Mono","Fira Code","Cascadia Code",ui-monospace,monospace',
                     fontSize: '0.75rem', lineHeight: '1.6',
                     whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                    overflowY: 'hidden', color: 'rgba(255,255,255,0.75)',
+                    overflowY: 'hidden', color: 'rgb(var(--cl-bright-rgb) / 0.75)',
                     minHeight: textContent === null ? '72px' : undefined,
                     display: 'flex', flexDirection: 'column',
                     alignItems: textContent === null ? 'center' : undefined,
@@ -811,7 +811,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
 
     // ── Generic ──────────────────────────────────────────────────────────────
     return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: '12px', width: '100%', maxWidth: '400px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', background: 'rgb(var(--cl-bright-rgb) / 0.04)', borderRadius: '12px', width: '100%', maxWidth: '400px' }}>
             <FileText size={20} style={{ opacity: 0.4, flexShrink: 0 }} />
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
                 <span style={{ fontWeight: 500, fontSize: '0.95rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>
@@ -823,9 +823,9 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilenam
             </div>
             <a href={objectUrl} download={filename}
                 onClick={e => { if (isExecutableFilename(filename)) { e.preventDefault(); void saveReceivedFile(objectUrl, filename); } }}
-                style={{ color: 'var(--cl-text)', opacity: 0.6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(255,255,255,0.06)', textDecoration: 'none' }}
-                onMouseOver={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; }}
-                onMouseOut={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}>
+                style={{ color: 'var(--cl-text)', opacity: 0.6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgb(var(--cl-bright-rgb) / 0.06)', textDecoration: 'none' }}
+                onMouseOver={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgb(var(--cl-bright-rgb) / 0.12)'; }}
+                onMouseOut={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.background = 'rgb(var(--cl-bright-rgb) / 0.06)'; }}>
                 <Download size={16} />
             </a>
         </div>

@@ -23,6 +23,7 @@ import type { ServerInfo } from '../../../hooks/useServers';
 import type { Role } from './types';
 import { RoleListPane } from './RoleListPane';
 import { RoleEditorPane } from './RoleEditorPane';
+import { ImportedRoleGrantsBar } from './ImportedRoleGrantsBar';
 import { sortRolesForDisplay } from './roleOrder';
 import { useToast } from '../../../contexts/ToastContext';
 import { ConfirmDialog } from '../../primitives/ConfirmDialog';
@@ -205,7 +206,11 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
                     canManage={canManage}
                     onReorder={handleReorder}
                     onError={reportError}
+                    serverId={server.server_id}
+                    token={token}
                 />
+
+                <ImportedRoleGrantsBar serverId={server.server_id} token={token} canManage={canManage} />
 
                 {selected ? (
                     <RoleEditorPane

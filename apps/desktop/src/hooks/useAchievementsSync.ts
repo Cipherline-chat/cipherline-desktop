@@ -10,6 +10,7 @@
  * Best-effort: failures are logged and swallowed; local state is always
  * already correct before this runs.
  */
+import { useOwnSlotNudge } from './useOwnSlotNudge';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { achievementsRepublishReason, publishAchievements, pullAchievements } from '../services/achievementsSyncService';
 import { createAchievementsSyncEnv, getAchievementsView, setAchievementsView } from '../services/achievementsSyncEnv';
@@ -99,5 +100,7 @@ export function useAchievementsSync({ userId, deviceId, token, tracker }: Achiev
 
     useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
+    // Real time: another device wrote this slot (own_slot:changed) -> one coalesced pull.
+    useOwnSlotNudge('achievements', enabled, () => { void run(); });
     return useMemo(() => ({ markDirty }), [markDirty]);
 }

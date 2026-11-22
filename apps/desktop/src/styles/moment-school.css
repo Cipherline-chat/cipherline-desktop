@@ -26,7 +26,7 @@
   to   { transform: rotate(calc(var(--a) + 30deg)) translateX(1100px) rotate(-90deg) scale(var(--s)); opacity: 0; }
 }
 .mo-school .mo-school-count {
-  position: absolute; left: 0; top: -60px; font-size: 104px; line-height: 1; color: var(--cl-lume, #25E0C8);
+  position: absolute; left: 0; top: -60px; font-size: 104px; line-height: 1; color: var(--cl-lume, var(--cl-lume-text));
   animation: mo-school-pop .5s cubic-bezier(.2, .8, .3, 1.2) 2.4s both;
 }
 .mo-school .mo-school-line {

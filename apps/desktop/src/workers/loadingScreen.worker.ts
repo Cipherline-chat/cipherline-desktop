@@ -522,7 +522,7 @@ const stats = { frames: 0, busyMs: 0, since: performance.now() };
  * For components/firewallHitchProbe.ts: during a run, report each late frame and
  * each pillar's entry onto the screen, so a hitch can be laid against what the
  * main thread was doing at that moment. Off unless the overlay asks for it at
- * init, which it does only in dev and staging builds (hitchProbeEnabled). Off,
+ * init, which it now does on every channel (the probe is light on stable). Off,
  * it costs one boolean test a frame; on, it never posts on an on-time frame.
  */
 let probeOn = false;
@@ -544,7 +544,7 @@ function probeFrame(ts: number) {
     if (playing && !probeRun) { probeK = 0; probePrevX.fill(-1e9); probeRate.reset(); }
     if (!playing && probeRun) {
         const r = probeRate.result();
-        if (r) post({ type: 'probe', kind: 'rate', frames: r.frames, ms: r.ms, fps: r.fps, busyAvgMs: r.busyAvgMs, maxGapMs: r.maxGapMs, gl: glRenderer() });
+        if (r) post({ type: 'probe', kind: 'rate', frames: r.frames, ms: r.ms, fps: r.fps, busyAvgMs: r.busyAvgMs, maxGapMs: r.maxGapMs, gl: glRenderer(), iv: probeIv });
         probeRate.reset();
     }
     if (playing) probeRate.frame(ts, probeBusy);
@@ -552,7 +552,7 @@ function probeFrame(ts: number) {
     if (playing && probeLast) {
         const gap = ts - probeLast;
         if (gap > Math.max(probeIv * 1.6, probeIv + 6)) {
-            post({ type: 'probe', kind: 'gap', at: performance.timeOrigin + ts, gap, js: probeBusy, score: game.score, k: probeK });
+            post({ type: 'probe', kind: 'gap', at: performance.timeOrigin + ts, gap, js: probeBusy, score: game.score, k: probeK, iv: probeIv });
         } else probeIv += (gap - probeIv) * 0.05; // the display's own interval, learned from on-time frames
     }
     probeLast = playing ? ts : 0;
@@ -668,7 +668,7 @@ function frame(ts: number) {
     else approach(dt, tg);
     scrollX += smooth.vx * dt;
     scrollY += smooth.vy * dt;
-    if (exiting) exitK = Math.min(1, exitK + dt / 0.56);
+    if (exiting) exitK = Math.min(1, exitK + dt / 0.22);
     // Resting, he strokes every STROKE_S; in the game, only when told to.
     if (!reduced) {
         strokeT += dt;

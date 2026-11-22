@@ -21,6 +21,7 @@ import { useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { reportBeta } from '../utils/betaDiagnostics/reporter';
 import { setBackupIssue, checkLocalFolderGrant } from '../services/backupIssues';
+import { backupStoreBlock } from '../services/backupStoreGuard';
 import { runBackup, getCachedPassword, getLastBackupMs, getDestinationLastMs, DEFAULT_MAX_ATTACHMENT_BYTES, notifyBackupStateChanged } from '../services/driveBackup';
 
 const CHECK_EVERY_MS = 5 * 60 * 1000; // 5 minutes
@@ -160,6 +161,12 @@ export function useBackupAutoSchedule() {
         const tick = async () => {
             if (inFlight.current) return;
             if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+            // This device's data did not load (or is locked / still loading):
+            // its settings read as unset and its history as empty, so a run now
+            // could write a near-empty vault over the good backup. runBackup
+            // refuses too (backupStoreGuard.ts); bailing here first also keeps
+            // the scheduler from recording anything about a run it never made.
+            if (backupStoreBlock(userId)) return;
 
             const cfg = readBackupCfg(userId);
             if (!cfg.enabled) return;

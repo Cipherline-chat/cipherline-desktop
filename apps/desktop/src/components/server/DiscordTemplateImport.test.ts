@@ -128,14 +128,15 @@ describe('Create Server → Import from a Discord template', () => {
         }
         expect(document.querySelectorAll('[aria-label="Private"]').length).toBeGreaterThanOrEqual(4);
         expect(text()).toContain('have Administrator');
-        const toggle = btn(/What won’t be imported \(9\)/)!;
+        // Slowmode is carried now (2026-11-22): a chip on the channel, no longer a "won't be imported" line.
+        expect(text()).toContain('slowmode 6h');
+        const toggle = btn(/What won’t be imported \(8\)/)!;
         expect(toggle.getAttribute('aria-expanded')).toBe('false');
-        expect(text()).not.toContain('Cipherline has no slowmode');
         await click(toggle);
         expect(toggle.getAttribute('aria-expanded')).toBe('true');
         expect(document.getElementById(toggle.getAttribute('aria-controls')!)).not.toBeNull();
-        expect(text()).toContain('#self_promotion: slowmode (6h)');
-        expect(text()).toContain('Cipherline has no slowmode');
+        expect(text()).not.toContain('#self_promotion: slowmode (6h)');
+        expect(text()).not.toContain('Cipherline has no slowmode');
     });
 
     it('previews channel icons as picker icons (the # / speaker default when none fits), never emoji', async () => {

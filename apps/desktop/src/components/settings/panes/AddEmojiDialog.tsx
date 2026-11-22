@@ -108,7 +108,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded, overla
                                 </div>
                             )}
                             {ready && <img src={ready.url} alt="Emoji preview" width={ready.result.width} height={ready.result.width} draggable={false} />}
-                            {job.status === 'error' && <AlertTriangle size={24} className="text-cl-flash" aria-hidden="true" />}
+                            {job.status === 'error' && <AlertTriangle size={24} className="text-cl-flash-text" aria-hidden="true" />}
                         </div>
                         <div className="flex flex-col gap-2 min-w-0 text-[13px]">
                             <div className="text-cl-faint text-xs">In chat</div>
@@ -137,7 +137,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded, overla
                     </div>
 
                     {ready?.result.animationLost && (
-                        <div className="text-xs text-cl-glow flex gap-2" role="status">
+                        <div className="text-xs text-cl-glow-text flex gap-2" role="status">
                             <AlertTriangle size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
                             <span>This picture is animated, but this computer could not read its frames, so only the first one was kept.</span>
                         </div>
@@ -171,7 +171,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded, overla
                             />
                             <span className="text-cl-faint">:</span>
                         </div>
-                        {nameError && <div id="my-emoji-name-err" className="text-xs text-cl-flash mt-1.5">{nameError}</div>}
+                        {nameError && <div id="my-emoji-name-err" className="text-xs text-cl-flash-text mt-1.5">{nameError}</div>}
                     </div>
                     {(addError || full) && <DialogError>{addError || `You have ${PERSONAL_EMOJI_LIBRARY_MAX} emojis, the most allowed. Remove one first.`}</DialogError>}
                 </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Flag, CheckCircle2, ShieldCheck, BadgeCheck, ImagePlus, X } from 'lucide-react';
 import { API_BASE } from '../constants';
@@ -9,7 +9,13 @@ import type { ClSelectOption } from './cl';
 import { useModalExit } from '../hooks/useModalExit';
 import { safeImageSrc } from '../utils/safeMediaUrl';
 import { REPORT_SNIPPET_MAX, snippetWithEvidence, type ReportEvidence } from '../utils/integrations/coverReport';
-import { buildFrankedReport, type FrankedReportResult, type ReportedMessageRef } from '../utils/franking';
+import { buildFrankedReport, frankBody, type FrankedReportResult, type ReportedMessageRef } from '../utils/franking';
+import {
+    collectPersonalEmojiEvidence, reportableEmojiTokens, uploadReportPersonalEmoji,
+    type EmojiBytesReader, type PersonalEmojiCollection,
+} from '../utils/reportEmoji';
+import { personalEmojis } from '../utils/personalEmoji/service';
+import { ReportEmojiList, ReportEmojiText } from './ReportEmojiPreview';
 import {
     REPORT_IMAGE_MAX_BYTES, REPORT_IMAGE_MAX_COUNT, REPORT_IMAGE_TYPES, pickReportImages, reportedFileProblem, uploadReportEvidence,
     type PickedImage, type ReportImageType,
@@ -44,6 +50,8 @@ interface Props {
      * user, unchanged - the typed excerpt is then not needed (and not trusted).
      */
     message?: ReportedMessageRef;
+    /** Where personal emoji bytes are read from. Defaults to this device's My Emojis store; tests pass a fake. */
+    emojiStore?: EmojiBytesReader;
 }
 
 const REPORT_OPTIONS: ClSelectOption<string>[] = [
@@ -63,7 +71,7 @@ const WHY_UNVERIFIED: Record<string, string> = {
 
 interface Shot { id: number; picked: PickedImage; url: string }
 
-export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, token, onClose, initialSnippet, evidence, message }) => {
+export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, token, onClose, initialSnippet, evidence, message, emojiStore }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
     const [reportType, setReportType] = useState('');
     const [description, setDescription] = useState('');
@@ -99,6 +107,41 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
     const fileProblem = franked?.kind === 'attachment' ? reportedFileProblem(franked.attachment) : null;
     const attachmentUrl = franked?.kind === 'attachment' && !fileProblem ? safeImageSrc(message?.attachmentUrl ?? null) : undefined;
     const [includeFile, setIncludeFile] = useState(true);
+
+    // ── Custom emoji in the reported message (utils/reportEmoji.ts) ──
+    // Only emoji that are in the reported message AND still in the text being
+    // sent. Server emoji: the API copies its own image into the report. Personal
+    // emoji: only this device has the bytes, so they are uploaded after the
+    // report exists - the dialog shows the very images that will go.
+    const messageFb = message ? frankBody(message.content) : null;
+    const messageText = messageFb?.kind === 'text' ? messageFb.body : '';
+    const sentText = franked ? (franked.kind === 'text' ? franked.text ?? '' : '') : snippet;
+    const emojiKey = message ? reportableEmojiTokens(sentText, messageText).map(t => `${t.id}:${t.name}`).join('|') : '';
+    const emojiTokens = useMemo(
+        () => (emojiKey ? reportableEmojiTokens(sentText, messageText) : []),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the token list, not every keystroke
+        [emojiKey],
+    );
+    const personalKey = emojiTokens.filter(t => t.source === 'personal').map(t => `${t.id}:${t.name}`).join('|');
+    const [personal, setPersonal] = useState<{ key: string; collection: PersonalEmojiCollection; urls: Record<string, string> } | null>(null);
+    useEffect(() => {
+        if (!personalKey) return;
+        let live = true;
+        const urls: Record<string, string> = {};
+        const store: EmojiBytesReader = emojiStore ?? personalEmojis().store;
+        void collectPersonalEmojiEvidence(emojiTokens, store).then(collection => {
+            if (!live) return;
+            for (const e of collection.included) urls[e.id] = URL.createObjectURL(new Blob([e.bytes as BlobPart], { type: e.mime }));
+            setPersonal({ key: personalKey, collection, urls });
+        }).catch(() => { if (live) setPersonal({ key: personalKey, collection: { included: [], missing: [] }, urls }); });
+        return () => { live = false; for (const u of Object.values(urls)) URL.revokeObjectURL(u); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- emojiTokens is derived from personalKey
+    }, [personalKey, emojiStore]);
+    const personalNow = personal && personal.key === personalKey ? personal : null;
+    const emojiCollection: PersonalEmojiCollection | null = personalKey ? personalNow?.collection ?? null : { included: [], missing: [] };
+    const personalUrls = personalNow?.urls ?? {};
+    // Submit waits for the (local, fast) emoji read so the images are not silently left out.
+    const emojiChecking = !!personalKey && !personalNow;
 
     // ── Screenshots ──
     const [shots, setShots] = useState<Shot[]>([]);
@@ -161,10 +204,21 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
             // Images go up AFTER the report exists. A failure here never undoes the report.
             let failed = 0;
             let total = 0;
+            let emojiNote: string | null = null;
             if (reportId && !isCsam) {
                 for (const s of shots) {
                     total++;
                     if (!await uploadReportEvidence({ reportId, kind: 'screenshot', blob: s.picked.file, type: s.picked.type, token })) failed++;
+                }
+                // The reported message's personal emoji (only this device has their bytes).
+                // The API checks each against the token's content-addressed id.
+                let emojiFailed = 0;
+                for (const emoji of emojiCollection?.included ?? []) {
+                    if (!await uploadReportPersonalEmoji({ reportId, emoji, token })) emojiFailed++;
+                }
+                if (emojiFailed > 0) {
+                    const n = emojiCollection?.included.length ?? 0;
+                    emojiNote = `${emojiFailed} of ${n} emoji image${n === 1 ? '' : 's'} could not be attached; our team will see ${emojiFailed === 1 ? 'its name' : 'their names'}.`;
                 }
                 if (attachmentUrl && includeFile && verdict === 'verified') {
                     total++;
@@ -182,6 +236,7 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
             const notes: string[] = [];
             if (franked && verdict === 'unverified') notes.push('The message could not be verified by the server, so it was filed as unverified text.');
             if (failed > 0) notes.push(`${failed} of ${total} image${total === 1 ? '' : 's'} could not be attached.`);
+            if (emojiNote) notes.push(emojiNote);
             setSentNote(notes.length ? notes.join(' ') : null);
             setSubmitted(true);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
@@ -271,9 +326,11 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
                                         </DialogNote>
                                         <div
                                             data-testid="report-verified-text"
-                                            style={{ fontFamily: 'var(--cl-font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflowY: 'auto', padding: '8px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)' }}
+                                            style={{ fontFamily: 'var(--cl-font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflowY: 'auto', padding: '8px 10px', borderRadius: 8, background: 'rgb(var(--cl-bright-rgb) / 0.04)' }}
                                         >
-                                            {preview}
+                                            {franked.kind === 'text'
+                                                ? <ReportEmojiText text={preview} personalUrls={personalUrls} token={token} />
+                                                : preview}
                                         </div>
                                         {attachmentUrl && !isCsam && (
                                             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
@@ -331,6 +388,23 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
                                         onChange={e => setSnippet(e.target.value)}
                                         style={{ width: '100%', height: 80, resize: 'none', fontFamily: 'var(--cl-font-mono)' }}
                                     />
+                                </DialogField>
+                            )}
+
+                            {emojiTokens.length > 0 && (
+                                <DialogField
+                                    label="Emoji in this message"
+                                    aside={isCsam || !(emojiCollection?.included.length) ? 'Names only' : `${emojiCollection.included.length} image${emojiCollection.included.length === 1 ? '' : 's'} included`}
+                                >
+                                    <div data-testid="report-emoji" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        <ReportEmojiList
+                                            tokens={emojiTokens}
+                                            collection={emojiCollection}
+                                            personalUrls={personalUrls}
+                                            token={token}
+                                            imagesAllowed={!isCsam}
+                                        />
+                                    </div>
                                 </DialogField>
                             )}
 
@@ -396,7 +470,7 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
                             type="submit"
                             variant="danger"
                             size="sm"
-                            disabled={!reportType || submitting || proof.state === 'checking'}
+                            disabled={!reportType || submitting || proof.state === 'checking' || emojiChecking}
                             loading={submitting}
                         >
                             {submitting ? 'Submitting…' : 'Submit report'}

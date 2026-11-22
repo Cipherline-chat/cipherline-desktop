@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeToClipboard } from './clipboard';
+import { writeToClipboard, copyText } from './clipboard';
 
 /**
  * ── Why this suite exists ───────────────────────────────────────────────────
@@ -176,5 +176,28 @@ describe('writeToClipboard — failure is loud', () => {
         // hidden off-screen textareas in the document on every retry.
         expect(doc.body.appendChild).toHaveBeenCalledOnce();
         expect(doc.body.removeChild).toHaveBeenCalledOnce();
+    });
+});
+
+describe('copyText — boolean contract for copy buttons', () => {
+    it('resolves true when the bridge succeeds, with the exact text', async () => {
+        const bridge = vi.fn(async () => {});
+        setBridge(bridge);
+        await expect(copyText('hello')).resolves.toBe(true);
+        expect(bridge).toHaveBeenCalledWith('hello');
+    });
+
+    it('resolves false (never rejects) when every tier fails', async () => {
+        setBridge(async () => { throw new Error('ipc down'); });
+        setWebClipboard(async () => { throw new Error('NotAllowedError'); });
+        setExecCommand(() => false);
+        await expect(copyText('x')).resolves.toBe(false);
+    });
+
+    it('resolves true via execCommand when the web API is denied (packaged Electron)', async () => {
+        setBridge(undefined);
+        setWebClipboard(async () => { throw new Error('NotAllowedError'); });
+        setExecCommand(() => true);
+        await expect(copyText('x')).resolves.toBe(true);
     });
 });

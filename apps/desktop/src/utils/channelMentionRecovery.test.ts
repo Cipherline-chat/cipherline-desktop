@@ -362,3 +362,12 @@ describe('shouldAlertForReplay', () => {
         expect(shouldAlertForReplay(undefined, now)).toBe(false);
     });
 });
+
+describe('scanReconcilePage skips imported history', () => {
+    it('an import-marked row that role-mentions the viewer is not a mention; the same row unmarked is (positive control)', () => {
+        const content = { type: 'text', text: '<@r:r1:Mods> hello' };
+        const ctx = { userId: 'me', myRoleIds: new Set(['r1']), keywords: [], mentionsEveryone: () => false };
+        expect(scanReconcilePage([{ id: 'a', sender_user_id: 'dev', content }], ctx).mentionHits).toBe(1);
+        expect(scanReconcilePage([{ id: 'a', sender_user_id: 'dev', content, import_mark: { import_id: 'i' } }], ctx).mentionHits).toBe(0);
+    });
+});

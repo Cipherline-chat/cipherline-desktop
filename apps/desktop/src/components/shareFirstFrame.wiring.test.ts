@@ -42,7 +42,7 @@ describe('a fresh publish waits for the capture\'s first real frame before anyth
     });
 
     it('the old share is torn down BEFORE the new capture exists (no overlap of the two encoders)', () => {
-        const s = from('const startScreenShareFrom = async (', 45000);
+        const s = from('const startScreenShareFrom = async (', 60000); // (+ the window-capture fallback ladder in between)
         const teardown = s.indexOf('await localParticipant.setScreenShareEnabled(false);');
         const publish = s.indexOf('await publishScreenShareSettled(localParticipant, {');
         expect(teardown).toBeGreaterThan(0);
@@ -85,7 +85,7 @@ describe('"Disable / Enable audio" does not touch the video', () => {
         expect(end).toBeGreaterThan(0);
         const body = a.slice(0, end);
         expect(body).toContain("await stopNativeWindowAudio('toggle');");
-        expect(body).toContain('startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle)');
+        expect(body).toContain('startNativeWindowAudio(nativeMode, options.audioWindowId ?? options.sourceId, options.appAudio?.handle)');
         for (const forbidden of ['getDisplayMedia', 'replaceTrack', 'setScreenShareEnabled', 'Track.Source.ScreenShare)', 'publishScreenShareSettled', 'unpublishTrack(ssPub']) {
             expect(body, forbidden).not.toContain(forbidden);
         }

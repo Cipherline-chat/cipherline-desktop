@@ -23,7 +23,7 @@ export const STORAGE_GRACE_EXPLAINER_POINTS: readonly string[] = (() => {
 export const StorageGraceExplainer: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => (
     <ClModal open={open} onClose={onClose} width={460} label="How server storage works" overlayStyle={{ zIndex: 1100 }}>
         <div className="flex items-center gap-2.5 mb-3">
-            <HardDrive size={18} style={{ color: 'var(--cl-lume)' }} />
+            <HardDrive size={18} style={{ color: 'var(--cl-lume-text)' }} />
             <h2 className="m-0 text-[17px] font-semibold text-cl-text" style={{ fontFamily: 'var(--cl-font-display)' }}>
                 How server storage works
             </h2>

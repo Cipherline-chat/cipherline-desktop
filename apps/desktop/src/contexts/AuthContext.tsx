@@ -4,6 +4,7 @@ import React, { createContext, useState, useContext, useEffect, useCallback } fr
 import type { ReactNode } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { startBootFetches } from '../utils/bootFetch';
 import * as ed from '@noble/ed25519';
 import { dropSessionMedia } from '../utils/sessionMedia';
 import { clearRosterCache } from '../utils/serverRosterCache';
@@ -276,6 +277,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                                 logoutReason: null,
                             }
                     );
+                    if (!staleAndUnrefreshed && secureLocalStore.getItem('cipherline_token')) startBootFetches(activeToken);
                     setInitializing(false);
                     // The refresh branch restored the session with a blank
                     // profile (avatar_url null) and never fetched the real one -
@@ -284,6 +286,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                     if (secureLocalStore.getItem('cipherline_token')) void refreshProfile();
                 });
             } else {
+                // The core lists start loading NOW, before the app has rendered (utils/bootFetch.ts).
+                startBootFetches(token);
                 setAuthState({
                     isAuthenticated: true,
                     token,

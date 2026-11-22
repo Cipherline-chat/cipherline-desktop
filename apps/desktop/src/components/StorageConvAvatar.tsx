@@ -27,7 +27,7 @@ export const StorageConvAvatar: React.FC<{
 }> = ({ conv, token }) => {
     if (!conv) {
         return (
-            <span className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center" style={{ background: 'rgba(255,255,255,.05)', color: 'var(--cl-faint)' }}>
+            <span className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center" style={{ background: 'rgb(var(--cl-bright-rgb) / .05)', color: 'var(--cl-faint)' }}>
                 <Archive className="w-4 h-4" aria-hidden="true" />
             </span>
         );

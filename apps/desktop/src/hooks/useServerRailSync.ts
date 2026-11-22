@@ -17,6 +17,7 @@
  * Best-effort: failures are logged and swallowed; the local layout is always
  * already correct before this runs.
  */
+import { useOwnSlotNudge } from './useOwnSlotNudge';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import secureLocalStore from '../utils/secureLocalStore';
 import {
@@ -149,5 +150,7 @@ export function useServerRailSync({ userId, deviceId, token }: ServerRailSyncOpt
 
     useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
+    // Real time: another device wrote this slot (own_slot:changed) -> one coalesced pull.
+    useOwnSlotNudge('server_rail', enabled, () => { void run(); });
     return useMemo(() => ({ markDirty, syncNow: () => { void run(); } }), [markDirty, run]);
 }

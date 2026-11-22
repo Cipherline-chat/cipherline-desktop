@@ -23,6 +23,15 @@
  *     not limited by CPU or bandwidth - so the capture IS the limit;
  *   - on CAPTURE_BOUND_SAMPLES consecutive samples whose rates sit within
  *     SPREAD_FPS of each other (~30 s at the 10 s sampler).
+ *
+ * Report b3128344 (0.1.2): a full-screen DXGI share of a 3440x1440@165 Hz display, 60 fps picked, Cipherline FOCUSED and
+ * nothing covering the screen - capture 18-27 fps (app log `share_tx_ring why: src`), encoder and sender keeping pace, no
+ * limitation, bandwidth to spare. DXGI emits a frame only when the screen CHANGES, so the content itself (a ~24-30 fps video
+ * or page) set the rate, and the game-in-front rule above stayed silent for two reasons (focused, nothing covering) and a
+ * third (the rate dipped under 24). The CONTENT variant below covers that: same "capture is the limit" evidence, but no
+ * game-in-front / not-focused requirement, a lower floor (CONTENT_MIN_FPS, still above a static desktop's 1-13 fps), and
+ * the words say the screen isn't changing faster, not "your game". Sustained over CONTENT_SAMPLES samples (>= 10 s each),
+ * once per share.
  * Numbers in, a verdict out: the caller shows the notice and logs nothing new
  * (the numbers are already in share_fps).
  */
@@ -32,6 +41,9 @@ export const CAPTURE_BOUND_MIN_FPS = 24;
 export const CAPTURE_BOUND_SPREAD_FPS = 12;
 export const CAPTURE_BOUND_MAX_RATIO = 0.8;
 export const CAPTURE_BOUND_ENCODER_RATIO = 0.9;
+/** The content variant: floor above a static desktop (1-13 fps by design), and consecutive 10 s samples required. */
+export const CAPTURE_CONTENT_MIN_FPS = 15;
+export const CAPTURE_CONTENT_SAMPLES = 2;
 
 export interface CaptureBoundSample {
     targetFps: number;
@@ -65,21 +77,46 @@ export function isCaptureBound(s: CaptureBoundSample): boolean {
     return s.encFps >= CAPTURE_BOUND_ENCODER_RATIO * s.srcFps;
 }
 
+/**
+ * Does this sample say "the CONTENT sets the rate" (report b3128344)? Like isCaptureBound but with no game-in-front /
+ * not-focused condition: a share that asks for >= 60 fps, a capture delivering a middle rate (>= CAPTURE_CONTENT_MIN_FPS,
+ * <= 80 % of the target), the encoder keeping up with it, and no CPU / bandwidth limit.
+ */
+export function isContentLimited(s: CaptureBoundSample): boolean {
+    if (!(s.targetFps >= 60)) return false;
+    if (s.limit === 'cpu' || s.limit === 'bandwidth') return false;
+    if (!fin(s.srcFps) || !fin(s.encFps)) return false;
+    if (s.srcFps < CAPTURE_CONTENT_MIN_FPS || s.srcFps > CAPTURE_BOUND_MAX_RATIO * s.targetFps) return false;
+    return s.encFps >= CAPTURE_BOUND_ENCODER_RATIO * s.srcFps;
+}
+
 /** One per share. Feed every share_fps sample; returns the rate to tell the user about, once. */
 export class CaptureBoundWatch {
     private run: number[] = [];
+    private contentRun: number[] = [];
     private told = false;
 
-    observe(s: CaptureBoundSample): { fps: number } | null {
+    observe(s: CaptureBoundSample): { fps: number; cause: 'game' | 'content' } | null {
         if (this.told) return null;
-        if (!isCaptureBound(s)) { this.run = []; return null; }
+        // Content variant first only when the game-in-front evidence is absent (that has its own, more specific words).
+        if (!isCaptureBound(s)) {
+            this.run = [];
+            if (!isContentLimited(s)) { this.contentRun = []; return null; }
+            this.contentRun.push(s.srcFps as number);
+            if (this.contentRun.length > CAPTURE_CONTENT_SAMPLES) this.contentRun.shift();
+            if (this.contentRun.length < CAPTURE_CONTENT_SAMPLES) return null;
+            if (Math.max(...this.contentRun) - Math.min(...this.contentRun) > CAPTURE_BOUND_SPREAD_FPS) return null;
+            this.told = true;
+            return { fps: Math.round(this.contentRun.reduce((a, b) => a + b, 0) / this.contentRun.length), cause: 'content' };
+        }
+        this.contentRun = [];
         this.run.push(s.srcFps as number);
         if (this.run.length > CAPTURE_BOUND_SAMPLES) this.run.shift();
         if (this.run.length < CAPTURE_BOUND_SAMPLES) return null;
         if (Math.max(...this.run) - Math.min(...this.run) > CAPTURE_BOUND_SPREAD_FPS) return null;
         this.told = true;
         const mean = this.run.reduce((a, b) => a + b, 0) / this.run.length;
-        return { fps: Math.round(mean) };
+        return { fps: Math.round(mean), cause: 'game' };
     }
 }
 
@@ -100,7 +137,10 @@ export function shareKindOf(sourceId: string | undefined | null): ShareKind {
  * (reports 438f97a1 / 479af6c7) - so for a window the actionable advice is
  * "share the screen"; for a screen it is the game's own frame rate.
  */
-export function captureBoundNotice(fps: number, targetFps: number, kind: ShareKind = 'unknown', wide = false, platform: string | undefined = 'windows'): string {
+export function captureBoundNotice(fps: number, targetFps: number, kind: ShareKind = 'unknown', wide = false, platform: string | undefined = 'windows', cause: 'game' | 'content' = 'game'): string {
+    if (cause === 'content') {
+        return `Sharing at ~${fps} fps — your ${kind === 'window' ? 'window' : 'screen'} isn’t changing faster than that, so there are no more frames to send. Motion on screen (video, scrolling, a game) sets the pace; it isn’t your connection.`;
+    }
     const onWindows = platform === 'windows' || platform === undefined;
     const what = kind === 'window' ? 'window' : 'screen';
     const head = `Your ${what} is only producing about ${fps} new frames per second here, so viewers can’t get ${targetFps}. `;

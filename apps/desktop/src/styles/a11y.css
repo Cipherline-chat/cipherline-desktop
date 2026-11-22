@@ -1,0 +1,50 @@
+/* ============================================================================
+   Settings → Accessibility (components/settings/panes/AccessibilityPane.tsx)
+   and the interface-size indicator (components/a11y/A11yRuntime.tsx).
+   Tokens only (--cl-*), so the themes slice can retint it without edits.
+   ============================================================================ */
+
+.a11y-value{font-family:var(--cl-font-mono);font-size:13px;font-weight:700;color:var(--cl-lume-text);min-width:3.5em;justify-content:flex-end}
+.a11y-kbd{display:inline-block;font-family:var(--cl-font-mono);font-size:11px;line-height:1;padding:2px 5px;border:1px solid var(--cl-border);border-bottom-width:2px;border-radius:5px;color:var(--cl-text);background:var(--cl-sink)}
+
+/* Slider row: the full card width, the step labels underneath. 50px left
+   inset = the row's icon tile + gap, so the slider lines up with the label. */
+.a11y-slider{padding:2px 2px 0 50px}
+.a11y-ticks{display:flex;justify-content:space-between;margin-top:2px;font-size:11px;font-weight:700;color:var(--cl-faint);font-variant-numeric:tabular-nums;user-select:none}
+.a11y-ticks>span{flex:0 0 auto;min-width:0;text-align:center}
+.a11y-ticks>span[data-active]{color:var(--cl-lume-text)}
+.a11y-ticks>span[data-off]{opacity:.4;text-decoration:line-through;text-decoration-thickness:1px}
+.a11y-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0 10px 50px;min-height:34px}
+.a11y-note{font-size:12px;color:var(--cl-muted);line-height:1.4}
+
+/* The slider primitive has no focus ring of its own; give it a visible one. */
+.a11y-slider .cls:focus-visible{outline:none}
+.a11y-slider .cls:focus-visible .sth{box-shadow:0 0 0 3px var(--cl-deep),0 0 0 5px var(--cl-lume)}
+
+/* Preview: a sample conversation at the chosen sizes. Clipped, so a big
+   pending interface size can't push the pane sideways. */
+.a11y-preview-frame{margin-top:6px;border:1px solid var(--cl-border);border-radius:14px;background:var(--cl-abyss);overflow:hidden;max-height:260px}
+.a11y-preview{padding:14px 16px;color:var(--cl-text);font-family:var(--cl-font-body)}
+.a11y-pv-sys{display:inline-block;margin:0 0 10px;padding:3px 12px;border-radius:999px;border:1px solid rgb(var(--cl-bright-rgb) / .06);background:rgb(var(--cl-bright-rgb) / .03);color:var(--cl-faint);font-weight:500}
+.a11y-pv-row{display:flex;gap:12px;align-items:flex-start}
+.a11y-pv-av{flex:none;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--cl-abyss);background:var(--cl-lume)}
+.a11y-pv-col{min-width:0;flex:1}
+.a11y-pv-head{display:flex;gap:8px;align-items:baseline;font-size:14px}
+.a11y-pv-head>span{font-size:11px;color:var(--cl-faint)}
+.a11y-pv-quote{margin:3px 0 4px;padding:4px 8px;border-left:2px solid var(--cl-lume);border-radius:6px;background:rgb(var(--cl-bright-rgb) / .03);color:var(--cl-text);opacity:.8;width:fit-content;max-width:100%}
+
+/* Ctrl/Cmd + = / - / 0 indicator. */
+.a11y-zoom-pill{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483000;pointer-events:none;
+  display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
+  background:var(--cl-surface);border:1px solid var(--cl-border);box-shadow:0 8px 28px rgb(var(--cl-shade-rgb) / .45);
+  color:var(--cl-text);font-family:var(--cl-font-body);font-size:13px;font-weight:700;white-space:nowrap;
+  animation:a11y-pill-in .16s ease-out}
+.a11y-zoom-pill b{color:var(--cl-lume-text);font-family:var(--cl-font-mono)}
+.a11y-zoom-pill small{font-size:12px;font-weight:600;color:var(--cl-muted)}
+@keyframes a11y-pill-in{from{opacity:0;transform:translate(-50%,-4px)}to{opacity:1;transform:translate(-50%,0)}}
+@media (prefers-reduced-motion:reduce){.a11y-zoom-pill{animation:none}}
+
+/* Motion & effects card: a row of radios under its label (same 50px inset as the sliders). */
+.a11y-opts{padding:2px 2px 0 50px}
+.a11y-opts [role=radiogroup]{flex-wrap:wrap;row-gap:10px}
+.gif-play-badge:focus-visible{outline:2px solid var(--cl-lume);outline-offset:2px}

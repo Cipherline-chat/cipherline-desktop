@@ -305,7 +305,7 @@ export const PurgeConfirmModal: React.FC<PurgeConfirmModalProps> = ({ count, lab
     const isEverything = label === 'Everything';
     const msgNoun = count === 1 ? 'message' : 'messages';
 
-    const accent = (v: React.ReactNode) => <strong style={{ color: 'var(--cl-flash)' }}>{v}</strong>;
+    const accent = (v: React.ReactNode) => <strong style={{ color: 'var(--cl-flash-text)' }}>{v}</strong>;
     return (
         <ClModal open onClose={onCancel} width={440} label="Purge messages" cardClassName="dlg-card dlg-card--confirm">
             <DialogHeader

@@ -176,7 +176,7 @@ export const ConvRetentionSection: React.FC<Props> = ({
                 {/* Messages entry */}
                 <div>
                     <div className="flex items-center" style={{ gap: 11 }}>
-                        <span className="shrink-0 flex items-center justify-center" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume)' }}>
+                        <span className="shrink-0 flex items-center justify-center" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume-text)' }}>
                             <MessageSquare size={15} />
                         </span>
                         <span className="min-w-0" style={{ lineHeight: 1.2 }}>
@@ -199,7 +199,7 @@ export const ConvRetentionSection: React.FC<Props> = ({
                 {/* Attachments entry */}
                 <div style={{ paddingTop: 12, marginTop: 12, borderTop: '1px solid var(--cl-border)' }}>
                     <div className="flex items-center" style={{ gap: 11 }}>
-                        <span className="shrink-0 flex items-center justify-center" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume)' }}>
+                        <span className="shrink-0 flex items-center justify-center" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume-text)' }}>
                             <FolderOpen size={15} />
                         </span>
                         <span className="min-w-0" style={{ lineHeight: 1.2 }}>
@@ -225,8 +225,8 @@ export const ConvRetentionSection: React.FC<Props> = ({
             {purgeConfirm && (
                 <div className="mt-2.5 rounded-xl border p-3" style={{ background: 'var(--cl-surface)', borderColor: 'var(--cl-border)' }}>
                     <div className="flex items-start gap-2.5 mb-3">
-                        <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 mt-0.5" style={{ background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)' }}>
-                            <Clock size={11} style={{ color: 'var(--cl-lume)' }} />
+                        <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 mt-0.5" style={{ background: 'rgb(var(--cl-lume-rgb) / .1)', border: '1px solid rgb(var(--cl-lume-rgb) / .2)' }}>
+                            <Clock size={11} style={{ color: 'var(--cl-lume-text)' }} />
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-[12px] font-semibold leading-snug" style={{ color: 'var(--cl-text)' }}>

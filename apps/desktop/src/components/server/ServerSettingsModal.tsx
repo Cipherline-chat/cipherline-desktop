@@ -25,11 +25,14 @@
  * The server enforces all permission checks; the UI makes the calls and
  * surfaces errors returned by the API.
  */
+import { graphemeLength } from '@cipherline/shared';
+import { serverNameDraftError, SERVER_NAME_INPUT_MAX_UNITS } from '../../utils/serverRoleNames';
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ClButton } from '../ClButton';
 import { ClSelect, ClInput, ClTextarea, ClImageCropper } from '../cl';
 import { PasswordConfirmDialog } from '../dialog/PasswordConfirmDialog';
+import { imageUploadType, imageUploadExt } from '../../utils/imageCrop';
 import { DialogText } from '../dialog/DialogFrame';
 import { motion, AnimatePresence } from 'framer-motion';
 import '../../styles/server-dock.css';
@@ -38,7 +41,7 @@ import {
     Trash2, Check, Copy,
     Camera, Image as ImageIcon, Crown,
     ChevronDown, ChevronUp, Clock,
-    Smile, Upload, Pencil, HardDrive, Sparkles,
+    Smile, Sticker as StickerIcon, Upload, Pencil, HardDrive, Sparkles,
     UserPlus, UserMinus, VolumeX, Tag, BadgeCheck, Hash, Folder, LayoutList, Minus, KeyRound,
     Pin, Bookmark, Phone, Info,
 } from 'lucide-react';
@@ -77,6 +80,11 @@ import { MemberRoleChipRow } from './roles/MemberRoleChipRow';
 import { requestMoment } from '../../utils/moments';
 import { describeAuditEntry, AUDIT_FILTER_OPTIONS, type AuditIcon, type AuditTone } from './auditLog';
 import { EMOJI_NAME_RE, sanitizeEmojiNameInput, toShortcode } from '../../utils/emojiNames';
+import { formatClock } from '../../utils/a11y/timeFormat';
+import { formatFullDateTime } from '../../utils/a11y/timeFormat';
+import { BulkEmojiDialog } from '../emoji/BulkEmojiDialog';
+import { ServerStickersTab } from '../stickers/ServerStickersTab';
+import { serverCreateGapMs } from '../../utils/emojiBulk/batch';
 
 // ── Helper Types ─────────────────────────────────────────────────────────────
 
@@ -187,7 +195,7 @@ type Tab = ServerSettingsTab;
  *  papers. Grouping only; tab ids/labels/permission gating are unchanged. */
 const TAB_SECTIONS: { name: string; ids: Tab[] }[] = [
     { name: 'Command', ids: ['overview', 'storage'] },
-    { name: 'Crew',    ids: ['roles', 'members', 'invites', 'emojis'] },
+    { name: 'Crew',    ids: ['roles', 'members', 'invites', 'emojis', 'stickers'] },
     { name: 'Records', ids: ['bans', 'audit'] },
 ];
 
@@ -198,6 +206,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; description?: strin
     { id: 'members',   label: 'Members',    icon: <Users size={18} />,         description: 'Browse, kick, ban, assign roles' },
     { id: 'invites',   label: 'Invites',    icon: <Link size={18} />,          description: 'Every invite, active and past' },
     { id: 'emojis',    label: 'Emojis',     icon: <Smile size={18} />,         description: 'Custom emojis for this server' },
+    { id: 'stickers',  label: 'Stickers',   icon: <StickerIcon size={18} />,   description: 'Stickers for this server' },
     { id: 'bans',      label: 'Bans',       icon: <Ban size={18} />,           description: 'Banned users' },
     { id: 'audit',     label: 'Audit Log',  icon: <ClipboardList size={18} />, description: 'Admin and moderation history' },
 ];
@@ -321,8 +330,8 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
             // pick comes back from the cropper as an animated WebP, so the MIME (which
             // the receiving side uses to decide whether the image can move) is the
             // blob's own, never a hard-coded JPEG.
-            const mime = blob.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
-            const ext = mime === 'image/webp' ? 'webp' : 'jpg';
+            const mime = imageUploadType(blob);
+            const ext = imageUploadExt(mime);
             const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
                 blob,
                 kind === 'icon' ? `server-icon.${ext}` : `server-banner.${ext}`,
@@ -351,7 +360,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
     };
 
     const handleSave = async () => {
-        if (!token || !name.trim() || name.trim().length < 2) return;
+        if (!token || !name.trim() || serverNameDraftError(name) !== null || graphemeLength(name.trim()) < 2) return;
         setSaving(true);
         try {
             // Build the patch body — only send fields the user actually changed.
@@ -456,7 +465,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                                     <span className="ml-2 text-xs">Upload banner</span>
                                 </div>
                             )}
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 group-focus-visible:bg-black/40 transition-colors">
+                            <div className="absolute inset-0 flex items-center justify-center bg-pure-black/0 group-hover:bg-pure-black/40 group-focus-visible:bg-pure-black/40 transition-colors">
                                 <Camera size={20} className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 text-cl-text transition-opacity" />
                             </div>
                         </button>
@@ -516,7 +525,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                                     animate
                                 />
                             )}
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
+                            <div className="absolute inset-0 flex items-center justify-center bg-pure-black/0 group-hover:bg-pure-black/40 transition-colors">
                                 <Camera size={18} className="opacity-0 group-hover:opacity-100 text-cl-text transition-opacity" />
                             </div>
                         </div>
@@ -548,8 +557,9 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                         <ClInput
                             type="text"
                             value={name}
-                            onChange={e => setName(e.target.value.replace(/[^a-zA-Z0-9 '\-_.]/g, ''))}
-                            maxLength={50}
+                            onChange={e => setName(e.target.value)}
+                            maxLength={SERVER_NAME_INPUT_MAX_UNITS}
+                            aria-invalid={serverNameDraftError(name) !== null}
                             placeholder="Server name…"
                             // Belt-and-braces: this whole tab is hidden without
                             // MANAGE_SERVER, but the field itself should never be
@@ -557,6 +567,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                             // was the thing plain members ended up staring at.
                             disabled={!canManageServer}
                         />
+                        {serverNameDraftError(name) && <div role="alert" className="cl-fmsg">{serverNameDraftError(name)}</div>}
                     </div>
                 </div>
               </div>
@@ -657,7 +668,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                 )}
                 <ClButton
                     size="sm"
-                    disabled={saving || !!uploading || !name.trim() || !dirty}
+                    disabled={saving || !!uploading || !name.trim() || serverNameDraftError(name) !== null || !dirty}
                     loading={saving}
                     onClick={handleSave}
                 >
@@ -684,7 +695,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
             {isOwner && (
                 <div className="mt-8 rounded-xl border border-cl-flash/25 bg-cl-flash/[0.04]">
                     <div className="px-5 py-4 border-b border-cl-flash/15">
-                        <p className="text-[11px] font-mono font-semibold uppercase tracking-widest text-cl-flash/70">Danger Zone</p>
+                        <p className="text-[11px] font-mono font-semibold uppercase tracking-widest text-cl-flash-text/70">Danger Zone</p>
                     </div>
                     <div className="px-5 py-4 flex items-center justify-between gap-6">
                         <div className="min-w-0">
@@ -741,6 +752,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                 outputHeight={cropTarget?.kind === 'banner' ? BANNER_OUTPUT.height : AVATAR_OUTPUT.height}
                 shape="rect"
                 allowAnimated
+                keepTransparency={cropTarget?.kind === 'icon'}
                 title={cropTarget?.kind === 'banner' ? 'Position the server banner' : 'Position the server icon'}
                 onCancel={() => setCropTarget(null)}
                 onConfirm={handleCropped}
@@ -908,7 +920,7 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                 placeholder="Search members…"
             />
             {showProFilter && (
-                <div data-pro-filter className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2" style={{ background: 'rgba(37,224,200,0.06)', border: '1px solid rgba(37,224,200,0.2)' }}>
+                <div data-pro-filter className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2" style={{ background: 'rgb(var(--cl-lume-rgb) / 0.06)', border: '1px solid rgb(var(--cl-lume-rgb) / 0.2)' }}>
                     <p className="m-0 text-[12px] text-cl-muted leading-snug flex-1 min-w-[220px]">
                         {proSet!.size === 0
                             ? 'No members have Pro yet. Transferring to a member on the free plan keeps the storage countdown running.'
@@ -939,9 +951,9 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                             <p className="text-sm text-cl-text truncate">{m.username ?? 'Unknown User'}</p>
                             {m.nickname && <p className="text-xs text-cl-faint truncate">aka {m.nickname}</p>}
                             {m.muted_until && new Date(m.muted_until) > new Date() && (
-                                <p className="text-xs text-cl-glow/70">Muted until {new Date(m.muted_until).toLocaleTimeString()}</p>
+                                <p className="text-xs text-cl-glow-text/70">Muted until {formatClock(new Date(m.muted_until), undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</p>
                             )}
-                            <MemberRoleChipRow serverId={server.server_id} userId={m.user_id} />
+                            <MemberRoleChipRow serverId={server.server_id} userId={m.user_id} token={token} />
                         </div>
                         {m.user_id === server.owner_user_id && (
                             <span className="flex items-center gap-1 text-[10px] text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded-full shrink-0">
@@ -949,7 +961,7 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                             </span>
                         )}
                         {showProFilter && proSet!.has(m.user_id) && (
-                            <span data-pro-member={m.user_id} className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{ color: 'var(--cl-lume)', background: 'rgba(37,224,200,0.12)' }}>
+                            <span data-pro-member={m.user_id} className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{ color: 'var(--cl-lume-text)', background: 'rgb(var(--cl-lume-rgb) / 0.12)' }}>
                                 <Sparkles size={9} />Pro
                             </span>
                         )}
@@ -1149,12 +1161,12 @@ function InviteRow({
                 {/* Link preview */}
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-0.5">
-                        <Link size={11} className="shrink-0 text-cl-lume/60" />
-                        <code className={`text-[12px] font-mono truncate ${isExpired || isExhausted ? 'text-cl-faint line-through' : 'text-cl-lume'}`}>
+                        <Link size={11} className="shrink-0 text-cl-lume-text/60" />
+                        <code className={`text-[12px] font-mono truncate ${isExpired || isExhausted ? 'text-cl-faint line-through' : 'text-cl-lume-text'}`}>
                             cipherline.chat/invite/{inv.code}
                         </code>
                         {(isExpired || isExhausted) && (
-                            <span className="text-[10px] text-cl-flash/70 font-medium shrink-0">
+                            <span className="text-[10px] text-cl-flash-text/70 font-medium shrink-0">
                                 {isExpired ? 'Expired' : 'Exhausted'}
                             </span>
                         )}
@@ -1176,7 +1188,7 @@ function InviteRow({
                         {inv.expires_at && (
                             <>
                                 <span className="text-cl-border">·</span>
-                                <span className={`flex items-center gap-0.5 text-[11px] ${isExpired ? 'text-cl-flash/60' : 'text-cl-faint'}`}>
+                                <span className={`flex items-center gap-0.5 text-[11px] ${isExpired ? 'text-cl-flash-text/60' : 'text-cl-faint'}`}>
                                     <Clock size={10} />
                                     {isExpired
                                         ? 'Expired'
@@ -1214,7 +1226,7 @@ function InviteRow({
                         onClick={copy}
                         tooltip="Copy invite link"
                     >
-                        {copied ? <Check size={13} className="text-cl-ok" /> : <Copy size={13} />}
+                        {copied ? <Check size={13} className="text-cl-ok-text" /> : <Copy size={13} />}
                     </ClButton>
 
                     {/* Revoke */}
@@ -1465,12 +1477,35 @@ function EmojisTab({ server, token, canManageEmojis }: {
     const atCountLimit = emojis.length >= EMOJI_COUNT_LIMIT_FALLBACK;
     const nearCountLimit = !atCountLimit && emojis.length >= EMOJI_COUNT_NOTE_AT;
 
-    const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (e.target) e.target.value = ''; // allow re-picking the same file
-        const result = validateEmojiUpload(file);
+    // One file keeps the quick inline row; two or more open the review list.
+    const [bulkFiles, setBulkFiles] = useState<File[] | null>(null);
+    const [dropActive, setDropActive] = useState(false);
+    const canAddMore = !storageFull && !atCountLimit && !uploading;
+    const handleFiles = (files: File[]) => {
+        if (!canAddMore || files.length === 0) return;
+        if (files.length > 1) { setPending(null); setBulkFiles(files); return; }
+        const result = validateEmojiUpload(files[0]);
         if (!result.ok) { toast.push({ kind: 'error', message: result.reason }); return; }
         setPending({ file: result.file, name: nameFromFile(result.file), previewUrl: URL.createObjectURL(result.file) });
+    };
+    const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files ?? []);
+        if (e.target) e.target.value = ''; // allow re-picking the same file
+        handleFiles(files);
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- axios / Error, read defensively
+    const bulkErrorMessage = (e: any): string => {
+        const data = e?.response?.data;
+        if (isStorageQuotaError(data)) return emojiQuotaExceededMessage(data);
+        if (isEmojiCountLimitError(data)) return emojiCountLimitMessage(data);
+        return data?.message ?? e?.message ?? 'Upload failed';
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- axios / Error, read defensively
+    const bulkFatal = (e: any): string | null => {
+        const data = e?.response?.data;
+        if (isStorageQuotaError(data)) return 'server storage is full.';
+        if (isEmojiCountLimitError(data)) return 'the server has reached its emoji limit.';
+        return null;
     };
 
     const confirmAdd = async () => {
@@ -1549,11 +1584,16 @@ function EmojisTab({ server, token, canManageEmojis }: {
     return (
         <div className="space-y-4">
             {canManageEmojis && (
-                <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-4 space-y-3">
-                    <div className="flex items-center justify-between">
+                <div
+                    className={`dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-4 space-y-3 ${dropActive ? 'outline outline-1 outline-dashed outline-cl-lume' : ''}`}
+                    onDragOver={e => { if (canAddMore && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropActive(true); } }}
+                    onDragLeave={() => setDropActive(false)}
+                    onDrop={e => { e.preventDefault(); setDropActive(false); handleFiles(Array.from(e.dataTransfer.files)); }}
+                >
+                    <div className="flex items-center justify-between gap-3">
                         <div>
-                            <p className="text-sm font-medium text-cl-text">Add an emoji</p>
-                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF, animated ones too (up to 100 frames) — up to 5 MB. Cropped to a square and shrunk to 128 px, so most emojis take only a few KB of server storage.</p>
+                            <p className="text-sm font-medium text-cl-text">Add emojis</p>
+                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF, animated ones too (up to 100 frames) — up to 5 MB each. Pick or drop as many as you like. Cropped to a square and shrunk to 128 px, so most emojis take only a few KB of server storage.</p>
                         </div>
                         <ClButton
                             size="sm"
@@ -1561,24 +1601,25 @@ function EmojisTab({ server, token, canManageEmojis }: {
                             disabled={storageFull || atCountLimit || uploading}
                             onClick={() => fileInputRef.current?.click()}
                         >
-                            <Upload size={14} className="mr-1.5" /> Upload
+                            <Upload size={14} className="mr-1.5" /> Upload emojis
                         </ClButton>
                         <input
                             ref={fileInputRef}
                             type="file"
                             accept={IMAGE_ACCEPT_ATTR}
+                            multiple
                             className="hidden"
                             onChange={pickFile}
                         />
                     </div>
                     {quota && <EmojiStorageLine quota={quota} emojiCount={emojis.length} />}
                     {storageFull && (
-                        <p className="text-xs text-cl-flash">
+                        <p className="text-xs text-cl-flash-text">
                             {emojiQuotaExceededMessage(quota ?? undefined)}
                         </p>
                     )}
                     {atCountLimit && (
-                        <p className="text-xs text-cl-flash">{emojiCountLimitMessage()}</p>
+                        <p className="text-xs text-cl-flash-text">{emojiCountLimitMessage()}</p>
                     )}
                     {nearCountLimit && (
                         <p className="text-[11px] text-cl-faint">{emojiCountNearMessage(emojis.length)}</p>
@@ -1615,6 +1656,35 @@ function EmojisTab({ server, token, canManageEmojis }: {
                         </div>
                     )}
                 </div>
+            )}
+
+            {bulkFiles && (
+                <BulkEmojiDialog
+                    title="Add emojis"
+                    subtitle="Check the names, then upload them all. The server checks each one again."
+                    initialFiles={bulkFiles}
+                    existingNames={emojis.map(e => e.name)}
+                    slots={Math.max(0, EMOJI_COUNT_LIMIT_FALLBACK - emojis.length)}
+                    slotNoun="on this server"
+                    fileProblem={f => { const r = validateEmojiUpload(f); return r.ok ? null : r.reason; }}
+                    concurrency={2}
+                    minGapMs={serverCreateGapMs}
+                    activeLabel="Uploading"
+                    previewFit="cover"
+                    fatalMessage={bulkFatal}
+                    errorMessage={bulkErrorMessage}
+                    upload={async (row, signal) => {
+                        const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
+                            row.file, row.file.name, row.file.type, undefined, signal, server.server_id,
+                        );
+                        await create({ name: row.name.trim().toLowerCase(), attachment_id: attachmentId, key_b64: keyB64, nonce_b64: nonceB64 });
+                    }}
+                    onClose={({ added }) => {
+                        setBulkFiles(null);
+                        void refreshQuota();
+                        if (added > 0) toast.push({ kind: 'success', message: `Added ${added} emoji${added === 1 ? '' : 's'}.` });
+                    }}
+                />
             )}
 
             {emojis.length === 0 ? (
@@ -1657,7 +1727,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
                                                 onClick={() => doDelete(e.emoji_id)}
                                                 disabled={deletingId === e.emoji_id}
                                             >
-                                                <Trash2 size={14} className="text-cl-flash" />
+                                                <Trash2 size={14} className="text-cl-flash-text" />
                                             </ClButton>
                                         </div>
                                     )}
@@ -1746,9 +1816,9 @@ const AUDIT_ICONS: Record<AuditIcon, React.ReactNode> = {
 };
 
 const AUDIT_TONE_CLASS: Record<AuditTone, string> = {
-    ok: 'text-cl-ok',
-    danger: 'text-cl-flash',
-    accent: 'text-cl-lume',
+    ok: 'text-cl-ok-text',
+    danger: 'text-cl-flash-text',
+    accent: 'text-cl-lume-text',
     neutral: 'text-cl-muted',
 };
 
@@ -1810,7 +1880,7 @@ function AuditTab({ server, token }: { server: ServerInfo; token: string | null 
                                     {d.details.map((line, i) => (
                                         <p key={i} className="text-[11px] text-cl-faint break-words mt-0.5">{line}</p>
                                     ))}
-                                    <p className="text-[10px] text-cl-faint/60 mt-0.5">{new Date(e.created_at).toLocaleString()}</p>
+                                    <p className="text-[10px] text-cl-faint/60 mt-0.5">{formatFullDateTime(new Date(e.created_at))}</p>
                                 </div>
                             </div>
                         );
@@ -2047,7 +2117,7 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                 >
                                     Server Settings
                                 </p>
-                                <p className="text-[20px] font-display font-semibold text-cl-text truncate leading-tight m-0" style={{ textShadow: '0 1px 8px rgba(0,0,0,.5)' }}>
+                                <p className="text-[20px] font-display font-semibold text-cl-text truncate leading-tight m-0" style={{ textShadow: '0 1px 8px rgb(var(--cl-shade-rgb) / .5)' }}>
                                     {server.name}
                                 </p>
                             </div>
@@ -2096,7 +2166,7 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                                         onClick={() => selectTab(t.id)}
                                                         className={`relative flex items-center gap-2.5 w-full px-3 py-2 rounded-[10px] text-left text-[13.5px] font-semibold transition-all cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/50 ${
                                                             isActive
-                                                                ? 'bg-cl-lume/[0.08] border-cl-lume/25 text-cl-lume shadow-[0_0_16px_rgba(37,224,200,.12)]'
+                                                                ? 'bg-cl-lume/[0.08] border-cl-lume/25 text-cl-lume-text shadow-[0_0_16px_rgba(37,224,200,.12)]'
                                                                 : 'bg-transparent border-transparent text-cl-muted hover:text-cl-text hover:bg-white/[0.05]'
                                                         }`}
                                                     >
@@ -2104,7 +2174,7 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                                             same idea as LimitField's icon chips (ChannelSettingsDialog.tsx).
                                                             Inactive rows stay plain so the chip reads as presence, not noise. */}
                                                         {isActive ? (
-                                                            <span className="w-[22px] h-[22px] rounded-md bg-cl-lume/15 text-cl-lume flex items-center justify-center shrink-0">
+                                                            <span className="w-[22px] h-[22px] rounded-md bg-cl-lume/15 text-cl-lume-text flex items-center justify-center shrink-0">
                                                                 {t.icon}
                                                             </span>
                                                         ) : (
@@ -2134,14 +2204,14 @@ export const ServerSettingsModal: React.FC<Props> = ({
 
                         {/* Header — station name + description. The icon chip mirrors
                             the rail's active-row treatment (same bg-cl-lume/15 +
-                            text-cl-lume recipe) so the header reads as a
+                            text-cl-lume-text recipe) so the header reads as a
                             continuation of the rail's language, not a separate
                             plain title bar. dock-header-glow replaces a flat
                             border-b with a lume hairline, matching the rail's
                             own seam treatment. */}
                         <div className="dock-header h-20 flex items-center gap-3.5 px-10 shrink-0" style={{ position: 'relative', zIndex: 1 }}>
                             {activeMeta?.icon && (
-                                <div className="w-10 h-10 rounded-xl bg-cl-lume/15 text-cl-lume flex items-center justify-center shrink-0">
+                                <div className="w-10 h-10 rounded-xl bg-cl-lume/15 text-cl-lume-text flex items-center justify-center shrink-0">
                                     {activeMeta.icon}
                                 </div>
                             )}
@@ -2210,6 +2280,7 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                             {activeTab === 'members'   && <MembersTab   server={server} token={token} userId={userId} onServerUpdated={onServerUpdated} proMemberIds={proMemberIds} proOnly={membersProOnly} onProOnlyChange={setMembersProOnly} />}
                                             {activeTab === 'invites'   && <InvitesTab   server={server} token={token} canManageServer={canManageServer} />}
                                             {activeTab === 'emojis'    && <EmojisTab    server={server} token={token} canManageEmojis={canManageEmojis} />}
+                                            {activeTab === 'stickers'  && <ServerStickersTab server={server} token={token} canManage={canManageEmojis} />}
                                             {activeTab === 'bans'      && <BansTab      server={server} token={token} />}
                                             {activeTab === 'audit'     && <AuditTab     server={server} token={token} />}
                                         </div>

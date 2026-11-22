@@ -90,7 +90,7 @@ export const UnverifiedDeviceBanner: React.FC<Props> = ({ verdict, displayName, 
                 aria-label={`${label} — click to verify ${displayName}'s device.`}
                 onClick={onVerify}
                 {...handlers}
-                className={`inline-flex items-center gap-1.5 rounded-full border cursor-pointer bg-transparent ${severe ? 'border-cl-flash/50 bg-cl-flash/10 text-cl-flash' : 'border-cl-glow/40 bg-cl-glow/10 text-cl-glow'}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border cursor-pointer bg-transparent ${severe ? 'border-cl-flash/50 bg-cl-flash/10 text-cl-flash-text' : 'border-cl-glow/40 bg-cl-glow/10 text-cl-glow-text'}`}
                 style={{ padding: '4px 10px 4px 8px', minHeight: 24 }}
             >
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />

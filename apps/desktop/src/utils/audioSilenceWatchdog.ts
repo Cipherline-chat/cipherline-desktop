@@ -71,6 +71,8 @@ export interface SilenceWatchdogSample {
     transportUp: boolean;
     /** The mic sender's counters, or null when they could not be read this tick. */
     wire: WireReading | null;
+    /** The audio upstream is deliberately paused (alone in the call, utils/aloneUpstream.ts): no bytes is expected. */
+    upstreamPaused?: boolean;
 }
 
 export interface SilenceWatchdogState {
@@ -94,8 +96,8 @@ export class SilenceWatchdog {
      *               clock in tests) — keeps this fully deterministic.
      */
     update(sample: SilenceWatchdogSample, nowMs: number): SilenceWatchdogState {
-        if (!sample.micEnabled || !sample.transportUp) {
-            // Muted or reconnecting is not a bug — start clean when it ends.
+        if (!sample.micEnabled || !sample.transportUp || sample.upstreamPaused) {
+            // Muted, reconnecting or paused while alone is not a bug — start clean when it ends.
             this.reset();
             return this.state();
         }

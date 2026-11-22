@@ -16,6 +16,8 @@
  * never "N hours since X", so a daylight-saving jump cannot move the window:
  * the hour label on the clock is what counts.
  */
+import { DARK_THEME } from '../theme/themes';
+import { themeColor } from '../theme/engine';
 
 /** The attribute set on <html> while it is night. */
 export const DEPTH_ATTR = 'data-depth';
@@ -169,8 +171,9 @@ export function moteSpecs(count = 6): MoteSpec[] {
  * so the Windows caption buttons blend in (the OS paints it, not CSS). The
  * night value mirrors styles/night-dive.css `--nd-bar`; a test keeps them equal.
  */
-export const ABYSS_DAY = '#0B0F1E';
+export const ABYSS_DAY = DARK_THEME.palette.abyss;
 export const ABYSS_NIGHT = '#05070F';
 export function titleBarColor(night: boolean): string {
-    return night ? ABYSS_NIGHT : ABYSS_DAY;
+    // Day: the active theme's abyss (the drag bar is bg-cl-abyss).
+    return night ? ABYSS_NIGHT : themeColor('abyss');
 }

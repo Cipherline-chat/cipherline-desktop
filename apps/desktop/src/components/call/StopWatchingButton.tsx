@@ -31,7 +31,7 @@ export const StopWatchingButton = ({ name, onStop, size = 12 }: StopWatchingButt
         onDoubleClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
         onMouseDown={e => e.stopPropagation()}
-        className="shrink-0 pointer-events-auto grid place-items-center w-5 h-5 rounded-md bg-cl-flash/20 text-cl-flash hover:bg-cl-flash hover:text-white active:bg-cl-flash-press transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+        className="shrink-0 pointer-events-auto grid place-items-center w-5 h-5 rounded-md bg-cl-flash/20 text-cl-flash-text hover:bg-cl-flash hover:text-white active:bg-cl-flash-press transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
     >
         <X style={{ width: size, height: size }} strokeWidth={3} aria-hidden />
     </button>

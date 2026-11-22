@@ -3,23 +3,38 @@
  * contains `{ type: 'server_invite', code }`.
  *
  * States:
- *   loading      — spinner while fetching preview
+ *   loading      — "Loading invite…" while fetching preview
  *   valid        — server card with icon, name, description, member count, Join button
  *   joined       — already a member → "✓ Already joined" badge + Go to Server button
- *   invalid      — expired / not found → greyed-out "Invite expired" card
- *   error        — unexpected API failure (auto-retried by useInvitePreview
- *                  before it ever gets here — see that hook)
+ *   invalid      — the server said not found / expired / used up → greyed-out
+ *                  "Invite expired" card. The ONLY state that says expired.
+ *   error        — couldn't load (rate limited, offline, 5xx — auto-retried by
+ *                  useInvitePreview before it gets here) → "Couldn't load" + Retry
+ *
+ * Every state that is not a server card shows the invite link itself. A bare
+ * invite link is hidden from the message text when the card renders
+ * (utils/formatting/inviteLinks.ts), and a `server_invite` message has no text
+ * at all, so for a message that is ONLY an invite the card is the whole
+ * message: a skeleton or a status line without the link left the sender
+ * looking at a row with nothing of what he sent in it, and he sent it again.
+ *
+ * The preview is not asked for until the card is near the viewport
+ * (useNearViewport), and every card shares one cached, rate-aware lookup
+ * (utils/invitePreviewCache.ts).
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import axios from 'axios';
 import { Users, ServerCrash, CheckCircle2, Clock, Ticket, RotateCw } from 'lucide-react';
 import { apiUrl } from '../../utils/apiPath';
 import { ServerIcon } from './ServerIcon';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInvitePreview } from '../../hooks/useInvitePreview';
+import { useNearViewport } from '../../hooks/useNearViewport';
 import type { ServerInfo } from '../../hooks/useServers';
 import { ClButton } from '../cl';
+import { copyText } from '../../utils/clipboard';
+import { useToast } from '../../contexts/ToastContext';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,21 +49,31 @@ interface Props {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoin }) => {
-    const { preview, state, reload } = useInvitePreview(code, token, servers);
+    const boxRef = useRef<HTMLDivElement>(null);
+    const near = useNearViewport(boxRef);
+    const { preview, state, reload } = useInvitePreview(code, token, servers, { enabled: near });
     const [joining, setJoining]   = useState(false);
     const [joinError, setJoinError] = useState<string | null>(null);
     const ctx = useContextMenu();
+    const toast = useToast();
 
     const inviteUrl = `https://cipherline.chat/invite/${code}`;
+    // The link as the sender wrote it (minus the scheme): shown in every state
+    // that is not a server card, so the message is never an empty box.
+    const linkLine = (
+        <p className="text-[11px] text-cl-faint mt-0.5 select-text truncate" title={inviteUrl} data-invite-link>
+            {inviteUrl.replace(/^https:\/\//, '')}
+        </p>
+    );
     const handleContextMenu = (e: React.MouseEvent) => {
         ctx.open(e, [
             {
                 label: 'Copy Invite Link',
                 onSelect: () => {
-                    navigator.clipboard.writeText(inviteUrl).catch(() => {
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
-                        (window as any).electronAPI?.writeClipboard?.(inviteUrl);
-                    });
+                    // The link is printed on the card (linkLine), so a failed copy is still recoverable.
+                    void copyText(inviteUrl).then(ok => toast.push(ok
+                        ? { kind: 'success', message: 'Invite link copied.' }
+                        : { kind: 'error', message: 'Could not copy. Select the link on the card and copy it yourself.' }));
                 },
             },
         ]);
@@ -109,11 +134,11 @@ export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoi
     const cardContent = (() => {
         if (state === 'loading') {
             return (
-                <div className="cl-invite-card cl-invite-card--flat">
+                <div className="cl-invite-card cl-invite-card--flat" aria-busy="true">
                     <div className="w-10 h-10 rounded-xl bg-white/[0.06] animate-pulse shrink-0" />
-                    <div className="flex-1 space-y-1.5">
-                        <div className="h-3 w-32 bg-white/[0.06] rounded animate-pulse" />
-                        <div className="h-2.5 w-20 bg-white/[0.04] rounded animate-pulse" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[13px] font-semibold text-cl-muted leading-tight">Loading invite…</p>
+                        {linkLine}
                     </div>
                 </div>
             );
@@ -125,35 +150,35 @@ export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoi
                     <span className="w-10 h-10 rounded-xl bg-white/[0.05] flex items-center justify-center shrink-0">
                         <ServerCrash size={18} className="text-cl-faint" />
                     </span>
-                    <div>
+                    <div className="min-w-0">
                         <p className="text-[13px] font-semibold text-cl-muted leading-tight">Invite expired</p>
                         <p className="text-[11px] text-cl-faint mt-0.5">This invite link is no longer valid.</p>
+                        {linkLine}
                     </div>
                 </div>
             );
         }
 
         if (state === 'error' || !preview) {
-            // useInvitePreview already retried a few times with backoff
-            // before landing here — this is only reached after those are
-            // exhausted, so a manual retry (rather than a dead end) is
-            // worth offering: it's very likely still a transient blip
-            // (throttle, a flaky connection), not a genuinely gone invite.
+            // Not a dead invite: we could not find out (rate limited, offline,
+            // a server error), and useInvitePreview already retried quietly.
+            // So it looks like a card that is still there, with a Retry.
             return (
-                <div className="cl-invite-card cl-invite-card--flat cl-invite-card--dead">
+                <div className="cl-invite-card cl-invite-card--flat">
                     <span className="w-10 h-10 rounded-xl bg-white/[0.05] flex items-center justify-center shrink-0">
-                        <ServerCrash size={18} className="text-cl-faint" />
+                        <Ticket size={18} className="text-cl-muted" />
                     </span>
-                    <div className="flex-1 flex items-center justify-between gap-2 min-w-0">
-                        <p className="text-[13px] font-semibold text-cl-faint leading-tight">Invite unavailable</p>
-                        <button
-                            type="button"
-                            onClick={reload}
-                            className="flex items-center gap-1 text-[11px] text-cl-faint hover:text-cl-text shrink-0"
-                        >
-                            <RotateCw size={11} /> Retry
-                        </button>
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[13px] font-semibold text-cl-muted leading-tight">Couldn’t load this invite</p>
+                        {linkLine}
                     </div>
+                    <button
+                        type="button"
+                        onClick={reload}
+                        className="flex items-center gap-1 text-[12px] font-semibold text-cl-muted hover:text-cl-text shrink-0 px-2 py-1 rounded-md hover:bg-white/[0.05]"
+                    >
+                        <RotateCw size={12} /> Retry
+                    </button>
                 </div>
             );
         }
@@ -239,7 +264,7 @@ export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoi
         <>
             {/* Wrap in a div so onContextMenu fires wherever the user right-clicks
                 the card — even over its border/padding area. */}
-            <div className="mt-1 select-none" onContextMenu={handleContextMenu}>
+            <div ref={boxRef} className="mt-1 select-none" onContextMenu={handleContextMenu} data-invite-state={state}>
                 {cardContent}
             </div>
             {ctx.menu}

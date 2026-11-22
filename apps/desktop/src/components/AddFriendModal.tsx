@@ -77,7 +77,7 @@ export const AddFriendModal: React.FC<AddFriendModalProps> = ({ onClose }) => {
                     subtitle="Send a request using their full tag."
                 />
                 <DialogBody>
-                    <DialogField label="Their tag" htmlFor="add-friend-tag" help={<>Looks like <b style={{ color: 'var(--cl-text, #F4F7FF)' }}>Username#1234</b></>}>
+                    <DialogField label="Their tag" htmlFor="add-friend-tag" help={<>Looks like <b style={{ color: 'var(--cl-text, var(--cl-text))' }}>Username#1234</b></>}>
                         <ClInput
                             id="add-friend-tag"
                             type="text"

@@ -125,7 +125,7 @@ export const UpgradePromptModal: React.FC<Props> = ({ open, reason, detail, onCl
                 <motion.div variants={rise} className="flex items-start gap-3 mb-5">
                     <motion.div
                         variants={pop}
-                        className="w-10 h-10 rounded-xl bg-cl-lume/10 border border-cl-lume/20 text-cl-lume flex items-center justify-center shrink-0"
+                        className="w-10 h-10 rounded-xl bg-cl-lume/10 border border-cl-lume/20 text-cl-lume-text flex items-center justify-center shrink-0"
                     >
                         <Icon size={18} />
                     </motion.div>
@@ -138,12 +138,12 @@ export const UpgradePromptModal: React.FC<Props> = ({ open, reason, detail, onCl
                 </motion.div>
 
                 <motion.div variants={perkCard} className="bg-cl-sink border border-white/[0.06] rounded-xl p-4 mb-5 space-y-2.5">
-                    <p className="text-[11px] font-semibold text-cl-lume tracking-wide uppercase m-0 mb-3">
+                    <p className="text-[11px] font-semibold text-cl-lume-text tracking-wide uppercase m-0 mb-3">
                         What you get with Pro
                     </p>
                     {PERKS.map((perk, i) => (
                         <motion.div key={i} variants={rise} className="flex items-center gap-2 text-sm text-cl-text">
-                            <Sparkles size={13} className="text-cl-lume shrink-0" />
+                            <Sparkles size={13} className="text-cl-lume-text shrink-0" />
                             <span>{perkContent(perk)}</span>
                         </motion.div>
                     ))}

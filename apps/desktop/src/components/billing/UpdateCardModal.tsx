@@ -31,7 +31,9 @@ import { API_BASE } from '../../constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { ClButton } from '../ClButton';
 import { ClModal } from '../cl';
-import { STRIPE_APPEARANCE, STRIPE_CARD_ONLY_ELEMENT_OPTIONS, STRIPE_FONTS } from './stripeAppearance';
+import { STRIPE_CARD_ONLY_ELEMENT_OPTIONS, STRIPE_FONTS } from './stripeAppearance';
+import { stripeAppearanceFor } from './stripeThemeAppearance';
+import { getTheme } from '../../theme/engine';
 
 export interface UpdateCardModalProps {
     open: boolean;
@@ -125,7 +127,7 @@ const CardForm: React.FC<{ onUpdated: () => void; onClose: () => void }> = ({ on
         <form onSubmit={submit} style={{ display: 'grid', gap: 16 }}>
             <PaymentElement options={STRIPE_CARD_ONLY_ELEMENT_OPTIONS} />
             {error && (
-                <p role="alert" style={{ margin: 0, fontSize: 13, color: 'var(--cl-flash)', fontWeight: 600 }}>
+                <p role="alert" style={{ margin: 0, fontSize: 13, color: 'var(--cl-flash-text)', fontWeight: 600 }}>
                     {error}
                 </p>
             )}
@@ -207,7 +209,7 @@ export const UpdateCardModal: React.FC<UpdateCardModalProps> = ({ open, onClose,
 
                 {loadError && (
                     <div style={{ display: 'grid', gap: 12 }}>
-                        <p role="alert" style={{ margin: 0, fontSize: 13, color: 'var(--cl-flash)', fontWeight: 600 }}>
+                        <p role="alert" style={{ margin: 0, fontSize: 13, color: 'var(--cl-flash-text)', fontWeight: 600 }}>
                             {loadError}
                         </p>
                         <ClButton variant="ghost" fullWidth onClick={onClose}>Close</ClButton>
@@ -221,7 +223,7 @@ export const UpdateCardModal: React.FC<UpdateCardModalProps> = ({ open, onClose,
                 {!loadError && clientSecret && stripePromise && (
                     <Elements
                         stripe={stripePromise}
-                        options={{ clientSecret, appearance: STRIPE_APPEARANCE, fonts: STRIPE_FONTS }}
+                        options={{ clientSecret, appearance: stripeAppearanceFor(getTheme()), fonts: STRIPE_FONTS }}
                     >
                         <CardForm onUpdated={onUpdated} onClose={onClose} />
                     </Elements>

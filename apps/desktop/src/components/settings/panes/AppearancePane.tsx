@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Monitor, Rocket, PanelBottomClose, Image as ImageIcon, Snowflake, Sparkles } from 'lucide-react';
+import { Monitor, Rocket, PanelBottomClose } from 'lucide-react';
 import { ClToggle } from '../../cl';
 import type { GifSettingsHook } from '../../../hooks/useGifSettings';
-import { useSeasonalEffects } from '../../../hooks/useSeasonalEffects';
-import { useAmbientMotion } from '../../../hooks/useAmbientMotion';
 import { BACKUP_RESTORED_EVENT } from '../../../services/backupRegistry';
 import { MessageStylesSettings } from './MessageStylesSettings';
+import { ThemePicker } from './ThemePicker';
 import {
     INITIAL_START_MINIMIZED, INITIAL_MINIMIZE_TO_TRAY, loginToggleLabel, loginToggleDesc,
     startMinimizedDesc, minimizeToTrayDesc, loginStateAfterSet, type LoginItemView,
@@ -19,9 +18,8 @@ interface AppearancePaneProps {
     gif: GifSettingsHook;
 }
 
-export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
-    const [seasonalEffects, setSeasonalEffects] = useSeasonalEffects();
-    const [ambientMotion, setAmbientMotion] = useAmbientMotion();
+// `gif` is still passed by SettingsScreen; GIF playback now lives in the Accessibility pane.
+export const AppearancePane: React.FC<AppearancePaneProps> = () => {
 
     const platform = window.electronAPI?.platform;
     // null = not read yet (toggle disabled meanwhile, so it can't flash or be
@@ -81,6 +79,7 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
 
     return (
         <>
+            <ThemePicker />
             {window.electronAPI && (
                 <div className="sd-card">
                     <h3>Startup &amp; window</h3>
@@ -100,50 +99,8 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
                 </div>
             )}
 
-            {/* Motion: GIFs, home ambience and the seasonal snow were three
-                cards; they are one question — how much moves on screen. */}
-            <div className="sd-card" data-labels="Seasonal ambience|GIF playback">
-                <div className="flex items-start justify-between gap-4">
-                    <div>
-                        <h3>Motion</h3>
-                        <p className="sd-sub">How much moves on screen. Your system’s reduced-motion setting always wins.</p>
-                    </div>
-                    {/* A live thumbnail of Home ambience: motes rise while it is on. */}
-                    <span className="sx-motes" data-on={ambientMotion ? 'true' : 'false'} aria-hidden="true">
-                        <i /><i /><i /><i /><i />
-                    </span>
-                </div>
-                <div className="sd-row" style={{ borderTop: 'none' }}>
-                    <span className={`sd-tile${gif.settings.autoPlayGifs ? '' : ' sd-tile--dim'}`}><ImageIcon size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Automatically play GIFs</b>
-                        <span>When off, GIFs freeze until you hover them — a play icon marks a paused GIF. They always pause when Cipherline loses focus.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={gif.settings.autoPlayGifs} onChange={v => gif.setAutoPlayGifs(v)} />
-                    </div>
-                </div>
-                <div className="sd-row">
-                    <span className={`sd-tile${ambientMotion ? '' : ' sd-tile--dim'}`}><Sparkles size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Home ambience</b>
-                        <span>Bioluminescent motes rise through the home screen, and small things breathe. Purely decorative — off freezes all of it, and it never shows if your system asks for reduced motion.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={ambientMotion} onChange={setAmbientMotion} />
-                    </div>
-                </div>
-                <div className="sd-row">
-                    <span className={`sd-tile${seasonalEffects ? '' : ' sd-tile--dim'}`}><Snowflake size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Marine snow</b>
-                        <span>Through December and the first week of January, the detritus that always drifts down here becomes visible. Off has no effect the rest of the year, and it never shows if your system asks for reduced motion.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={seasonalEffects} onChange={setSeasonalEffects} />
-                    </div>
-                </div>
-            </div>
+            {/* Motion settings live in Settings → Accessibility → Motion & effects
+                (owner 2026-11-21: no pointer card here). */}
 
             {/* Message styles: how other people's styled messages show, and
                 "My styles" (the card editor's saved library). */}

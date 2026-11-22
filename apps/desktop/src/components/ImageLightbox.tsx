@@ -159,7 +159,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
             <div
                 style={{
                     position: 'fixed', inset: 0, zIndex: 10002,
-                    background: 'rgba(0,0,0,0.92)',
+                    background: 'rgb(var(--cl-shade-rgb) / 0.92)',
                     animation: phase === 'out'
                         ? 'lb-bg-out 0.22s ease forwards'
                         : 'lb-bg-in  0.22s ease forwards',
@@ -228,7 +228,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
                         maxWidth:  zoomed ? undefined : '90vw',
                         maxHeight: zoomed ? undefined : '90vh',
                         borderRadius: zoomed ? 4 : 10,
-                        boxShadow: '0 20px 80px rgba(0,0,0,0.85)',
+                        boxShadow: '0 20px 80px rgb(var(--cl-shade-rgb) / 0.85)',
                         transform: `translate(${translate.x}px, ${translate.y}px) scale(${imgScale})`,
                         transformOrigin: 'center center',
                         transition: phase === 'idle' ? imgTransition : 'none',

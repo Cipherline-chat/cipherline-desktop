@@ -70,8 +70,9 @@ export const DialogNote: React.FC<{
     children: React.ReactNode;
     role?: 'note' | 'alert' | 'status';
     id?: string;
-}> = ({ tone = 'info', icon, children, role, id }) => (
-    <div id={id} className={['dlg-note', tone === 'info' ? '' : `dlg-note--${tone}`].filter(Boolean).join(' ')} role={role}>
+    'data-testid'?: string;
+}> = ({ tone = 'info', icon, children, role, id, 'data-testid': testId }) => (
+    <div id={id} data-testid={testId} className={['dlg-note', tone === 'info' ? '' : `dlg-note--${tone}`].filter(Boolean).join(' ')} role={role}>
         {icon}
         <div>{children}</div>
     </div>

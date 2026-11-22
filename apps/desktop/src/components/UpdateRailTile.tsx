@@ -100,7 +100,7 @@ export default function UpdateRailTile({ inCall }: { inCall: boolean }) {
                     justifyContent: 'center', padding: 0, color: iconColor, flex: 'none',
                     transition: 'color .2s, background .2s',
                 }}
-                onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = 'rgba(255,255,255,.06)'; }}
+                onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = 'rgb(var(--cl-bright-rgb) / .06)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
             >
                 {tile.percent !== null && (

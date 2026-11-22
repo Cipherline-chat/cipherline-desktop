@@ -57,7 +57,7 @@
   background:
     radial-gradient(160px 70px at 0 50%, color-mix(in srgb, var(--b) 11%, transparent), transparent),
     color-mix(in srgb, var(--b) 4%, var(--cl-deep));
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 6px 18px rgb(var(--cl-shade-rgb) / 0.28);
   color: var(--cl-text);
   font-family: var(--cl-font-body, 'Nunito', sans-serif);
   overflow: hidden;
@@ -132,7 +132,7 @@
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
-.cl-banner__x:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--cl-text); }
+.cl-banner__x:hover:not(:disabled) { background: rgb(var(--cl-bright-rgb) / 0.07); color: var(--cl-text); }
 .cl-banner__x:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; color: var(--cl-text); }
 .cl-banner__x:disabled { opacity: 0.4; cursor: default; }
 
@@ -189,7 +189,7 @@
   font: 700 11.5px var(--cl-font-body, 'Nunito', sans-serif);
   cursor: pointer;
 }
-.cl-banner-more:hover { color: var(--cl-text); background: rgba(255, 255, 255, 0.06); }
+.cl-banner-more:hover { color: var(--cl-text); background: rgb(var(--cl-bright-rgb) / 0.06); }
 .cl-banner-more:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
 
 /* Banners that must sit above whatever pane is open (renderer hang, device reset). */

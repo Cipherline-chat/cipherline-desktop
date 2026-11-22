@@ -8,7 +8,7 @@
 /* The rocket: a short bright streak climbing 22vh to the burst point. */
 .mo-nye-rocket {
   position: absolute; left: -2px; top: -18px; width: 4px; height: 36px; border-radius: 2px; opacity: 0;
-  background: linear-gradient(to top, rgba(255, 255, 255, 0), var(--c));
+  background: linear-gradient(to top, rgb(var(--cl-bright-rgb) / 0), var(--c));
   animation: mo-nye-rocket .8s cubic-bezier(.3, .5, .5, 1) both;
 }
 @keyframes mo-nye-rocket {
@@ -31,7 +31,7 @@
   100% { transform: rotate(var(--a)) translateX(158px) scaleX(.3); opacity: 0; }
 }
 .mo-nye-glit {
-  position: absolute; left: -2px; top: -2px; width: 4px; height: 4px; border-radius: 50%; background: #F4F7FF; opacity: 0;
+  position: absolute; left: -2px; top: -2px; width: 4px; height: 4px; border-radius: 50%; background: var(--cl-text); opacity: 0;
   animation: mo-nye-glit 2.3s cubic-bezier(.15, .7, .3, 1) both;
 }
 @keyframes mo-nye-glit {
@@ -42,12 +42,12 @@
 /* A soft glow at the burst, small and short (never a flash of the whole screen). */
 .mo-nye-flash {
   position: absolute; left: -45px; top: -45px; width: 90px; height: 90px; border-radius: 50%; opacity: 0;
-  background: radial-gradient(circle, var(--c), rgba(0, 0, 0, 0) 68%);
+  background: radial-gradient(circle, var(--c), rgb(var(--cl-shade-rgb) / 0) 68%);
   animation: mo-nye-flash .9s ease-out both;
 }
 @keyframes mo-nye-flash { 0% { transform: scale(.3); opacity: 0; } 18% { opacity: .5; } 100% { transform: scale(2); opacity: 0; } }
 .mo-nye .mo-nye-year {
-  position: absolute; left: 0; top: -92px; font-size: 76px; line-height: 1; color: var(--cl-glow, #FFC94D);
+  position: absolute; left: 0; top: -92px; font-size: 76px; line-height: 1; color: var(--cl-glow, var(--cl-glow-text));
   animation: mo-nye-year .8s cubic-bezier(.2, .8, .3, 1.2) 1.4s both;
 }
 @keyframes mo-nye-year { from { transform: translate(-50%, 24px) scale(.7); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }
@@ -55,4 +55,4 @@
   top: 0; font-size: 21px; padding: 10px 24px;
   animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.55s both;
 }
-.mo-nye-pill b { color: var(--cl-glow, #FFC94D); }
+.mo-nye-pill b { color: var(--cl-glow, var(--cl-glow-text)); }

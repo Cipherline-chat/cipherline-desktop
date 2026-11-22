@@ -1,7 +1,7 @@
 import React from 'react';
 import { GameControllerIcon } from './GameControllerIcon';
 import { MobileStatusGlyph } from './MobileStatusGlyph';
-import { type UserStatus, STATUS_CONFIG, statusDotFill } from '../utils/userStatusModel';
+import { type UserStatus, STATUS_CONFIG, statusDotColor, statusDotFill, statusShape } from '../utils/userStatusModel';
 
 /**
  * The status dot and its variants — kept free of StatusPicker's UI
@@ -14,12 +14,13 @@ export const StatusDot: React.FC<{ status: UserStatus; size?: number; onMobile?:
     return (
         <span
             className={status === 'online' ? 'status-online' : undefined}
+            data-status-shape={statusShape(status)}
             style={{
                 display: 'inline-block',
                 width: size,
                 height: size,
                 borderRadius: '50%',
-                background: statusDotFill(status, STATUS_CONFIG[status]?.color ?? '#6b7280'),
+                background: statusDotFill(status, statusDotColor(status)),
                 flexShrink: 0,
             }}
         />

@@ -18,7 +18,7 @@ export interface AttachmentInitiateFields {
     conversationId?: string;
     channelId?: string;
     serverId?: string;
-    purpose?: 'group_icon';
+    purpose?: 'group_icon' | 'role_icon';
 }
 
 export interface AttachmentInitiateBody {
@@ -27,7 +27,7 @@ export interface AttachmentInitiateBody {
     conversation_id?: string;
     channel_id?: string;
     server_id?: string;
-    purpose?: 'group_icon';
+    purpose?: 'group_icon' | 'role_icon';
 }
 
 export function buildAttachmentInitiateBody(f: AttachmentInitiateFields): AttachmentInitiateBody {

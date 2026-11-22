@@ -1,2 +1,4 @@
-export const prefersReducedMotion = (): boolean =>
-    typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+import { reducedMotionNow } from './a11y/motionPrefs';
+
+/** Effective reduced motion right now (in-app setting, else the OS). */
+export const prefersReducedMotion = (): boolean => reducedMotionNow();

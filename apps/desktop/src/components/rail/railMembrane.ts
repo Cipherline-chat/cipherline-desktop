@@ -28,8 +28,12 @@
  * approximation. Unconditionally stable: measured 0.0000px of overshoot from
  * 120fps down to 2fps, across a 2-second frame gap, and on a mid-flight
  * reversal (the one case an over-damped system can legitimately cross). There
- * is therefore no dt clamp; it needs none, and a clamp would only make a slow
- * frame animate in slow motion.
+ * is therefore no upper dt clamp; it needs none, and a clamp would only make a
+ * slow frame animate in slow motion.
+ *
+ * "Unconditionally" holds for POSITIVE time steps only. Stepped backwards the
+ * same exponentials grow, which is exactly what the loop's mixed clocks did on
+ * a long commit (see `frameStep`). `stepSpring` refuses a non-positive step.
  *
  * ── Geometry is MEASURED, never assumed ────────────────────────────────────
  *
@@ -97,6 +101,12 @@ export const initialMembrane = (at: number): MembraneState =>
 export function stepSpring(
     pos: number, vel: number, target: number, k: number, c: number, dt: number,
 ): [pos: number, vel: number] {
+    // The closed form is exact FORWARD in time only. Run it backwards and every
+    // decaying exponential becomes a growing one: a 40-50 ms negative step
+    // throws the trailing edge hundreds of px off the rail, and a long one
+    // overflows to ±3.4e38 (measured in the real app). Time never runs
+    // backwards for the indicator, so a non-positive (or NaN) step is no step.
+    if (!(dt > 0)) return [pos, vel];
     const u0 = pos - target;
     const disc = c * c - 4 * k;
     if (disc > 1e-9) {
@@ -121,6 +131,34 @@ export function stepSpring(
     const A = u0, B = vel - r * u0;
     const e = Math.exp(r * dt);
     return [target + (A + B * dt) * e, (B + r * (A + B * dt)) * e];
+}
+
+/**
+ * Seconds to advance on an animation frame stamped `now` (the rAF timestamp),
+ * given the previous frame's stamp, or null on the loop's first frame.
+ *
+ * THE "STRETCHED AND JUMPING AROUND" BUG (owner, 2026-11-22). The loop used to
+ * start its clock with `performance.now()` inside the effect and then subtract
+ * it from rAF timestamps. Those are two different clocks: a rAF timestamp is
+ * the time the frame BEGAN (its vsync), and when the click's commit was long —
+ * the first open of a server mounts its whole view — the frame the loop gets
+ * began BEFORE the effect ran. So the first step was negative: by the commit's
+ * length on a fast PC (tens of ms: the top edge thrown above the rail and the
+ * box held stretched over several tiles for half a second, then bouncing back),
+ * and by seconds on a slow one (the indicator vanished to ±3.4e38 px). In the
+ * real app, inside rAF callbacks performance.now() ran up to 7.2 s ahead of the
+ * frame stamp under load.
+ *
+ * Now the clock is the rAF stamps alone. The first frame advances one nominal
+ * frame, so the indicator starts moving on the first frame it is painted —
+ * and after a stall that is where the animation starts, rather than half-way
+ * through it — and a step is never negative.
+ */
+export const NOMINAL_FRAME_S = 1 / 60;
+export function frameStep(prev: number | null, now: number): number {
+    if (prev === null) return NOMINAL_FRAME_S;
+    const dt = (now - prev) / 1000;
+    return dt > 0 ? dt : 0;
 }
 
 /** Advance both edges and the bounce. Pure: no clock, no DOM, so it is testable. */

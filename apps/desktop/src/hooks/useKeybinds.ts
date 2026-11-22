@@ -1,6 +1,7 @@
 import secureLocalStore from '../utils/secureLocalStore';
 import { readGlobalShortcutStatus, type GlobalShortcutStatus } from '../utils/globalShortcutNotice';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { holdComboAsKeybind, holdTokenLabel } from '../utils/holdKeys';
 
 // ── Bindable actions ──────────────────────────────────────────────────────────
 
@@ -149,7 +150,12 @@ export function formatCombo(combo: KeyCombo): string {
                 case 'arrowdown': return '↓';
                 case 'arrowleft': return '←';
                 case 'arrowright': return '→';
-                default:      return part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1);
+                default: {
+                    // Hold keys (push-to-talk) are stored by physical key / mouse button: "numpad1", "mouse4", "altright".
+                    const hold = holdTokenLabel(part);
+                    if (hold) return hold;
+                    return part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1);
+                }
             }
         })
         .join(' + ');
@@ -328,10 +334,12 @@ export function armedAnnotationActions(
 ): Set<BindableAction> {
     const out = new Set<BindableAction>();
     if (!pending) return out;
+    // The push-to-talk key may be stored by physical key ("ctrl+shift+keyy"): compare in the keybinds' spelling.
+    const ptt = pushToTalkKey ? holdComboAsKeybind(pushToTalkKey) : null;
     for (const action of ANNOTATION_REQUEST_ACTIONS) {
         const combo = binds[action];
         if (!combo) continue;
-        if (pushToTalkKey && combo === pushToTalkKey) continue;
+        if (ptt && combo === ptt) continue;
         out.add(action);
     }
     return out;

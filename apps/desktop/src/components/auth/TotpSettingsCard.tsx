@@ -246,7 +246,7 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
                         style={{
                             width: 36, height: 36, borderRadius: 10,
                             background: status?.enabled ? 'rgba(37,224,200,0.1)' : 'var(--cl-raise)',
-                            border: `1px solid ${status?.enabled ? 'rgba(37,224,200,0.2)' : 'var(--cl-border)'}`,
+                            border: `1px solid ${status?.enabled ? 'rgb(var(--cl-lume-rgb) / 0.2)' : 'var(--cl-border)'}`,
                             color: status?.enabled ? 'var(--cl-lume)' : 'var(--cl-faint)',
                         }}
                     >

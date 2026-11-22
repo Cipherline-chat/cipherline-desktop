@@ -11,6 +11,7 @@
 import { detailSummary } from './richPresence';
 import { isNameAllowed } from '@cipherline/shared';
 import type { FriendStatusEntry } from './userStatusModel';
+import { formatClock } from './a11y/timeFormat';
 
 /** Mirrors the API's DTO limit (apps/api/src/gateway/custom-status.ts). */
 export const CUSTOM_STATUS_TEXT_MAX = 100;
@@ -237,6 +238,6 @@ export function describeExpiry(expiresAt: string | null | undefined, now: Date =
     if (!expiresAt) return null;
     const at = new Date(expiresAt);
     if (Number.isNaN(at.getTime()) || at.getTime() <= now.getTime()) return null;
-    const time = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const time = formatClock(at, []);
     return at.toDateString() === now.toDateString() ? `Clears at ${time}` : `Clears ${at.toLocaleDateString([], { weekday: 'short' })} at ${time}`;
 }

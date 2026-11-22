@@ -13,13 +13,20 @@ export const ShareNotice: React.FC<{
     onDismiss: () => void;
     children: React.ReactNode;
     className?: string;
-}> = ({ tone, onDismiss, children, className }) => (
+    /** One follow-up the notice offers (e.g. "Share the whole screen instead"), before the dismiss control. */
+    action?: { label: string; onClick: () => void };
+}> = ({ tone, onDismiss, children, className, action }) => (
     <ClNote
         tone={tone}
         className={className}
         data-testid="share-notice"
         action={
-            <ClButton icon variant="ghost" size="sm" onClick={onDismiss} className="clb--icon-xs" tooltip="Dismiss">✕</ClButton>
+            <div className="flex items-center gap-1">
+                {action ? (
+                    <ClButton variant="primary" size="sm" onClick={action.onClick}>{action.label}</ClButton>
+                ) : null}
+                <ClButton icon variant="ghost" size="sm" onClick={onDismiss} className="clb--icon-xs" tooltip="Dismiss">✕</ClButton>
+            </div>
         }
     >
         {children}

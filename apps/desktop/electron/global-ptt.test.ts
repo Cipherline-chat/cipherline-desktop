@@ -113,10 +113,10 @@ describe('GlobalHoldKeyWatcher', () => {
     });
 
     it('reports unsupported when the addon is old / missing, or the session has no path', async () => {
-        expect(await mk(null).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported' });
-        expect(await mk({}).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported' });
+        expect(await mk(null).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported', detail: 'no-watcher' });
+        expect(await mk({}).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported', detail: 'no-watcher' });
         const native: KeyStateNative = { watchKeys: vi.fn(() => true) };
-        expect(await mk(native, { kind: 'none', reason: 'xwayland' }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported' });
+        expect(await mk(native, { kind: 'none', reason: 'xwayland' }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'unsupported', detail: 'xwayland' });
         expect(native.watchKeys).not.toHaveBeenCalled();
     });
 
@@ -124,13 +124,13 @@ describe('GlobalHoldKeyWatcher', () => {
         const native: KeyStateNative = { watchKeys: vi.fn(() => true), stopWatchingKeys: vi.fn() };
         const { w } = mk(native);
         await w.setKey('push-to-talk', 'alt');
-        expect(await w.setKey('push-to-talk', 'ctrl+é')).toEqual({ ok: false, reason: 'bad-key' });
+        expect(await w.setKey('push-to-talk', 'ctrl+é')).toEqual({ ok: false, reason: 'bad-key', detail: 'unmapped-key' });
         expect(native.stopWatchingKeys).toHaveBeenCalledTimes(1);
     });
 
     it('a native failure (false or throw, e.g. no X display) is "failed", not a crash', async () => {
-        expect(await mk({ watchKeys: () => false }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'failed' });
-        expect(await mk({ watchKeys: () => { throw new Error('x'); } }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'failed' });
+        expect(await mk({ watchKeys: () => false }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'failed', detail: 'failed' });
+        expect(await mk({ watchKeys: () => { throw new Error('x'); } }).w.setKey('push-to-talk', 'alt')).toEqual({ ok: false, reason: 'failed', detail: 'failed' });
     });
 
     it('Wayland goes through the portal setter, never the addon', async () => {
@@ -146,6 +146,6 @@ describe('GlobalHoldKeyWatcher', () => {
 
     it('a portal that throws is "failed"', async () => {
         const { w } = mk(null, { kind: 'portal' }, async () => { throw new Error('bus'); });
-        expect(await w.setKey('push-to-talk', 'f13')).toEqual({ ok: false, reason: 'failed' });
+        expect(await w.setKey('push-to-talk', 'f13')).toEqual({ ok: false, reason: 'failed', detail: 'wayland-not-bound' });
     });
 });

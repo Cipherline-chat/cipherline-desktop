@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DARK_THEME, type PaletteToken } from '../theme/themes';
 
 /**
  * Night dive is BACKGROUND ONLY. These tests read the shipped stylesheets and
@@ -83,8 +84,13 @@ describe('night dive touches backgrounds only', () => {
     });
     it('the page-background token is re-pointed only inside the rail (for the rings cut out of its water)', () => {
         const decls = noComments(css);
-        const hits = [...decls.matchAll(/([^{}]*)\{[^}]*--cl-abyss\s*:/g)].map(m => m[1].trim());
-        expect(hits).toEqual(['[data-layout="drift"] .app-rail']);
+        const hits = [...decls.matchAll(/([^{}]*)\{[^}]*--cl-abyss\s*:/g)].map(m => m[1].trim().replace(/\s+/g, ' '));
+        // Dark's rail water, and every other theme handing the rail its own page colour back.
+        expect(hits).toEqual([
+            '[data-layout="drift"] .app-rail',
+            ':root:not([data-theme="dark"]) [data-layout="drift"] .app-rail, :root[data-custom-theme] [data-layout="drift"] .app-rail',
+        ]);
+        expect(decls).toMatch(/:root\[data-custom-theme\] \[data-layout="drift"\] \.app-rail \{\s*--cl-abyss: inherit;\s*\}/);
         expect(decls).not.toMatch(/:root\s*\{[^}]*--cl-abyss\s*:/);
     });
     it('registers nothing but its own --nd-* background properties', () => {
@@ -92,12 +98,20 @@ describe('night dive touches backgrounds only', () => {
         expect(all.length).toBeGreaterThan(8);
         for (const p of all) expect(p).toMatch(/^--nd-/);
     });
-    it('Tailwind colours are plain hex again (v1 routed every cl-* utility through var(), reverted)', () => {
+    // History: night dive v1 routed every cl-* utility through var(--cl-*) and re-pointed
+    // the element tokens at night; v2 reverted that to plain hex so night darkens
+    // backgrounds only. The theme engine (src/theme, claude/theme-engine) routes Tailwind
+    // through the separate `--cl-*-rgb` channel variables instead. Night dive never
+    // declares those, so a Tailwind class still paints its daylight value at night
+    // (including inside the rail, where --cl-abyss itself IS re-pointed).
+    it('Tailwind colours never follow night dive: they read --cl-*-rgb channels, which night-dive.css never declares', () => {
         const tw = readFileSync(join(SRC, '..', 'tailwind.config.js'), 'utf8');
-        const colors = tw.slice(tw.indexOf('colors: {'), tw.indexOf('fontFamily'));
-        expect(colors).not.toMatch(/var\(|tok\(/);
+        const colors = tw.slice(tw.indexOf('colors:'), tw.indexOf('fontFamily'));
+        expect(colors).not.toMatch(/var\(--cl-[a-z-]+\)|tok\(/);
+        expect(colors).toContain('rgb(var(--cl-${token}-rgb) / <alpha-value>)');
+        expect(noComments(css)).not.toMatch(/--cl-[a-z-]+-rgb\s*:/);
         for (const t of ['abyss', 'deep', 'surface', 'raise', 'border', 'lume', 'flash', 'text', 'muted', 'faint'])
-            expect(colors.match(new RegExp(`"cl-${t}":\\s*"(#[0-9A-Fa-f]{6})"`))![1].toUpperCase(), t).toBe(day(`--cl-${t}`).toUpperCase());
+            expect(DARK_THEME.palette[t as PaletteToken].toUpperCase(), t).toBe(day(`--cl-${t}`).toUpperCase());
     });
 });
 
@@ -112,7 +126,9 @@ describe('by day nothing changes', () => {
         expect(registered['--nd-sun']).toBe('1');
         const tint = read('styles/home-deck.css').match(/color-mix\(in oklab, var\(--cl-deep\) 94%, (#[0-9a-fA-F]{6})\)/)![1];
         expect(registered['--nd-home-tint'].toUpperCase()).toBe(tint.toUpperCase());
-        const stops = read('styles/settings-descent.css').match(/\.sd-sea-grad\{[^}]*linear-gradient\(180deg,\s*([^)]*)\)/)![1]
+        // settings-descent.css spells the middle stop as the abyss token (value-identical in Dark).
+        const stops = read('styles/settings-descent.css').match(/\.sd-sea-grad\{[^}]*linear-gradient\(180deg,\s*([^;]*)\);/)![1]
+            .replace(/var\(--cl-abyss\)/g, day('--cl-abyss'))
             .match(/#[0-9A-Fa-f]{6}/g)!;
         expect([0, 1, 2, 3, 4].map(i => registered[`--nd-sea-${i}`].toUpperCase())).toEqual(stops.map(s => s.toUpperCase()));
     });
@@ -126,7 +142,8 @@ describe('by day nothing changes', () => {
         expect(squash(mine)).toBe(squash(base));
     });
     it('the Settings water column it re-declares is settings-descent.css\'s, stop for stop', () => {
-        const base = read('styles/settings-descent.css').match(/\.sd-sea-grad\{[^}]*background:(linear-gradient\([^;]*\));/)![1];
+        const base = read('styles/settings-descent.css').match(/\.sd-sea-grad\{[^}]*background:(linear-gradient\([^;]*\));/)![1]
+            .replace(/var\(--cl-abyss\)/g, day('--cl-abyss'));
         const mine = css.match(/:root \.sd-sea-grad \{\s*background: (linear-gradient\([^;]*\));/)![1]
             .replace(/var\((--nd-sea-\d)\)/g, (_, p) => registered[p]);
         expect(squash(mine)).toBe(squash(base));
@@ -142,6 +159,55 @@ describe('by day nothing changes', () => {
         const drift = read('styles/layout-drift.css').match(/\.app-mainrow \{[^}]*background:\s*(radial-gradient\([^;]*?\)),\s*var\(--cl-abyss\);/)![1];
         const glow = css.match(/\.nds-dayglow \{[^}]*background: (radial-gradient\([^;]*\));/)![1];
         expect(squash(glow)).toBe(squash(drift));
+    });
+});
+
+describe('every theme except plain Dark paints these backgrounds from its own tokens', () => {
+    // 0.1.3-staging.257: the --nd-* properties start at Dark's navy and the
+    // rules painted from them by day in EVERY theme, so Light kept a navy title
+    // bar and chat feed behind its dark ink. The harnesses never loaded this
+    // file, so only the real app showed it.
+    const decls = noComments(css);
+    const NOT_DARK = [':root:not([data-theme="dark"])', ':root[data-custom-theme]'];
+    const rule = (target: string) => {
+        const m = [...decls.matchAll(/([^{}]+)\{([^}]*)\}/g)].find(r => {
+            const sel = r[1].replace(/\s+/g, ' ').trim();
+            return sel.includes(`${NOT_DARK[0]} ${target}`);
+        });
+        return m ? { sel: m[1].replace(/\s+/g, ' ').trim(), body: m[2] } : null;
+    };
+    it.each([
+        ['[data-layout="drift"] > .drag-region', /background-color: var\(--cl-abyss\)/],
+        ['.chat-pane-root', /background: linear-gradient\(180deg, var\(--cl-deep\) 0%, var\(--cl-abyss\) 100%\) !important/],
+        ['.friends-pane-root', /background-color: var\(--cl-abyss\)/],
+    ])('%s', (target, paint) => {
+        const r = rule(target);
+        expect(r, target).not.toBeNull();
+        for (const p of NOT_DARK) expect(r!.sel).toContain(`${p} ${target}`);
+        expect(r!.body).toMatch(paint);
+        expect(r!.body).not.toMatch(/--nd-/);
+    });
+    it('Home in the other dark-scheme themes is home-deck.css\'s atmosphere on tokens (light-scheme keeps its flat page)', () => {
+        const m = decls.match(/:root\[data-scheme="dark"\]:not\(\[data-theme="dark"\]\) \.hd-host,\s*:root\[data-scheme="dark"\]\[data-custom-theme\] \.hd-host \{([^}]*)\}/);
+        expect(m).not.toBeNull();
+        expect(m![1]).not.toMatch(/--nd-|#[0-9a-fA-F]{3,6}/);
+        expect(m![1]).toMatch(/background-color: var\(--cl-deep\)/);
+        expect(read('styles/home-deck.css')).toMatch(/:root\[data-scheme="light"\] \.hd-host \{ background: var\(--cl-abyss\); \}/);
+    });
+    it('none of these overrides can match plain Dark, and none touches an --nd-* property (no 5 s fade on a theme switch)', () => {
+        const block = decls.slice(decls.indexOf(':root:not([data-theme="dark"]) [data-layout="drift"] > .drag-region'), decls.indexOf(':root[data-depth="night"]'));
+        expect(block.length).toBeGreaterThan(200);
+        expect(block).not.toMatch(/--nd-[a-z0-9-]+\s*:/);
+        for (const sel of [...block.matchAll(/([^{}]+)\{/g)].map(m => m[1])) {
+            for (const part of sel.split(',')) expect(part.trim(), part).toMatch(/^:root(:not\(\[data-theme="dark"\]\)|\[data-custom-theme\]|\[data-scheme="dark"\](:not\(\[data-theme="dark"\]\)|\[data-custom-theme\]))/);
+        }
+    });
+    it('the theme harness loads every stylesheet the real renderer loads (so a harness can no longer hide a desktop-only rule)', () => {
+        const imports = (file: string) => [...readFileSync(file, 'utf8').matchAll(/^import '([^']+\.css)';/gm)].map(m => m[1].replace(/^(\.\.\/src\/|\.\/)/, ''));
+        const app = imports(join(SRC, 'main.tsx'));
+        const harness = imports(join(SRC, '..', 'harness', 'light-theme-main.tsx'));
+        expect(app.length).toBeGreaterThan(8);
+        for (const f of app) expect(harness, f).toContain(f);
     });
 });
 

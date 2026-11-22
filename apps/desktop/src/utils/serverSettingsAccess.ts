@@ -24,7 +24,7 @@ import { Permissions, hasPermission } from '@cipherline/shared';
  */
 
 export type ServerSettingsTab =
-    | 'overview' | 'storage' | 'roles' | 'members' | 'invites' | 'bans' | 'audit' | 'emojis';
+    | 'overview' | 'storage' | 'roles' | 'members' | 'invites' | 'bans' | 'audit' | 'emojis' | 'stickers';
 
 /**
  * Which tabs this permission set can act in.
@@ -63,6 +63,8 @@ export function serverSettingsTabVisibility(
         bans:     all || has(Permissions.BAN_MEMBERS),
         audit:    all || has(Permissions.VIEW_AUDIT_LOG),
         emojis:   all || has(Permissions.MANAGE_EMOJIS),
+        // Stickers share the emoji permission ("Manage emojis & stickers").
+        stickers: all || has(Permissions.MANAGE_EMOJIS),
     };
 }
 

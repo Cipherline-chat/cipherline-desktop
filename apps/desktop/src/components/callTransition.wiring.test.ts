@@ -44,7 +44,7 @@ describe('CallPane: a disconnect of a room being left is part of the transition'
         expect(i).toBeGreaterThan(-1);
         const body = pane.slice(i, i + 3200);
         expect(body).toContain('decideDisconnectHandling(reason, sessionId)');
-        expect(body).toContain('if (handling.teardown) onDisconnect();');
+        expect(body).toContain('if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));');
         // The old unconditional path is gone: no direct mapping + teardown that ignores a move.
         expect(body).not.toContain('mapDisconnectReasonToUserMessage(');
     });
@@ -159,8 +159,9 @@ describe('self-mute / self-deafen persist across a switch or a move (no hot mic)
 
     it('SidebarConference publishes the user\'s own intent while in a call', () => {
         expect(conf).toContain('selfCallIntent.set(deriveSelfIntent({');
-        // A moderator's server MUTE is passed as "forced", never as the user's choice (a server deafen does not touch the mic, so it is not part of it).
-        expect(conf).toContain('serverForcedMute: localServerMutedAudio,');
+        // A moderator's server MUTE is passed as "forced", never as the user's choice (a server deafen does not touch the mic, so it is not part of it) -
+        // unless the user ALSO muted themselves during it (utils/serverMuteGate.ts holds that choice).
+        expect(conf).toContain('serverForcedMute: localServerMutedAudio && !selfMutedChoice,');
     });
 
     it('a real leave clears it, so a join from nothing starts clean', () => {

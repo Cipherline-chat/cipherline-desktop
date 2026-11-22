@@ -1,0 +1,227 @@
+/* The running Discord import, centred in the title bar
+   (components/server/discordImport/ImportPill.tsx, mounted by DiscordImportHost).
+
+   Owner 2026-11-22: "this pill at the top could be a little bigger it can take
+   up all the vertical space in the top bar. just make it look better". The bar
+   is 34 px: the pill is 28 px with 3 px above and below.
+
+   The title bar is a drag region, with App.tsx's full-width drag strip
+   (fixed, z-index 9999) over it: like the wordmark, the pill opts out of
+   dragging and rises above the strip so it can be clicked. Only the pill:
+   the rest of the bar still drags the window. Centred, so it never meets the
+   wordmark (left on Windows / Linux, right on macOS) or the native window
+   buttons (right on Windows / Linux, left on macOS, ~138 px). Fixed: the title
+   bar is always the top 34 px of the window. The width cap keeps it inside
+   the middle of the bar at the 1000 px minimum window (1000 - 2 x 170 = 660).
+
+   States (data-tone / is-*): run (the lume fill grows inside the pill, a slow
+   shimmer runs across it), finishing (fill full, spinner), ok (done), danger
+   (finished with a failed channel, red; stays until retried or dismissed,
+   owner 2026-11-22), warn (stopped, or finished with lesser issues, amber). Reduce motion: no shimmer, no spin, no easing. */
+.cl-import-pill {
+  position: fixed;
+  left: 50%;
+  top: 3px;
+  transform: translateX(-50%);
+  z-index: 10000;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  min-width: 0;
+  max-width: min(480px, calc(100vw - 340px));
+  padding: 0 4px 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--cl-border-strong, var(--cl-border));
+  background: var(--cl-surface);
+  color: var(--cl-text);
+  font-family: var(--cl-font-body);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .2s ease, transform .12s ease;
+}
+
+/* ── The progress fill: a lume wash that grows from the left inside the pill,
+   deepening towards its leading edge, which fades out softly (a hard edge
+   would cut through the words at some percentages). ── */
+.cl-import-pill-track {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+.cl-import-pill-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, rgb(var(--cl-lume-rgb) / 0.1), rgb(var(--cl-lume-rgb) / 0.34));
+  -webkit-mask-image: linear-gradient(90deg, black calc(100% - 14px), transparent);
+  mask-image: linear-gradient(90deg, black calc(100% - 14px), transparent);
+  overflow: hidden;
+  transition: width .5s cubic-bezier(.2, .7, .2, 1);
+}
+/* A slow light sweep across the filled part while it runs. */
+.cl-import-pill-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 60%;
+  background: linear-gradient(90deg, transparent, rgb(var(--cl-lume-hi-rgb) / 0.32), transparent);
+  transform: translateX(-120%);
+  animation: cl-import-pill-shimmer 2.6s ease-in-out infinite;
+}
+@keyframes cl-import-pill-shimmer {
+  0% { transform: translateX(-120%); }
+  70%, 100% { transform: translateX(260%); }
+}
+.cl-import-pill.is-finishing .cl-import-pill-fill {
+  background: rgb(var(--cl-lume-rgb) / 0.22);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* ── Running: lume border + the theme's lume glow (soft drop shadow in Light). ── */
+.cl-import-pill.is-run,
+.cl-import-pill.is-finishing {
+  border-color: rgb(var(--cl-lume-rgb) / 0.55);
+  box-shadow: var(--cl-glow-lume);
+}
+
+/* ── The icon disc ── */
+.cl-import-pill-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  color: var(--cl-lume-text);
+  background: rgb(var(--cl-lume-rgb) / 0.16);
+}
+.cl-import-pill.is-ok .cl-import-pill-ico { color: var(--cl-ok-text); background: rgb(var(--cl-ok-rgb) / 0.16); }
+.cl-import-pill.is-warn .cl-import-pill-ico { color: var(--cl-glow-text); background: rgb(var(--cl-glow-rgb) / 0.18); }
+.cl-import-pill.is-danger .cl-import-pill-ico { color: var(--cl-danger-text); background: rgb(var(--cl-danger-rgb) / 0.18); }
+.cl-import-pill-spin { animation: cl-import-pill-spin 1s linear infinite; }
+@keyframes cl-import-pill-spin { to { transform: rotate(360deg); } }
+
+/* ── The words: lead (muted) · NAME (display font, truncates) · detail (muted) ── */
+.cl-import-pill-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.cl-import-pill-lead,
+.cl-import-pill-detail {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--cl-muted);
+}
+.cl-import-pill-name {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--cl-font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .005em;
+  color: var(--cl-text);
+}
+
+/* ── The right-hand end ── */
+.cl-import-pill-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+/* 17% — tabular mono, so the pill does not twitch as the number changes. */
+.cl-import-pill-tail.is-percent {
+  min-width: 44px;
+  justify-content: flex-end;
+  padding: 0 8px 0 2px;
+  font-family: var(--cl-font-mono);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--cl-lume-text);
+}
+.cl-import-pill-tail.is-status {
+  padding: 0 9px 0 2px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--cl-lume-text);
+}
+/* See report / Retry / Try again: an inner chip in the state's colour. */
+.cl-import-pill-tail.is-action {
+  color: var(--cl-lume-text);
+  background: rgb(var(--cl-lume-rgb) / 0.14);
+  transition: background-color .15s ease;
+}
+.cl-import-pill.is-ok .cl-import-pill-tail.is-action { color: var(--cl-ok-text); background: rgb(var(--cl-ok-rgb) / 0.14); }
+.cl-import-pill.is-warn .cl-import-pill-tail.is-action { color: var(--cl-glow-text); background: rgb(var(--cl-glow-rgb) / 0.16); }
+.cl-import-pill.is-danger .cl-import-pill-tail.is-action { color: var(--cl-danger-text); background: rgb(var(--cl-danger-rgb) / 0.16); }
+
+/* ── Done / stopped: the border takes the state's colour. ── */
+.cl-import-pill.is-ok { border-color: rgb(var(--cl-ok-rgb) / 0.5); }
+.cl-import-pill.is-warn {
+  border-color: rgb(var(--cl-glow-rgb) / 0.6);
+  background: linear-gradient(rgb(var(--cl-glow-rgb) / 0.08), rgb(var(--cl-glow-rgb) / 0.08)), var(--cl-surface);
+}
+.cl-import-pill.is-danger {
+  border-color: rgb(var(--cl-danger-rgb) / 0.6);
+  background: linear-gradient(rgb(var(--cl-danger-rgb) / 0.08), rgb(var(--cl-danger-rgb) / 0.08)), var(--cl-surface);
+}
+
+/* ── Hover / pressed / keyboard focus ── */
+.cl-import-pill:hover { background-color: var(--cl-raise); }
+.cl-import-pill.is-warn:hover { background: linear-gradient(rgb(var(--cl-glow-rgb) / 0.14), rgb(var(--cl-glow-rgb) / 0.14)), var(--cl-raise); }
+.cl-import-pill.is-danger:hover { background: linear-gradient(rgb(var(--cl-danger-rgb) / 0.14), rgb(var(--cl-danger-rgb) / 0.14)), var(--cl-raise); }
+.cl-import-pill.is-run:hover,
+.cl-import-pill.is-finishing:hover { border-color: rgb(var(--cl-lume-rgb) / 0.95); box-shadow: var(--cl-glow-lume-hot); }
+.cl-import-pill.is-ok:hover { border-color: rgb(var(--cl-ok-rgb) / 0.85); }
+.cl-import-pill.is-warn:hover { border-color: rgb(var(--cl-glow-rgb) / 0.9); }
+.cl-import-pill.is-danger:hover { border-color: rgb(var(--cl-danger-rgb) / 0.9); }
+.cl-import-pill:hover .cl-import-pill-fill { background: linear-gradient(90deg, rgb(var(--cl-lume-rgb) / 0.16), rgb(var(--cl-lume-rgb) / 0.44)); }
+.cl-import-pill.is-finishing:hover .cl-import-pill-fill { background: rgb(var(--cl-lume-rgb) / 0.3); }
+.cl-import-pill:hover .cl-import-pill-tail.is-action { background: rgb(var(--cl-lume-rgb) / 0.24); }
+.cl-import-pill.is-ok:hover .cl-import-pill-tail.is-action { background: rgb(var(--cl-ok-rgb) / 0.24); }
+.cl-import-pill.is-warn:hover .cl-import-pill-tail.is-action { background: rgb(var(--cl-glow-rgb) / 0.26); }
+.cl-import-pill.is-danger:hover .cl-import-pill-tail.is-action { background: rgb(var(--cl-danger-rgb) / 0.26); }
+.cl-import-pill:hover .cl-import-pill-name { color: var(--cl-bright, var(--cl-text)); }
+.cl-import-pill:active { transform: translateX(-50%) scale(.97); }
+.cl-import-pill:focus-visible { outline: 2px solid var(--cl-lume-ui, var(--cl-lume)); outline-offset: 2px; }
+.cl-import-pill.is-warn:focus-visible { outline-color: var(--cl-glow-text); }
+.cl-import-pill.is-danger:focus-visible { outline-color: var(--cl-danger-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-import-pill, .cl-import-pill-fill, .cl-import-pill-tail { transition: none; }
+  .cl-import-pill-fill::after { animation: none; display: none; }
+  .cl-import-pill-spin { animation: none; }
+  .cl-import-pill:active { transform: translateX(-50%); }
+}
+
+/* High contrast: solid state borders (no translucent hairlines), full-strength words. */
+:root[data-contrast="high"] .cl-import-pill { border-width: 2px; }
+:root[data-contrast="high"] .cl-import-pill.is-run,
+:root[data-contrast="high"] .cl-import-pill.is-finishing { border-color: var(--cl-lume-ui, var(--cl-lume)); }
+:root[data-contrast="high"] .cl-import-pill.is-ok { border-color: var(--cl-ok-text); }
+:root[data-contrast="high"] .cl-import-pill.is-warn { border-color: var(--cl-glow-text); }
+:root[data-contrast="high"] .cl-import-pill.is-danger { border-color: var(--cl-danger-text); }
+:root[data-contrast="high"] .cl-import-pill-lead,
+:root[data-contrast="high"] .cl-import-pill-detail { color: var(--cl-text); }

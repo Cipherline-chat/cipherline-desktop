@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { ClButton } from '../components/cl';
+import { readToastPref, toastDurationMs } from '../utils/a11y/toastDuration';
 import { TOAST_RESUME_MIN_MS, onToastHold, toastsHeld } from '../utils/toastHold';
 
 export type ToastKind = 'error' | 'warning' | 'info' | 'success';
@@ -44,10 +45,10 @@ export function useToast(): ToastContextValue {
 }
 
 const KIND_STYLES: Record<ToastKind, { ring: string; bar: string; icon: React.JSX.Element }> = {
-    error:   { ring: 'ring-cl-flash/30',   bar: 'bg-cl-flash',   icon: <AlertCircle   size={18} className="text-cl-flash" /> },
-    warning: { ring: 'ring-cl-glow/30',    bar: 'bg-cl-glow',    icon: <AlertTriangle size={18} className="text-cl-glow" /> },
-    info:    { ring: 'ring-cl-lume/30',    bar: 'bg-cl-lume',    icon: <Info          size={18} className="text-cl-lume" /> },
-    success: { ring: 'ring-cl-ok/30',      bar: 'bg-cl-ok',      icon: <CheckCircle   size={18} className="text-cl-ok" /> },
+    error:   { ring: 'ring-cl-flash/30',   bar: 'bg-cl-flash',   icon: <AlertCircle   size={18} className="text-cl-flash-text" /> },
+    warning: { ring: 'ring-cl-glow/30',    bar: 'bg-cl-glow',    icon: <AlertTriangle size={18} className="text-cl-glow-text" /> },
+    info:    { ring: 'ring-cl-lume/30',    bar: 'bg-cl-lume',    icon: <Info          size={18} className="text-cl-lume-text" /> },
+    success: { ring: 'ring-cl-ok/30',      bar: 'bg-cl-ok',      icon: <CheckCircle   size={18} className="text-cl-ok-text" /> },
 };
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -92,7 +93,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             icon: input.icon,
         };
         setToasts(prev => [...prev, toast]);
-        const dur = input.durationMs ?? 4500;
+        // Settings > Accessibility > Toast duration (Normal / Long / Until I close them).
+        const dur = toastDurationMs(input.durationMs ?? 4500, readToastPref());
         if (dur > 0) {
             const t: ToastTimer = { left: dur, startedAt: 0, handle: null };
             timers.current.set(id, t);

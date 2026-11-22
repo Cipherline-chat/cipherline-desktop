@@ -93,6 +93,10 @@ export interface ChannelActionOptions {
 
 /** Whether `action` (an edit or a delete) may change `target`. */
 export function channelActionAllowed(target: ChannelRow, action: ChannelRow, kind: 'edit' | 'delete', opts: ChannelActionOptions = {}): boolean {
+    // Imported history is never edited (plan B4.1): its real sender is the
+    // importer's device, so an "edit" would rewrite someone else's words under
+    // their name. The server refuses the edit; this is the reader's half.
+    if (kind === 'edit' && (target as { import_mark?: unknown }).import_mark) return false;
     if (sameChannelAuthor(target, action)) return true;
     return kind === 'delete' && !!opts.moderatorDeleteTargets?.has(target.id);
 }

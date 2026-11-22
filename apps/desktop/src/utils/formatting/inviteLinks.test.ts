@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { inviteCodeFromUrl, stripBareInviteLinks as strip } from './inviteLinks';
+import { inviteCodeFromUrl, stripBareInviteLinks as strip, stripBareCardLinks as stripCards } from './inviteLinks';
+import { buildThemeLink } from '../../theme/themeLink';
+import { CUSTOM_THEME_PRESETS } from '../../theme/customPresets';
 
 const I = 'https://cipherline.chat/invite/abc123';
 
@@ -123,3 +125,28 @@ describe('stripBareInviteLinks', () => {
         expect(strip(t)).toBe(strip(t));
     });
 });
+
+describe('stripBareCardLinks: theme links follow the invite rule', () => {
+    const T = buildThemeLink(CUSTOM_THEME_PRESETS.find((p) => p.key === 'ocean')!.def);
+    it('a bare theme link that gets a card is hidden; the note around it stays', () => {
+        expect(stripCards(T)).toBe('');
+        expect(stripCards(`try my theme\n${T}`)).toBe('try my theme');
+        expect(stripCards(`look ${T} nice`)).toBe('look nice');
+        expect(stripCards(`invite https://cipherline.chat/invite/abc123 and ${T}`)).toBe('invite and');
+    });
+    it('a hyperlinked (masked) theme link, code, <url> and spoilers keep their text', () => {
+        for (const t of [`[my theme](${T})`, `\`${T}\``, `<${T}>`, `||${T}||`]) expect(stripCards(t)).toBe(t);
+    });
+    it('a theme link beyond the 3-embed cap keeps its text', () => {
+        const u = (n: number) => `https://example.com/page${n}`;
+        const t = `${u(1)} ${u(2)} ${u(3)} ${T}`;
+        expect(stripCards(t)).toBe(t);
+    });
+    it('the website page without a fragment is an ordinary link', () => {
+        expect(stripCards('see https://cipherline.chat/theme')).toBe('see https://cipherline.chat/theme');
+    });
+    it('the old name still strips invites', () => {
+        expect(strip).toBe(stripCards);
+    });
+});
+

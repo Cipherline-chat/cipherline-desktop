@@ -34,7 +34,7 @@ const Bar: React.FC<{ row: ProgressRow; name: string }> = ({ row, name }) => {
             aria-valuenow={indeterminate || row.stage === 'waiting' ? undefined : (row.pct ?? undefined)}
             aria-valuetext={rowStatusText(row)}
             className="relative h-1.5 rounded-full overflow-hidden"
-            style={{ background: 'rgba(255,255,255,.07)' }}
+            style={{ background: 'rgb(var(--cl-bright-rgb) / .07)' }}
         >
             {indeterminate ? (
                 <motion.div
@@ -67,7 +67,7 @@ export const BackupProgressBars: React.FC<{ rows: ProgressRows }> = ({ rows }) =
     return (
         <div
             className="rounded-xl px-3.5 py-3 space-y-3"
-            style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}
+            style={{ border: '1px solid var(--cl-border)', background: 'rgb(var(--cl-shade-rgb) / .15)' }}
             aria-live="polite"
         >
             {shown.map(l => {

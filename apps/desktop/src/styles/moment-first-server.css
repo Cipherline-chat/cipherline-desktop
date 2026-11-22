@@ -24,7 +24,7 @@
 }
 .mo-fs-flag { position: absolute; left: 172px; top: -52px; width: 70px; height: 120px; }
 .mo-fs-pole {
-  position: absolute; left: 0; top: 0; width: 5px; height: 112px; border-radius: 3px; background: #F4F7FF;
+  position: absolute; left: 0; top: 0; width: 5px; height: 112px; border-radius: 3px; background: var(--cl-text);
   transform-origin: 50% 100%; animation: mo-fs-grow .4s cubic-bezier(.2, .8, .3, 1) 1.95s both;
 }
 @keyframes mo-fs-grow { from { transform: scaleY(0); } to { transform: none; } }

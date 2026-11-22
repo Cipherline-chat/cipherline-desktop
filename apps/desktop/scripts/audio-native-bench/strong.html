@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Strong worker bench</title>
+<base href="/">
+<body>Strong worker bench (served by vite: see README.md)
+<script type="module">
+// The REAL worklet, in-page engine, page glue and worker, as the app loads them; page.js drives them (window.__bench).
+import worklet from '/src/audio/clAudioWorklet.js?raw';
+import * as wasm from '/src/audio/engine/clAudioWasmBase64.ts';
+import { openNativePort, nativeEngineAvailable, nativeEngineStatus, onNativeEngineExit, closeNativeEngine } from '/src/utils/clAudioNative.ts';
+const b64 = Object.values(wasm).find((v) => typeof v === 'string' && v.length > 100000);
+window.__assets = { worklet, wasmB64: b64 };
+window.__clNative = { openNativePort, nativeEngineAvailable, nativeEngineStatus, onNativeEngineExit, closeNativeEngine };
+const s = document.createElement('script'); s.src = '/scripts/audio-native-bench/page.js'; s.onload = () => { window.__benchReady = true; }; document.body.appendChild(s);
+</script>

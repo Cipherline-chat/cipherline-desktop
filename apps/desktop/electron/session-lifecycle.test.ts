@@ -403,3 +403,35 @@ describe('a bare net::ERR_* unhandled rejection is not a crash', () => {
         expect(crashRecordFor({ source: 'main-exception', thrown: new Error('net::ERR_HTTP2_PROTOCOL_ERROR'), origin: 'uncaughtException' }, false, ctx)).toMatchObject({ kind: 'main_exception' });
     });
 });
+
+// ── Restartable Utility services: report d70cedf5 (UtilWin, 0.1.1) ──────────
+
+describe('a crashed non-essential Utility service is logged, not prompted', () => {
+    const gone = (type: string, serviceName: string | undefined, reason = 'crashed'): CrashEvent =>
+        ({ source: 'child-process-gone', details: { type, reason, exitCode: -805306369, ...(serviceName ? { serviceName } : {}) } });
+
+    it.each([
+        ['chrome.mojom.UtilWin'],
+        ['Windows Utility'],
+        ['data_decoder.mojom.DataDecoderService'],
+        ['proxy_resolver.mojom.ProxyResolverFactory'],
+    ])('Utility %s crashing gives no record (the exact d70cedf5 payload for UtilWin)', (svc) => {
+        expect(crashRecordFor(gone('Utility', svc), false, ctx)).toBeNull();
+    });
+
+    it.each([
+        ['GPU', undefined],
+        ['Utility', 'network.mojom.NetworkService'],
+        ['Utility', 'audio.mojom.AudioService'],
+        ['Utility', 'video_capture.mojom.VideoCaptureService'],
+        ['Utility', undefined],
+        ['Utility', 'some.future.Service'],
+        ['Zygote', 'chrome.mojom.UtilWin'],
+    ])('POSITIVE CONTROL: %s %s crashing is still a record', (type, svc) => {
+        expect(crashRecordFor(gone(type, svc), false, ctx)).toMatchObject({ kind: 'child_process_gone' });
+    });
+
+    it('a renderer crash is still a record', () => {
+        expect(crashRecordFor({ source: 'render-process-gone', details: { reason: 'crashed', exitCode: 1 } }, false, ctx)).toMatchObject({ kind: 'renderer_gone' });
+    });
+});

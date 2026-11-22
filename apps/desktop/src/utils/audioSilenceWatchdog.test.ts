@@ -92,6 +92,15 @@ describe('SilenceWatchdog: no verdict (never an outage)', () => {
         expect(drive(wd, s, 30, 0, null, { transportUp: false }).tripped).toBe(false);
     });
 
+    it('upstream paused while alone (aloneUpstream.ts): a flat sender is expected, not an outage; resuming starts clean', () => {
+        const wd = new SilenceWatchdog(); const s = new FakeSender();
+        drive(wd, s, 3, 4000, LIVE_RMS);
+        expect(drive(wd, s, 60, 0, null, { upstreamPaused: true }).tripped).toBe(false);
+        expect(drive(wd, s, 3, 4000, LIVE_RMS).tripped).toBe(false);
+        // positive control: the same flat stretch NOT marked paused trips.
+        expect(drive(wd, s, 6, 0, null).tripped).toBe(true);
+    });
+
     it('counters unreadable (getStats threw / no sender yet): no verdict, however long', () => {
         const wd = new SilenceWatchdog();
         let st = wd.state();

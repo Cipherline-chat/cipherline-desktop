@@ -41,7 +41,7 @@ export const AnnotationGrantBadge: React.FC<AnnotationGrantBadgeProps> = ({ iden
             role="img"
             aria-label="Can annotate shared video"
             title="Can draw on shared video"
-            className={`inline-flex shrink-0 items-center text-cl-lume ${className ?? ''}`}
+            className={`inline-flex shrink-0 items-center text-cl-lume-text ${className ?? ''}`}
         >
             <Pencil size={size} aria-hidden="true" />
         </span>

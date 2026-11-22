@@ -143,11 +143,11 @@ export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencrypte
             <div className="shrink-0 px-2 pt-2 pb-1">
                 <div
                     className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-cl-raise border"
-                    style={{ borderColor: 'rgba(255,255,255,.08)' }}
+                    style={{ borderColor: 'rgb(var(--cl-bright-rgb) / .08)' }}
                     role="status"
                     aria-live="polite"
                 >
-                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: 'var(--cl-lume)' }} />
+                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: 'var(--cl-lume-text)' }} />
                     <span className="text-[11.5px] text-white/70">
                         {channelName ? 'Setting up encryption…' : 'Securing call…'}
                     </span>
@@ -175,12 +175,12 @@ export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencrypte
         <div className="shrink-0 px-2 pt-2 pb-1">
             <div
                 className="rounded-xl border p-2.5 bg-cl-raise"
-                style={{ borderColor: 'rgba(255,201,77,.28)' }}
+                style={{ borderColor: 'rgb(var(--cl-glow-rgb) / .28)' }}
                 role="status"
                 aria-live="polite"
             >
                 <div className="flex items-center gap-2 mb-1">
-                    <ShieldAlert className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--cl-glow)' }} />
+                    <ShieldAlert className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--cl-glow-text)' }} />
                     <span className="text-[12px] font-semibold text-cl-text">Still waiting for encryption keys</span>
                 </div>
                 {/* Two different waits, two different explanations. A Calls

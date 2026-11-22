@@ -100,7 +100,7 @@ export const GiftsSection: React.FC = () => {
             <div className="sd-row" key={g.gift_id} data-testid="gift-row">
                 <span className="gft-row-ico" aria-hidden>
                     {g.status === 'redeemed'
-                        ? <Crown size={15} style={{ color: 'var(--cl-glow)' }} />
+                        ? <Crown size={15} style={{ color: 'var(--cl-glow-text)' }} />
                         : <Gift size={15} style={{ color: g.status === 'paid' ? 'var(--cl-lume)' : 'var(--cl-faint)' }} />}
                 </span>
                 <div className="sd-rl">
@@ -147,7 +147,7 @@ export const GiftsSection: React.FC = () => {
 
             {until && (
                 <div className="gft-until" data-testid="gift-pro-until">
-                    <Crown size={22} style={{ color: 'var(--cl-glow)', flex: 'none' }} aria-hidden />
+                    <Crown size={22} style={{ color: 'var(--cl-glow-text)', flex: 'none' }} aria-hidden />
                     <div>
                         <b>{until}</b>
                         <span>A friend gave you Pro. Enjoy video, screen share and big uploads.</span>
@@ -171,7 +171,7 @@ export const GiftsSection: React.FC = () => {
                 <div className="gft-empty">No gifts yet. Gifts you send and receive show up here.</div>
             ) : (
                 <>
-                    {error && <p className="sd-sub" role="alert" style={{ margin: '12px 0 0', color: 'var(--cl-flash)' }}>{error}</p>}
+                    {error && <p className="sd-sub" role="alert" style={{ margin: '12px 0 0', color: 'var(--cl-flash-text)' }}>{error}</p>}
                     {sent.length > 0 && (
                         <>
                             <div className="gft-list-h">Sent</div>

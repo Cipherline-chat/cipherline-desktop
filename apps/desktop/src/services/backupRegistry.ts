@@ -58,6 +58,7 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_notif_prefs_{uid}',          match: 'exact',  include: true,  why: 'Per-conversation mute / notification overrides' },
     { pattern: 'cipherline_server_notif_prefs_{uid}',   match: 'exact',  include: true,  why: 'Per-server notification overrides' },
     { pattern: 'cipherline_channel_notif_prefs_{uid}',  match: 'exact',  include: true,  why: 'Per-channel notification overrides' },
+    { pattern: 'cipherline_mutes_{uid}',                match: 'exact',  include: true,  why: 'Mutes of channels, categories, servers, DMs and group chats (utils/muteSync.ts, v2: stamped entries + tombstones; also synced live through the `mutes` slot); lapsed entries become tombstones on read' },
     { pattern: 'cipherline_home_pins_{uid}',            match: 'exact',  include: true,  why: 'Home-screen pins' },
     // Voice & Video settings remembered per microphone / speaker
     // (utils/audioDeviceProfiles.ts). Included: profiles are keyed by the
@@ -104,10 +105,24 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_screenlock_settings',        match: 'exact',  include: true,  why: 'Screen-lock PIN verifier (user-set)' },
     { pattern: 'cipherline_gif_settings',               match: 'exact',  include: true,  why: 'GIF picker prefs incl. the KLIPY opt-in (a preference, not media)' },
     { pattern: 'cipherline_ambient_motion',             match: 'exact',  include: true,  why: 'Appearance' },
+    { pattern: 'cipherline_motion_prefs',               match: 'exact',  include: true,  why: 'Accessibility → Motion & effects: reduce motion, animated images, celebrations (portable preferences)' },
     { pattern: 'cipherline_message_styles_mode',        match: 'exact',  include: true,  why: 'Appearance: Message styles (show all / without animation / plain)' },
     { pattern: 'cipherline_card_styles_{uid}',          match: 'exact',  include: true,  why: 'Message styles: "My styles" library of named card styles (re-validated on read)' },
     { pattern: 'cipherline_card_styles_meta_{uid}',     match: 'exact',  include: true,  why: 'Message styles sync stamps (per-style created/at + delete tombstones) so a restore keeps delete history; re-stamped on restore' },
+    { pattern: 'cipherline_custom_themes_{uid}',        match: 'exact',  include: true,  why: 'Custom themes: the library of named custom themes (colours only, data not CSS; re-validated + readability-guarded on read)' },
+    { pattern: 'cipherline_custom_themes_meta_{uid}',   match: 'exact',  include: true,  why: 'Custom themes sync stamps (per-theme created/at + delete tombstones) so a restore keeps delete history; re-stamped on restore' },
+    { pattern: 'cipherline_active_theme_{uid}',         match: 'exact',  include: true,  why: 'Which theme this device had applied when the backup was made (builtin id, or custom id + a validated snapshot) so a restore re-applies it ON THAT DEVICE ONLY; a device-choice mirror, never part of the `themes` sync slot (re-validated on read)' },
     { pattern: 'cipherline_seasonal_effects',           match: 'exact',  include: true,  why: 'Appearance' },
+    { pattern: 'cipherline_msg_text_px',                match: 'exact',  include: true,  why: 'Accessibility: message text size (validated step on read)' },
+    { pattern: 'cipherline_a11y_density', match: 'exact',  include: true,  why: 'Accessibility: message spacing (Cozy / Compact) (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_group_gap', match: 'exact',  include: true,  why: 'Accessibility: space between message groups (0-24 px) (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_font', match: 'exact',  include: true,  why: 'Accessibility: font choice (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_leading', match: 'exact',  include: true,  why: 'Accessibility: message line spacing (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_tracking', match: 'exact',  include: true,  why: 'Accessibility: message letter spacing (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_focus', match: 'exact',  include: true,  why: 'Accessibility: always show the focus outline (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_links', match: 'exact',  include: true,  why: 'Accessibility: underline links (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_time', match: 'exact',  include: true,  why: 'Accessibility: time format (Automatic / 12 / 24-hour) (validated on read; portable)' },
+    { pattern: 'cipherline_a11y_toast', match: 'exact',  include: true,  why: 'Accessibility: pop-up duration (validated on read; portable)' },
     { pattern: 'cipherline_left_sidebar_ratio',         match: 'exact',  include: true,  why: 'Layout' },
     { pattern: 'cipherline_right_sidebar_ratio',        match: 'exact',  include: true,  why: 'Layout' },
     { pattern: 'cipherline_call_banner_ratio',          match: 'exact',  include: true,  why: 'Layout' },
@@ -147,6 +162,7 @@ export const KV_RULES: KvRule[] = [
     // The codec choice describes THIS machine's GPU encoder; restored onto a
     // machine without that encoder it would force a software encode. The
     // overlay is a testing aid, not a preference worth carrying.
+    { pattern: 'cipherline_mic_device_gain',               match: 'exact',  include: false, why: 'New audio engine: learned gain per microphone (utils/micDeviceGain.ts, keyed by capture deviceId) — device-specific, never travels; the engine re-learns it in ~2 s' },
     { pattern: 'cipherline_ns_noise_prompt',              match: 'exact',  include: false, why: 'Background-noise prompt snooze (utils/noiseFloorPrompt.ts) — "this device was asked"; about this room and mic, never travels' },
     { pattern: 'cipherline_screenshare_codec',          match: 'exact',  include: false, why: 'Screen-share encoder override — about this device’s GPU, never travels' },
     { pattern: 'cipherline_entrance_prefs_{uid}',   match: 'exact',  include: true,  why: 'Listener settings for other people\'s call entrance sounds: the global switch + the people you muted (utils/entrancePrefs.ts). Personal preference, nothing sent anywhere' },
@@ -197,6 +213,8 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_camera_quality',             match: 'exact',  include: false, why: 'Camera quality tier — what this PC/camera can sustain, never travels' },
     { pattern: 'cipherline_camera_codec',               match: 'exact',  include: false, why: 'Camera encoder override — about this device’s GPU, never travels' },
     { pattern: 'cipherline_incoming_video',             match: 'exact',  include: false, why: 'Incoming video quality (Auto/Reduced/Data saver) — about this PC and its connection, never travels' },
+    // "Leave call when I'm alone for…" (utils/aloneLeave.ts): a personal preference about calls, not about this machine, so it travels.
+    { pattern: 'cipherline_alone_leave_minutes',    match: 'exact',  include: true,  why: 'Alone-in-call auto-leave delay (15 / 30 / 60 min / never) — a personal call preference, restored on a new device' },
     { pattern: 'cipherline_perf_offer',                 match: 'exact',  include: false, why: 'Performance offer snooze / don’t-ask — about this machine, never travels' },
     // The app version whose "What's new" dialog was last opened or skipped (utils/whatsNew.ts): about THIS install
     // (restoring a backup onto a newer or older build must not decide whether its dialog shows).
@@ -269,6 +287,16 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_emoji_index_{uid}',          match: 'exact',  include: false, why: 'vault.emojiIndex (size/mime/name of each stored image; last-used time is deliberately left out so viewing never churns a backup)' },
     { pattern: 'cipherline_emoji_key_{uid}_',           match: 'prefix', include: false, why: 'vault.emojiKeys' },
     { pattern: 'cipherline_emoji_sync_view_{uid}',      match: 'exact',  include: false, why: 'Emoji-sync bookkeeping (what this DEVICE knows about the personal_emojis slot - device-specific, must not restore)' },
+    // My stickers (2026-11-22): the library rides in the vault next to My Emojis
+    // (vault.stickerLibrary); its images are entries of the SAME blob store, so
+    // they travel as cipherline_emoji_index/_key_ + `emoji:<id>` records above.
+    { pattern: 'cipherline_sticker_library_{uid}',      match: 'exact',  include: false, why: 'vault.stickerLibrary' },
+    { pattern: 'cipherline_sticker_sync_view_{uid}',    match: 'exact',  include: false, why: 'Sticker-sync bookkeeping (what this DEVICE knows about the personal_stickers slot - device-specific, must not restore)' },
+    // The picker's Recent row travels (owner 2026-11-22: "make sure stickers are
+    // setup with backups and device data transfer"). It is only ids + names: a
+    // personal sticker's image comes back through the emoji index / `emoji:<id>`
+    // records above, a server sticker's is fetched from its server as usual.
+    { pattern: 'cipherline_recent_stickers_{uid}',      match: 'exact',  include: true,  why: 'Sticker picker "Recent" row (utils/stickers/recent.ts): ids + names only, restored with My stickers' },
     // Custom entrance sound: this record holds the per-file AES key of the
     // sealed `esound-<id>.enc` + an LWW stamp. The SOUND travels as
     // vault.entranceSound (bytes inline, inside the encrypted vault's meta
@@ -292,6 +320,8 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_channel_unread_',            match: 'prefix', include: false, why: 'Counter' },
     { pattern: 'cipherline_channel_mentions_',          match: 'prefix', include: false, why: 'Counter' },
     { pattern: 'cipherline_servers_{uid}',              match: 'exact',  include: false, why: 'Server-list cache' },
+    { pattern: 'cipherline_conv_cache_{uid}',           match: 'exact',  include: false, why: 'Conversation-list cache for a fast cold start (utils/bootListCache.ts); rebuilt from the server' },
+    { pattern: 'cipherline_friends_cache_{uid}',        match: 'exact',  include: false, why: 'Friends-list cache for a fast cold start (utils/bootListCache.ts); rebuilt from the server' },
     { pattern: 'cipherline_game_art_v1',                match: 'exact',  include: false, why: 'Per-device cache of game pictures (own executable icons read from THIS computer + store pictures): derived, device-specific, rebuilt the next time the game is seen (utils/gameArt.ts)' },
     { pattern: 'cipherline_srv_channels_{uid}',         match: 'prefix', include: false, why: 'Channel-list cache (channels, categories incl. sub-categories, dividers)' },
     { pattern: 'cipherline_server_notif_defaults_{uid}', match: 'exact', include: false, why: 'Server-side defaults cache' },
@@ -309,6 +339,8 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_server_rail_sync_ts_{uid}',   match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (when THIS device last changed its rail layout, for last-write-wins — device-specific, must not restore)' },
     { pattern: 'cipherline_server_rail_sync_view_{uid}', match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (what this DEVICE knows about the server_rail slot, for anti-entropy — device-specific, must not restore)' },
     { pattern: 'cipherline_card_styles_sync_view_{uid}', match: 'exact', include: false, why: 'Message-styles sync bookkeeping (what this DEVICE knows about the card_styles slot, for anti-entropy — device-specific, must not restore)' },
+    { pattern: 'cipherline_mutes_sync_view_{uid}', match: 'exact', include: false, why: 'Mutes sync bookkeeping (what this DEVICE knows about the mutes slot, for anti-entropy — device-specific, must not restore)' },
+    { pattern: 'cipherline_custom_themes_sync_view_{uid}', match: 'exact', include: false, why: 'Custom-themes sync bookkeeping (what this DEVICE knows about the themes slot, for anti-entropy — device-specific, must not restore)' },
     { pattern: 'cipherline_saves_sync_view_{uid}',      match: 'exact',  include: false, why: 'Saves-sync bookkeeping (what this DEVICE knows about the personal_saves slot — device-specific, must not restore)' },
     { pattern: 'cipherline_local_channel_pin_ledger_{uid}', match: 'exact', include: false, why: 'Channel-save sync bookkeeping (LWW ledger; the saves themselves are vault.localChannelPins)' },
     { pattern: 'cipherline_last_activity_{uid}',        match: 'exact',  include: false, why: 'Derived from history' },
@@ -330,6 +362,15 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_auto_backup_cfg_{uid}',      match: 'exact',  include: false, why: 'Legacy, removed' },
     { pattern: 'cipherline_home_backup_muted_{uid}',    match: 'exact',  include: false, why: 'Nudge state' },
     { pattern: 'cipherline_removed_attachments_{uid}',  match: 'exact',  include: false, why: 'Bookkeeping' },
+    // Discord import phase 3 (utils/discordClaims.ts): ids of imported authors
+    // whose "now show as you" / "you can claim" notice this ACCOUNT already
+    // acknowledged. Included: the notice is about the account, not the
+    // device, so a restore must not raise every past notice again. Opaque ids
+    // only (no names, no Discord data).
+    { pattern: 'cipherline_discord_claims_seen_{uid}',  match: 'exact',  include: true,  why: 'Discord claim notices already acknowledged (author ids)' },
+    // Discord import (utils/discordImport/sessionMarker.ts): "this device may still hold an open import session on
+    // server X", so the next launch can end it after a crash. About THIS install; a restore must not end anything.
+    { pattern: 'cipherline_discord_import_open',        match: 'exact',  include: false, why: 'Crash recovery bookkeeping for an open Discord import session (a server id)' },
     { pattern: 'cipherline_hidden_system_rows_{uid}',   match: 'exact',  include: false, why: 'Local "remove from my view" for client-only join/leave lines; ids of non-persisted rows, view noise' },
     { pattern: 'cipherline_seen_large_attachments',     match: 'exact',  include: false, why: 'Bookkeeping' },
     { pattern: 'avatar_key_fallback_',                  match: 'prefix', include: false, why: 'Non-Electron fallback; vault.avatarKeys covers Electron' },
@@ -455,10 +496,30 @@ export const SECURE_STORE_EXCLUDED = [
     // would unlock staging builds on a machine that never entered the
     // password. Prefix also covers the dev-preview key.
     'staging_unlock',
+    // Interface size (electron/ui-scale.ts; Settings → Accessibility). Device-
+    // local: the usable maximum depends on THIS machine's displays, and main
+    // applies it at window creation, so a restored value would not even take
+    // effect until a restart. Message text size (cipherline_msg_text_px) is
+    // the portable half and IS backed up.
+    'uiScale',
+    // Theme id (electron/theme-boot.ts, `theme:set`): device-level, read by
+    // main before the window exists. Not backed up AS THIS KEY and never synced
+    // (each device keeps its own); a restore re-applies the backup's theme
+    // through the account-scoped mirror cipherline_active_theme_{uid} instead.
+    'theme',
+    // The ACTIVE custom theme's device copy (electron/theme-custom-boot.ts:
+    // colours + boot palette, no name), read by main before the window exists.
+    // Device-level like 'theme' (covered by its prefix; listed for the reader).
+    // The custom theme LIBRARY is backed up (cipherline_custom_themes_{uid}).
+    'themeCustom',
     // F10: "this device has had its one legacy raw-record migration boot"
     // (electron/kv-crypto.ts). Device-local security state; restoring it
     // elsewhere would only close a window that device never had open.
     'kv_raw_migration_closed_v1',
+    // "Import from Discord" (electron/discord-import/ipc.ts): the user's own
+    // Discord BOT token plus the bot's name. A credential for another service,
+    // so it never leaves this machine and a backup must never carry it.
+    'discordImport.bot',
 ];
 
 const UID = '{uid}';

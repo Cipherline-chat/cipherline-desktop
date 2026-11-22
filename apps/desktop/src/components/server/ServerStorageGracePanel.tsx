@@ -79,7 +79,7 @@ export const ServerStorageGraceCard: React.FC<ServerStorageGraceCardProps> = ({ 
 
             {usage !== null && over > 0 && (
                 <div className="space-y-1">
-                    <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: 'rgba(255,107,94,0.35)' }} title={`${formatBytes(target)} free limit`}>
+                    <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: 'rgb(var(--cl-flash-rgb) / 0.35)' }} title={`${formatBytes(target)} free limit`}>
                         <div className="h-full" style={{ width: `${pct}%`, background: 'var(--cl-lume)' }} />
                     </div>
                     <p className="m-0 text-[11px] text-cl-faint font-mono tabular-nums">

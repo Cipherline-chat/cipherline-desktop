@@ -93,7 +93,9 @@ describe('edits carry the font', () => {
 
 describe('bundled faces (no remote font, ever)', () => {
     const desktop = join(__dirname, '..', '..', '..');
-    const css = readFileSync(join(desktop, 'src', 'styles', 'formatting.css'), 'utf8');
+    // formatting.css (per-message fonts) + readability.css (the Settings > Accessibility font choice).
+    const css = readFileSync(join(desktop, 'src', 'styles', 'formatting.css'), 'utf8')
+        + readFileSync(join(desktop, 'src', 'styles', 'readability.css'), 'utf8');
     const faces = [...css.matchAll(/@font-face\{[^}]*\}/g)].map(m => m[0]);
     const fontDir = join(desktop, 'src', 'assets', 'fonts');
     const files = readdirSync(fontDir).filter(f => f.endsWith('.woff2'));
@@ -128,14 +130,19 @@ describe('bundled faces (no remote font, ever)', () => {
             expect(faces.some(x => x.includes(`/${f}'`)), f).toBe(true);
             total += statSync(p).size;
         }
-        expect(total).toBeLessThan(400 * 1024);
+        // Message fonts keep their 400 KB budget; the two Accessibility faces (Lexend, OpenDyslexic) have their own.
+        const a11yFaces = files.filter(f => /^(lexend|opendyslexic)-/.test(f));
+        const a11yTotal = a11yFaces.reduce((n, f) => n + statSync(join(fontDir, f)).size, 0);
+        expect(a11yFaces.length).toBe(4);
+        expect(a11yTotal).toBeLessThan(300 * 1024);
+        expect(total - a11yTotal).toBeLessThan(400 * 1024);
     });
 
     it('every bundled face is credited in LICENSES.md and ships its licence text', () => {
         const lic = readFileSync(join(desktop, 'LICENSES.md'), 'utf8');
-        for (const name of ['Lora', 'Caveat', 'Atkinson Hyperlegible', 'Special Elite', 'Permanent Marker']) expect(lic, name).toContain(name);
+        for (const name of ['Lora', 'Caveat', 'Atkinson Hyperlegible', 'Special Elite', 'Permanent Marker', 'Lexend', 'OpenDyslexic']) expect(lic, name).toContain(name);
         const shipped = readdirSync(join(desktop, 'public', 'licenses', 'fonts'));
-        expect(shipped.sort()).toEqual(['AtkinsonHyperlegible-OFL.license', 'Caveat-OFL.license', 'Lora-OFL.license', 'PermanentMarker-Apache-2.0.license', 'SpecialElite-Apache-2.0.license']);
+        expect(shipped.sort()).toEqual(['AtkinsonHyperlegible-OFL.license', 'Caveat-OFL.license', 'Lexend-OFL.license', 'Lora-OFL.license', 'OpenDyslexic-OFL.license', 'PermanentMarker-Apache-2.0.license', 'SpecialElite-Apache-2.0.license']);
     });
 
     it('code stays monospace and unadjusted whatever the message font', () => {

@@ -25,7 +25,7 @@
  * Decorative only: the host card carries the words.
  */
 import React, { useEffect, useId, useMemo, useRef } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { useCelebrationReduced } from '../../../utils/a11y/motionPrefs';
 import { confettiPieces } from './giftConfetti';
 import '../../../styles/gifts.css';
 
@@ -58,7 +58,7 @@ const SPARKS: Array<[number, number]> = [
 const STAR = 'M0 -5 C0.6 -1.2 1.2 -0.6 5 0 C1.2 0.6 0.6 1.2 0 5 C-0.6 1.2 -1.2 0.6 -5 0 C-1.2 -0.6 -0.6 -1.2 0 -5 Z';
 
 export const GiftBox: React.FC<GiftBoxProps> = ({ state, size = 96, burst = false, className, onUnwrapped }) => {
-    const reduced = useReducedMotion();
+    const reduced = useCelebrationReduced();
     const raw = useId();
     const uid = useMemo(() => `gb${raw.replace(/[^a-zA-Z0-9]/g, '')}`, [raw]);
     const shown: GiftBoxState = reduced && state === 'tying' ? 'closed' : state;

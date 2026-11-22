@@ -81,9 +81,9 @@ export const GamingVideoSetting: React.FC = () => {
                 </div>
             </div>
             {restartCopy && (
-                <div className="mb-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" role="status" style={{ background: 'rgba(255,201,77,.08)', border: '1px solid rgba(255,201,77,.2)' }}>
-                    <RefreshCw size={14} className="shrink-0" style={{ color: 'var(--cl-glow)' }} aria-hidden />
-                    <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow)', flex: 1, margin: 0 }}>
+                <div className="mb-2 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" role="status" style={{ background: 'rgb(var(--cl-glow-rgb) / .08)', border: '1px solid rgb(var(--cl-glow-rgb) / .2)' }}>
+                    <RefreshCw size={14} className="shrink-0" style={{ color: 'var(--cl-glow-text)' }} aria-hidden />
+                    <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow-text)', flex: 1, margin: 0 }}>
                         {restartCopy} Restarting ends any call you’re in.
                     </p>
                     <ClButton size="sm" variant="primary" loading={restarting} disabled={restarting} onClick={restart}>
@@ -92,7 +92,7 @@ export const GamingVideoSetting: React.FC = () => {
                 </div>
             )}
             {error && (
-                <p className="text-xs" role="alert" style={{ color: 'var(--cl-danger)', margin: '0 0 8px' }}>{error}</p>
+                <p className="text-xs" role="alert" style={{ color: 'var(--cl-danger-text)', margin: '0 0 8px' }}>{error}</p>
             )}
         </>
     );

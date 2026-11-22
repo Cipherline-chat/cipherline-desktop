@@ -28,7 +28,7 @@ describe('GIF picker search field colour', () => {
     const picker = readFileSync(resolve(__dirname, './GifPicker.tsx'), 'utf8');
     it('is neutral gray like the popover, not the kit\'s navy, in resting and focus states', () => {
         expect(picker).toContain('.gif-search-input.inp {');
-        expect(picker).toMatch(/\.gif-search-input\.inp\s*\{\s*background:\s*rgba\(255,255,255,0\.06\)/);
+        expect(picker).toMatch(/\.gif-search-input\.inp\s*\{\s*background:\s*rgb\(var\(--cl-bright-rgb\) \/ 0\.06\)/);
         expect(picker).not.toMatch(/\.gif-search-input:focus\s*\{\s*border-color:\s*rgba\(37,224,200/);
     });
 });

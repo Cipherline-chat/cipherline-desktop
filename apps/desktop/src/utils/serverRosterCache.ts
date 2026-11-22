@@ -60,6 +60,9 @@ export interface RosterMember {
     /** From the roster fetch — present on phones only. Newer servers only. */
     on_mobile?: boolean;
     joined_at: string;
+    /** "Member since" (YYYY-MM-DD): a Discord-imported first-join day, given on
+     *  claim. Display only, never the unread anchor. Newer APIs only. */
+    member_since?: string | null;
     muted_until: string | null;
     /** Role IDs assigned to this member (excludes @everyone — that's implicit). */
     role_ids: string[];
@@ -74,6 +77,14 @@ export interface RosterRole {
     is_everyone: boolean;
     /** Present on the wire; ChatPane's @mention picker reads it. */
     mentionable?: boolean;
+    /** Gradient end colour (packed RGB, -1/absent = solid). Newer APIs only. */
+    secondary_color?: number;
+    /** Role icon: a single unicode emoji, or an uploaded image (id + the
+     *  server-held key/nonce). At most one is set. Newer APIs only. */
+    icon_emoji?: string | null;
+    icon_attachment_id?: string | null;
+    icon_key_b64?: string | null;
+    icon_nonce_b64?: string | null;
 }
 
 /**

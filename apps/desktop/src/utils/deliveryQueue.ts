@@ -20,6 +20,7 @@
  * flight from the previous mount. Different conversations never wait on each
  * other.
  */
+import { isSlowmodeError } from './channelModeration';
 
 /**
  * How long one message-send POST may take before it is abandoned. Without a
@@ -118,7 +119,10 @@ export async function withRateLimitRetry<T>(
         try {
             return await fn();
         } catch (err) {
-            if (statusOf(err) !== 429 || attempt >= maxRetries) throw err;
+            // A slowmode refusal is not the throttler's 3 s window: it can be an
+            // hour long, and waiting 10 s to be refused again helps nobody. It
+            // goes straight to the message as a failure that says how long.
+            if (statusOf(err) !== 429 || isSlowmodeError(err) || attempt >= maxRetries) throw err;
             await sleep(Math.min(maxWaitMs, retryAfterMs(err) ?? defaultWaitMs));
         }
     }

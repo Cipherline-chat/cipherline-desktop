@@ -50,7 +50,22 @@ import {
     type BackupStaleWarning, type ContainerMark, type BackupDestinationLabel,
 } from './backupGenerationFloor';
 
+import { assertBackupStoreReadable } from './backupStoreGuard';
+import {
+    countConversations, isDrasticShrink, describeShrink, shrinkRefusedMessage,
+    type BackupShrinkWarning, type ExistingBackupShape,
+} from './backupShrinkGuard';
+
 export type { BackupStaleWarning } from './backupGenerationFloor';
+export type { BackupShrinkWarning } from './backupShrinkGuard';
+export { BackupStoreUnreadableError, BACKUP_STORE_UNREADABLE_MESSAGE } from './backupStoreGuard';
+
+/**
+ * Asked when a run would replace a backup with a drastically emptier one
+ * (backupShrinkGuard.ts). Resolve true to replace it anyway. Omitted (the
+ * scheduler) = never replace: that destination is skipped with an error.
+ */
+export type BackupShrinkConfirm = (warning: BackupShrinkWarning) => boolean | Promise<boolean>;
 
 import { APP_BACKUP_FOLDER, resolveDriveFolder, type DriveFolderResolution } from '../utils/driveFolders';
 
@@ -521,6 +536,11 @@ export interface SingleFileRunOpts {
     /** Dead-space fraction above which an in-place update gives way to a
      *  compaction (fresh rewrite). Default 0.3. */
     compactAbove?: number;
+    /** Conversations this device last wrote to each destination's file, when
+     *  known (the shrink check's fallback when the file's index isn't read). */
+    knownConversations?: Partial<Record<SingleFileDestination['label'], number>>;
+    /** See BackupShrinkConfirm. */
+    confirmShrink?: BackupShrinkConfirm;
 }
 
 /**
@@ -594,12 +614,15 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
     };
 
     const active: SingleFileDestination[] = [];
+    /** Size of the file already at each active destination (absent = none there). */
+    const existingBytes: Partial<Record<SingleFileDestination['label'], number>> = {};
     for (const d of destinations) {
         try {
             const current = await d.stat(fileName);
             if (current && lastFingerprints[d.label] === plan.fingerprint) {
                 results[d.label] = { skipped: true, bytes: current.size, bytesWritten: 0, deadBytes: 0, legacyFilesRemoved: 0 };
             } else {
+                if (current) existingBytes[d.label] = current.size;
                 active.push(d);
             }
         } catch (err) {
@@ -614,7 +637,8 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
 
     // Decide per destination: in-place update or fresh write.
     type Opened = { dest: SingleFileDestination; mode: WriteMode; existing?: OpenedContainer; sink?: DestinationSink };
-    const opened: Opened[] = [];
+    let opened: Opened[] = [];
+    const shapes: Partial<Record<SingleFileDestination['label'], ExistingBackupShape>> = {};
     for (const d of active) {
         let existing: OpenedContainer | undefined;
         if (d.supportsUpdate) {
@@ -623,6 +647,16 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
                 if (src) existing = await openContainer(src, password);
             } catch { existing = undefined; } // not a container, or a different passphrase → rewrite
         }
+        if (existingBytes[d.label] !== undefined) {
+            shapes[d.label] = {
+                // The file's own index when this run could open it; else what
+                // this device recorded writing there; else unknown.
+                conversations: existing
+                    ? countConversations(existing.index.records.map(r => r.id))
+                    : (opts.knownConversations?.[d.label] ?? null),
+                bytes: existingBytes[d.label]!,
+            };
+        }
         const dead = existing ? existing.deadBytes / Math.max(1, existing.size) : 0;
         // A v3 file can't be updated in place — v4's header is longer, so every
         // record offset would shift. One fresh write upgrades the destination
@@ -630,6 +664,25 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
         const canUpdate = !!existing && existing.version === CONTAINER_VERSION;
         const mode: WriteMode = canUpdate && dead <= compactAbove ? 'update' : 'fresh';
         opened.push({ dest: d, mode, existing: mode === 'update' ? existing : undefined });
+    }
+
+    // Second safety net (backupShrinkGuard.ts): a vault drastically emptier
+    // than the backup already there replaces it only on an explicit yes. Asked
+    // BEFORE any sink opens, so a "no" writes nothing anywhere.
+    const nextConversations = countConversations(plan.records.map(r => r.id));
+    const drastic = opened.filter(o => {
+        const shape = shapes[o.dest.label];
+        return !!shape && isDrasticShrink(shape, nextConversations);
+    });
+    if (drastic.length) {
+        const warning = describeShrink(drastic.map(o => ({ label: o.dest.label, ...shapes[o.dest.label]! })), nextConversations);
+        let replace = false;
+        try { replace = opts.confirmShrink ? (await opts.confirmShrink(warning)) === true : false; } catch { replace = false; }
+        if (!replace) {
+            for (const o of drastic) errors[o.dest.label] = shrinkRefusedMessage(shapes[o.dest.label]!, nextConversations);
+            opened = opened.filter(o => !drastic.includes(o));
+            if (opened.length === 0) return finish();
+        }
     }
 
     let attachments: WriteRecordsResult | undefined;
@@ -723,8 +776,16 @@ export async function runBackup(opts: {
     maxAttachmentBytes?: number;
     destinations: BackupDestinations;
     onProgress?: (p: DriveBackupProgress) => void;
+    /** Asked before replacing a backup with a drastically emptier one; omit to never replace. */
+    confirmShrink?: BackupShrinkConfirm;
 }): Promise<BackupResult> {
     const { userId, token, password, includeAttachments = true, destinations, onProgress } = opts;
+    // FIRST, before anything is read or written: a store that did not load
+    // (or is locked, or is still loading this account) exports stand-in empty
+    // state, and writing that over the destination's file would destroy the
+    // user's good backup. See backupStoreGuard.ts. Every caller — the button,
+    // the scheduler — comes through here, for both destinations.
+    assertBackupStoreReadable(userId);
     // 0 = no limit.
     const maxAttachmentBytes = (opts.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES) || undefined;
     const wantLocal = !!destinations.localDir;
@@ -751,6 +812,10 @@ export async function runBackup(opts: {
     try {
         onProgress?.({ phase: 'export', message: 'Gathering your data…' });
         const plan = await buildBackupPlan(userId, { includeAttachments, token, maxAttachmentBytes });
+        // Again after the export: message history loads in a second phase that
+        // the export awaits, and that load can fail — the plan would then hold
+        // stand-in empty history. Throwing here writes nothing.
+        assertBackupStoreReadable(userId);
         betaStage = 'setup';
 
         const dests: SingleFileDestination[] = [];
@@ -801,13 +866,19 @@ export async function runBackup(opts: {
         betaStage = 'write';
         const known = readFingerprints(userId);
         const lastFingerprints: SingleFileRunOpts['lastFingerprints'] = {};
+        const knownConversations: NonNullable<SingleFileRunOpts['knownConversations']> = {};
         for (const label of ['local', 'drive'] as const) {
             const k = known[label];
-            if (k && k.target === targets[label]) lastFingerprints[label] = k.fingerprint;
+            if (k && k.target === targets[label]) {
+                lastFingerprints[label] = k.fingerprint;
+                if (typeof k.conversations === 'number') knownConversations[label] = k.conversations;
+            }
         }
+        const planConversations = countConversations(plan.records.map(r => r.id));
 
         const { results, attachments, errors: writeErrors } = await runSingleFileBackup({
             destinations: dests, plan, password, fileName, basePattern, lastFingerprints, onProgress,
+            knownConversations, confirmShrink: opts.confirmShrink,
             writeRecords: (writers) => writeBackupRecords(plan, writers, {
                 token, maxAttachmentBytes,
                 onAttachmentProgress: (done, total) => onProgress?.({ phase: 'encrypt', attachments: { done, total } }),
@@ -840,7 +911,7 @@ export async function runBackup(opts: {
         for (const label of ['local', 'drive'] as const) {
             const r = results[label];
             if (!r || !targets[label]) continue;
-            known[label] = { fingerprint: plan.fingerprint, target: targets[label]! };
+            known[label] = { fingerprint: plan.fingerprint, target: targets[label]!, conversations: planConversations };
             // A skipped destination is, by definition, current — its clock
             // resets too, or the scheduler would retry it every tick.
             stamps[label] = { at, bytes: r.bytes };
@@ -909,7 +980,8 @@ export async function runBackup(opts: {
     }
 }
 
-type FingerprintMap = Partial<Record<'local' | 'drive', { fingerprint: string; target: string }>>;
+/** Per destination: what this device last wrote there. `conversations` is absent on entries written before the shrink check. */
+type FingerprintMap = Partial<Record<'local' | 'drive', { fingerprint: string; target: string; conversations?: number }>>;
 function readFingerprints(userId: string): FingerprintMap {
     try {
         const raw = secureLocalStore.getItem(FINGERPRINTS_KEY(userId));

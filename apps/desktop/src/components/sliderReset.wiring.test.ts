@@ -98,7 +98,6 @@ describe('slider default wiring', () => {
             // ...and the per-device profile editors
             ['components/settings/AudioDeviceList.tsx', /resetValue=\{DEFAULT_VOICE_SETTINGS\.micVolume\}/g, 1],
             ['components/settings/AudioDeviceList.tsx', /resetValue=\{DEFAULT_VOICE_SETTINGS\.speakerVolume\}/g, 1],
-            ['components/settings/AudioDeviceList.tsx', /resetValue=\{DEFAULT_VOICE_SETTINGS\.voiceGateThreshold\}/g, 1],
             // Call-bar right-click menus (Mic Volume / Output Volume)
             ['components/call/ControlBar.tsx', /DEFAULT_VOICE_SETTINGS\.(mic|speaker)Volume,/g, 2],
             ['components/call/ControlBar.tsx', /resetValue=\{resetValue\}/g, 1],
@@ -121,8 +120,10 @@ describe('slider default wiring', () => {
     it('custom (non-ClSlider) sliders reset too: gate threshold and every EQ band', () => {
         const vv = read('components/VoiceVideoSettings.tsx');
         // Manual only: in Automatic the gate has no slider to reset (voice-gate-auto-toggle, owner 2026-11-11).
-        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled\) onChange\(GATE_DEFAULT_THRESHOLD\); \}\}/);
-        expect(vv).toMatch(/const GATE_DEFAULT_THRESHOLD = DEFAULT_VOICE_SETTINGS\.voiceGateThreshold;/);
+        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled\) onChange\(resetTo\); \}\}/);
+        // ...to its own default: the noise gate's (CL_GATE_DEFAULT_DB), both by default and where it is passed explicitly
+        expect(vv).toMatch(/resetTo = CL_GATE_DEFAULT_DB/);
+        expect(vv).toMatch(/resetTo=\{CL_GATE_DEFAULT_DB\}/);
         expect(vv).toMatch(/onDoubleClick=\{\(\) => onChange\(EQ_BAND_DEFAULT_GAIN\)\}/);
         expect(vv).toMatch(/const EQ_BAND_DEFAULT_GAIN = DEFAULT_VOICE_SETTINGS\.eqBands\[0\];/);
         // both custom sliders show the same hint as ClSlider

@@ -80,9 +80,9 @@ const MiniButton: React.FC<{
             disabled
                 ? 'border-cl-border/40 text-cl-faint/60 cursor-not-allowed'
                 : tone === 'lume'
-                    ? 'border-cl-lume/30 text-cl-lume hover:bg-cl-lume/10 cursor-pointer'
+                    ? 'border-cl-lume/30 text-cl-lume-text hover:bg-cl-lume/10 cursor-pointer'
                     : tone === 'flash'
-                        ? 'border-cl-flash/30 text-cl-flash hover:bg-cl-flash/10 cursor-pointer'
+                        ? 'border-cl-flash/30 text-cl-flash-text hover:bg-cl-flash/10 cursor-pointer'
                         : 'border-cl-border/70 text-cl-muted hover:border-cl-lume/40 hover:text-cl-text cursor-pointer',
         ].join(' ')}
     >
@@ -95,7 +95,7 @@ const Dot: React.FC<{ color: number }> = ({ color }) => {
     return (
         <span
             className="w-2 h-2 rounded-full shrink-0"
-            style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgba(255,255,255,0.25)' }}
+            style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgb(var(--cl-bright-rgb) / 0.25)' }}
         />
     );
 };
@@ -327,8 +327,8 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
                 {dot}
                 <span className="flex-1 min-w-0 truncate">{label}</span>
                 {lock && <Lock size={11} className="text-cl-faint shrink-0" aria-label="Locked" />}
-                {c.a > 0 && <span className="text-[10px] font-bold text-cl-lume tabular-nums" aria-label={`${c.a} allowed`}>✓{c.a}</span>}
-                {c.d > 0 && <span className="text-[10px] font-bold text-cl-flash tabular-nums" aria-label={`${c.d} denied`}>✕{c.d}</span>}
+                {c.a > 0 && <span className="text-[10px] font-bold text-cl-lume-text tabular-nums" aria-label={`${c.a} allowed`}>✓{c.a}</span>}
+                {c.d > 0 && <span className="text-[10px] font-bold text-cl-flash-text tabular-nums" aria-label={`${c.d} denied`}>✕{c.d}</span>}
             </button>
         );
     };
@@ -399,7 +399,7 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
             </div>
 
             {selfLockout && (
-                <div className="px-4 py-1.5 border-b border-cl-border/30 text-[11px] text-cl-glow flex items-center gap-2 shrink-0" role="alert">
+                <div className="px-4 py-1.5 border-b border-cl-border/30 text-[11px] text-cl-glow-text flex items-center gap-2 shrink-0" role="alert">
                     <AlertTriangle size={12} className="shrink-0" />
                     With these settings you won’t be able to see {scopeLabel} yourself.
                 </div>
@@ -408,14 +408,14 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
                 <div className="px-4 py-1.5 border-b border-cl-border/30 text-[11px] flex items-center gap-2 shrink-0" role="status">
                     {state.notice ? (
                         <>
-                            <AlertTriangle size={12} className="text-cl-glow shrink-0" />
-                            <span className="text-cl-glow flex-1">{state.notice}</span>
+                            <AlertTriangle size={12} className="text-cl-glow-text shrink-0" />
+                            <span className="text-cl-glow-text flex-1">{state.notice}</span>
                             <button type="button" className="text-cl-faint hover:text-cl-text" onClick={() => dispatch({ type: 'dismissNotice' })} aria-label="Dismiss">
                                 <X size={12} />
                             </button>
                         </>
                     ) : flash ? (
-                        <span className="text-cl-lume">{flash}</span>
+                        <span className="text-cl-lume-text">{flash}</span>
                     ) : (
                         <span className="text-cl-faint">{inheritedNote}</span>
                     )}
@@ -448,7 +448,7 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
                                 <button
                                     type="button"
                                     onClick={() => setAdding(a => !a)}
-                                    className="text-cl-faint hover:text-cl-lume"
+                                    className="text-cl-faint hover:text-cl-lume-text"
                                     aria-label="Add a member override"
                                     title="Add a member override"
                                 >
@@ -507,7 +507,7 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
                                 <div className="min-w-0 flex-1">
                                     <div className="text-[13px] font-semibold text-cl-text truncate">{selName}</div>
                                     {locked ? (
-                                        <div className="text-[10.5px] text-cl-glow truncate flex items-center gap-1" title={locked}>
+                                        <div className="text-[10.5px] text-cl-glow-text truncate flex items-center gap-1" title={locked}>
                                             <Lock size={10} className="shrink-0" /> Read-only for you — {locked}
                                         </div>
                                     ) : (
@@ -586,7 +586,7 @@ export const ChannelPermissionEditor: React.FC<ChannelPermissionEditorProps> = (
                                                             </div>
                                                             <div className="w-[230px] shrink-0 text-right" aria-live="polite">
                                                                 {reason && (
-                                                                    <div className={`text-[11px] leading-tight truncate ${allowed ? 'text-cl-lume/90' : 'text-cl-flash/90'}`} title={describeReason(reason)}>
+                                                                    <div className={`text-[11px] leading-tight truncate ${allowed ? 'text-cl-lume-text/90' : 'text-cl-flash-text/90'}`} title={describeReason(reason)}>
                                                                         <span className="font-bold mr-1" aria-hidden="true">{allowed ? '✓' : '✕'}</span>
                                                                         {!effPreview && tri === 'inherit' && <span className="text-cl-faint">Inherits · </span>}
                                                                         {describeReason(reason)}

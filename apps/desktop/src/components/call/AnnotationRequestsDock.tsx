@@ -106,7 +106,7 @@ export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ 
             style={{ bottom: 'var(--cl-call-dock-bottom, 96px)' }}
         >
             {mine.length > 1 && (
-                <div className="rounded-full bg-cl-lume/20 border border-cl-lume/40 px-3 py-1 text-[11.5px] font-semibold text-cl-lume">
+                <div className="rounded-full bg-cl-lume/20 border border-cl-lume/40 px-3 py-1 text-[11.5px] font-semibold text-cl-lume-text">
                     {mine.length} people want to draw
                 </div>
             )}
@@ -115,7 +115,7 @@ export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ 
                     key={`${track}\n${id}`}
                     className="annot-req-row flex items-center gap-3 rounded-xl bg-cl-deep/95 backdrop-blur-md border border-cl-lume/40 px-3.5 py-2.5 text-[13px] text-cl-text"
                 >
-                    <PenLine size={16} className="text-cl-lume shrink-0" aria-hidden />
+                    <PenLine size={16} className="text-cl-lume-text shrink-0" aria-hidden />
                     <span className="max-w-[260px] truncate">
                         <b className="font-semibold">{label(id)}</b> wants to draw on {what(track)}
                     </span>
@@ -124,11 +124,11 @@ export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ 
                         onClick={() => allowAnnotationRequest(track, id)}
                         // The key answers the OLDEST request, which is this
                         // first row - so only this row carries the hint.
-                        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[12px] font-semibold bg-cl-lume/15 text-cl-lume hover:bg-cl-lume/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70"
+                        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[12px] font-semibold bg-cl-lume/15 text-cl-lume-text hover:bg-cl-lume/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70"
                     >
                         <Check size={13} aria-hidden /> Allow
                         {i === 0 && hints.approve && (
-                            <span className="ml-0.5 font-normal text-cl-lume/70">({hints.approve})</span>
+                            <span className="ml-0.5 font-normal text-cl-lume-text/70">({hints.approve})</span>
                         )}
                     </button>
                     <button

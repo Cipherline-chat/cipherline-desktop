@@ -89,7 +89,7 @@ const StorageCorruptedScreen: React.FC<Props> = ({ backupFileName }) => {
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                     >
-                        <AlertTriangle style={{ width: 28, height: 28, color: 'var(--cl-glow)' }} />
+                        <AlertTriangle style={{ width: 28, height: 28, color: 'var(--cl-glow-text)' }} />
                     </div>
                     <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 8 }}>
                         Local storage looks corrupted
@@ -105,7 +105,7 @@ const StorageCorruptedScreen: React.FC<Props> = ({ backupFileName }) => {
                 <div
                     style={{
                         background: 'var(--cl-deep)', border: '1px solid var(--cl-border)',
-                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgb(var(--cl-shade-rgb) / 0.4)',
                     }}
                 >
                     {error && (
@@ -113,7 +113,7 @@ const StorageCorruptedScreen: React.FC<Props> = ({ backupFileName }) => {
                             style={{
                                 marginBottom: 14, padding: '10px 12px', borderRadius: 12, fontSize: 12.5,
                                 background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.28)',
-                                color: 'var(--cl-flash)',
+                                color: 'var(--cl-flash-text)',
                             }}
                         >
                             {error}
@@ -163,7 +163,7 @@ const StorageCorruptedScreen: React.FC<Props> = ({ backupFileName }) => {
                         </>
                     ) : (
                         <>
-                            <p style={{ fontSize: 12.5, color: 'var(--cl-flash)', marginBottom: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                            <p style={{ fontSize: 12.5, color: 'var(--cl-flash-text)', marginBottom: 10, lineHeight: 1.5, fontWeight: 600 }}>
                                 This device will start over with a fresh identity. Message history stored ONLY
                                 on this device is not recoverable this way — restore a backup afterward if you have one.
                             </p>

@@ -342,8 +342,8 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
                         />
                     </div>
                 </div>
-                {avatarError && <div className="dlg-help" style={{ color: 'var(--cl-flash, #FF6B5E)', marginTop: 8 }}>{avatarError}</div>}
-                {egg && <div className="text-[12px] font-bold text-cl-lume" style={{ marginTop: 8 }}>{egg}</div>}
+                {avatarError && <div className="dlg-help" style={{ color: 'var(--cl-flash, var(--cl-flash-text))', marginTop: 8 }}>{avatarError}</div>}
+                {egg && <div className="text-[12px] font-bold text-cl-lume-text" style={{ marginTop: 8 }}>{egg}</div>}
 
                 <div className="dlg-label" style={{ margin: '18px 0 8px', display: 'flex', justifyContent: 'space-between' }}>
                     <span>Members</span>

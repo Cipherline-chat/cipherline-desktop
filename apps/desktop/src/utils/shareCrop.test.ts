@@ -3,7 +3,7 @@ import {
     createCropTransformer, runCropPipe, cropVideoFrame, type CropFrame, type CropSize,
 } from './shareCropTransform';
 import { createCropPipeline, supportsCropPipeline, WORKER_READY_TIMEOUT_MS, type CropWorkerLike } from './shareCrop';
-import type { CropRect, ShareLayout } from './shareLayout';
+import type { CropLayout, CropRect, ShareLayout } from './shareLayout';
 import { codecPinMessage } from './e2eeSenderCodec';
 
 // ── Fakes ───────────────────────────────────────────────────────────────────
@@ -70,6 +70,23 @@ describe('createCropTransformer', () => {
         expect(inputs.every(f => f.closed === 1)).toBe(true);   // closed exactly once
         expect(out.every(o => o.closed === 0)).toBe(true);       // the downstream owner closes these
         expect(t.stats).toEqual({ framesIn: 3, framesOut: 3, errors: 0 });
+    });
+
+    it('a REGION (a window Windows would not capture, cropped out of its monitor) follows the frame size it gets', () => {
+        const rects: CropRect[] = [];
+        const region: CropLayout = { kind: 'region', x: 100 / 2560, y: 100 / 1440, w: 1600 / 2560, h: 900 / 1440 };
+        const t = createCropTransformer<FakeFrame>({ getLayout: () => region, cropFrame: (f, r) => { rects.push(r); return crop(f, r); } });
+        const { out, ctrl } = collector<FakeFrame>();
+        const native = new FakeFrame(2560, 1440);
+        t.transform!(native, ctrl);
+        t.transform!(new FakeFrame(1920, 1080), ctrl);      // the same monitor captured into a 1080p box
+        expect(rects).toEqual([
+            { x: 100, y: 100, width: 1600, height: 900 },
+            { x: 76, y: 76, width: 1200, height: 676 },
+        ]);
+        expect(rects.every(r => r.x % 2 === 0 && r.y % 2 === 0 && r.width % 2 === 0 && r.height % 2 === 0)).toBe(true);
+        expect(native.closed).toBe(1);
+        expect(out).toHaveLength(2);
     });
 
     it('switches screens live: the very next frame uses the new rect', () => {

@@ -5,6 +5,7 @@ const user = { user_id: 'me', username: 'Dawson', discriminator: 4821, display_n
 const auth = {
     token: 'harness-token', userId: 'me', deviceId: '11111111-1111-4111-8111-111111111111', user, isAuthenticated: true,
     refreshProfile: async () => {}, updateTokens: () => {}, login: async () => {}, logout: () => {},
+    logoutReason: null, clearLogoutReason: () => {},
 };
 export const useAuth = () => auth;
 export const AuthProvider = ({ children }: { children: unknown }) => children as any;

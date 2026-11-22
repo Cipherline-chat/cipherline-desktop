@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Minus, X } from 'lucide-react';
 import { useEscape } from '../hooks/useEscape';
+import { drawsOwnWindowControls, currentWindowControlsEnv } from '../utils/windowControls';
 import '../styles/client-block.css';
 
 /**
@@ -21,21 +22,17 @@ import '../styles/client-block.css';
  *     capture phase so the app's global shortcuts (Ctrl+K, push-to-talk…)
  *     never fire underneath.
  *   - role="alertdialog" + aria-modal, labelled by the screen's title/body.
- *   - The frameless window stays draggable, and on Linux (where the app draws
- *     its own caption buttons inside the now-inert Dashboard) it keeps a
- *     minimise and a close button, so being blocked never means being unable
- *     to close the window. Windows/macOS draw native controls.
+ *   - The frameless window stays draggable. Windows/Linux (native caption
+ *     overlay) and macOS (traffic lights) draw native controls over it; a
+ *     Linux window WITHOUT the overlay (whose fallback buttons live inside the
+ *     now-inert Dashboard) gets a minimise and a close button here, so being
+ *     blocked never means being unable to close the window.
  *
  * There is deliberately no way to dismiss it: the parent unmounts it when the
  * condition is gone (update installed — the app restarts — or shutdown lifted).
  */
 
-const ua = typeof navigator !== 'undefined' ? navigator.userAgent.toLowerCase() : '';
-const needsOwnWindowControls = (): boolean =>
-    !!window.electronAPI
-    && !ua.includes('macintosh')
-    && !ua.includes('windows')
-    && !(navigator as Navigator & { windowControlsOverlay?: { visible?: boolean } }).windowControlsOverlay?.visible;
+const needsOwnWindowControls = (): boolean => drawsOwnWindowControls(currentWindowControlsEnv());
 
 /** How many blocking screens are mounted (see the inert effect). */
 let activeBlockers = 0;

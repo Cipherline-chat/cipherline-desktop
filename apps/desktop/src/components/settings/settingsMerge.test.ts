@@ -55,7 +55,7 @@ describe('pane ids: nav, pane list, search index agree', () => {
         expect(navIds()).toEqual([...PANE_IDS]);
         const nav = read('DepthGauge.tsx');
         const surface = nav.slice(nav.indexOf("name: 'Surface'"), nav.indexOf("name: 'Twilight'"));
-        expect([...surface.matchAll(/\{ id: '[a-zA-Z]+',\s+label: '([^']+)'/g)].map(m => m[1])).toEqual(['Profile', 'Activity & Style', 'Appearance']);
+        expect([...surface.matchAll(/\{ id: '[a-zA-Z]+',\s+label: '([^']+)'/g)].map(m => m[1])).toEqual(['Profile', 'Activity & Style', 'Appearance', 'Accessibility']);
     });
     it('Connections and Personalize are gone from the nav, the pane switch and the index', () => {
         expect(navIds()).not.toContain('connections');
@@ -145,7 +145,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); auth.user.steam = nu
 const flush = async () => { for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); }); };
 
 describe('ActivityStylePane', () => {
-    it('renders the Activity group (listening, Spotify, most played) and the Style group (My Emojis, Calls), and no Steam', async () => {
+    it('renders the Activity group (listening, Spotify, most played) and the Style group (My Emojis, My stickers, Calls), and no Steam', async () => {
         const { ActivityStylePane } = await import('./panes/ActivityStylePane');
         auth.user.steam = { steam_id: '76561197960287930' };
         const { NotificationProvider } = await import('../../contexts/NotificationContext');
@@ -155,7 +155,7 @@ describe('ActivityStylePane', () => {
         expect(groups.map(g => g.querySelector('h2')!.textContent)).toEqual(['Activity', 'Style']);
         const titles = (g: Element) => [...g.querySelectorAll('.sx-disc-head b')].map(b => b.textContent);
         expect(titles(groups[0])).toEqual(['Listening status', 'Spotify showcase', 'Most played']);
-        expect(titles(groups[1])).toEqual(['My Emojis', 'Calls']);
+        expect(titles(groups[1])).toEqual(['My Emojis', 'My stickers', 'Calls']);
         // each group is a labelled region for assistive tech
         expect(groups[0].getAttribute('aria-labelledby')).toBe('as-activity-h');
         expect(host.querySelector('[data-testid^="steam-"]')).toBeNull();

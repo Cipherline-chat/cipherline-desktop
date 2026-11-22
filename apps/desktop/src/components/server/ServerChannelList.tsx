@@ -29,7 +29,7 @@
 import secureLocalStore from '../../utils/secureLocalStore';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Hash, ChevronDown, ChevronRight, Settings,
+    Hash, ChevronDown, ChevronRight, Settings, ShieldAlert,
     CheckCheck, Link as LinkIcon, Pencil, Trash2, Plus, Folder,
     MoreVertical, UserPlus, SlidersHorizontal, CornerDownRight, Minus, Ban,
 } from 'lucide-react';
@@ -50,6 +50,9 @@ import { buildChannelTree, channelsIn, dividerAriaLabel, dividerVisibility, pars
 import { decideLayoutDrop, layoutOrderFromTree, layoutPatchBody, applyPlanPositions, layoutCollisionDetection, type DropPlace, type LayoutOrder } from './layoutDrop';
 import type { ChannelOptimism } from './ChannelSettingsDialog';
 import { useContextMenu } from '../../hooks/useContextMenu';
+import { useChannelMutes } from '../../contexts/ChannelMuteContext';
+import { effectiveMutedChannels } from '../../utils/channelMute';
+import { buildMuteItems, MutedGlyph } from './muteMenu';
 import type { ContextMenuItem } from '../primitives/ContextMenu';
 import { HoverActions } from '../primitives/HoverActions';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
@@ -284,6 +287,20 @@ export const ServerChannelList: React.FC<Props> = ({
 }) => {
     const ctx = useContextMenu();
     const toast = useToast();
+    // Mute (utils/channelMute.ts): a channel is muted by its own mute, its
+    // category's (or parent category's), or the server's. Merged with the
+    // caller's `mutedChannelIds` so either source dims + silences the row.
+    const mute = useChannelMutes();
+    const mutedSet = useMemo(() => {
+        const cats = new Map(categories.map(c => [c.category_id, c.parent_category_id ?? null]));
+        const own = effectiveMutedChannels(mute.mutes, channels.map(c => c.channel_id), {
+            categoryOfChannel: id => channels.find(c => c.channel_id === id)?.parent_category_id ?? null,
+            parentOfCategory: id => cats.get(id) ?? null,
+            serverOfChannel: () => server.server_id,
+        }, mute.now);
+        if (mutedChannelIds) for (const id of mutedChannelIds) own.add(id);
+        return own;
+    }, [mute.mutes, mute.now, channels, categories, server.server_id, mutedChannelIds]);
     // canManage: true when the caller has MANAGE_CHANNELS or ADMINISTRATOR.
     // The API returns ALL_PERMISSIONS for the server owner, so owners pass too.
     // UX only - every write below is re-checked by the server.
@@ -698,8 +715,8 @@ export const ServerChannelList: React.FC<Props> = ({
             })),
         })),
         collapsed: collapsedCats,
-        unreadCounts, mentionCounts, mutedChannelIds, serverNotifMode, activeChannelId,
-    }), [tree, collapsedCats, unreadCounts, mentionCounts, mutedChannelIds, serverNotifMode, activeChannelId]);
+        unreadCounts, mentionCounts, mutedChannelIds: mutedSet, serverNotifMode, activeChannelId,
+    }), [tree, collapsedCats, unreadCounts, mentionCounts, mutedSet, serverNotifMode, activeChannelId]);
     const reducedMotion = usePrefersReducedMotion();
     const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
     const offscreen = useOffscreenUnread({
@@ -719,7 +736,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 unread: unreadCounts?.[ch.channel_id] ?? 0,
                 mentions: mentionCounts?.[ch.channel_id] ?? 0,
                 serverNotifMode,
-                channelMuted: mutedChannelIds?.has(ch.channel_id) ?? false,
+                channelMuted: mutedSet.has(ch.channel_id),
                 active: activeChannelId === ch.channel_id,
             });
             if (!k) continue;
@@ -740,6 +757,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 disabled: !hasUnread,
                 onSelect: () => onMarkChannelRead(ch.channel_id),
             }] : []),
+            ...buildMuteItems(mute, ch.channel_id, 'Channel'),
             {
                 icon: <LinkIcon />, label: 'Copy Channel ID',
                 onSelect: () => writeToClipboard(ch.channel_id).catch(() => toast.push({ kind: 'error', message: 'Could not copy — try selecting and copying manually.' })),
@@ -862,6 +880,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 disabled: !hasUnread,
                 onSelect: () => { for (const ch of inside) onMarkChannelRead(ch.channel_id); },
             }] : []),
+            ...buildMuteItems(mute, cat.category_id, noun),
             ...(canManage ? [
                 ...(onMarkChannelRead ? [{ divider: true as const }] : []),
                 {
@@ -938,12 +957,12 @@ export const ServerChannelList: React.FC<Props> = ({
     const channelRowCls = (channelId: string) =>
         `group flex items-center gap-2 px-2 py-1.5 rounded-[9px] cursor-pointer transition-all text-sm select-none relative ${
             activeChannelId === channelId
-                ? 'bg-cl-lume/10 text-cl-lume font-semibold'
+                ? 'bg-cl-lume/10 text-cl-lume-text font-semibold cl-row-active'
                 : 'text-cl-muted font-medium hover:text-cl-text hover:bg-cl-lume/[0.06]'
         }`;
 
     const renderChannelRow = (ch: ChannelInfo) => {
-        const isMuted = mutedChannelIds?.has(ch.channel_id) ?? false;
+        const isMuted = mutedSet.has(ch.channel_id);
         const isChannelMuted = serverNotifMode === 'none' || isMuted;
         const unread = unreadCounts?.[ch.channel_id] ?? 0;
         const mentions = mentionCounts?.[ch.channel_id] ?? 0;
@@ -996,17 +1015,23 @@ export const ServerChannelList: React.FC<Props> = ({
                     <ChannelIconRenderer
                         name={ch.icon_name}
                         size={16}
-                        className={`shrink-0 ${activeChannelId === ch.channel_id ? 'text-cl-lume' : 'text-cl-faint group-hover:text-cl-muted'}`}
+                        className={`shrink-0 ${activeChannelId === ch.channel_id ? 'text-cl-lume-text' : 'text-cl-faint group-hover:text-cl-muted'}`}
                     />
                 ) : ch.icon_emoji ? (
                     <span className="shrink-0 text-[15px] leading-none w-4 text-center">{ch.icon_emoji}</span>
                 ) : (
                     <Hash
                         size={16}
-                        className={`shrink-0 ${activeChannelId === ch.channel_id ? 'text-cl-lume' : 'text-cl-faint group-hover:text-cl-muted'}`}
+                        className={`shrink-0 ${activeChannelId === ch.channel_id ? 'text-cl-lume-text' : 'text-cl-faint group-hover:text-cl-muted'}`}
                     />
                 )}
                 <span className={`truncate flex-1 ${isChannelMuted ? 'opacity-50' : ''}`}>{ch.name}</span>
+                {ch.age_restricted && (
+                    <span role="img" aria-label="Age-restricted channel" title="Age-restricted (18+)" className="shrink-0 text-cl-glow-text/80" data-testid="age-restricted-icon">
+                        <ShieldAlert size={12} aria-hidden="true" />
+                    </span>
+                )}
+                {isMuted && <MutedGlyph size={12} />}
                 {/* @mention badge — always shown regardless of mute */}
                 {badge === 'mention' && (
                     <span className="ml-auto min-w-[16px] h-4 px-0.5 rounded-full bg-cl-flash text-cl-text text-[9px] font-bold flex items-center justify-center group-hover:opacity-0 transition-opacity shrink-0">
@@ -1259,7 +1284,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 <div className="absolute inset-x-0 bottom-0 flex items-end justify-between px-3 pb-2 gap-1.5">
                     <h2
                         className="text-[18px] font-semibold text-cl-text truncate flex-1 leading-tight m-0"
-                        style={{ fontFamily: 'var(--cl-font-display)', textShadow: '0 1px 10px rgba(0,0,0,0.7)' }}
+                        style={{ fontFamily: 'var(--cl-font-display)', textShadow: 'var(--cl-title-halo, 0 1px 10px rgb(var(--cl-shade-rgb) / 0.7))' }}
                     >
                         {server.name}
                     </h2>
@@ -1272,7 +1297,7 @@ export const ServerChannelList: React.FC<Props> = ({
                                 aria-label="Invite People"
                                 onClick={onOpenInvite}
                                 /* Invite is the one primary action here — it keeps a lume tint at rest. */
-                                style={{ color: 'var(--cl-lume)', background: 'rgba(37,224,200,.10)' }}
+                                style={{ color: 'var(--cl-lume-text)', background: 'rgb(var(--cl-lume-rgb) / .10)' }}
                             >
                                 <UserPlus size={15} />
                             </button>
@@ -1408,6 +1433,7 @@ export const ServerChannelList: React.FC<Props> = ({
                                                             category={cat}
                                                             collapsed={collapsed}
                                                             rolled={collapsed ? rolledUnread(channelsIn(items)) : null}
+                                                            muted={mute.isMuted(cat.category_id)}
                                                         />
                                                         {canManage && (
                                                             <HoverActions
@@ -1481,7 +1507,7 @@ export const ServerChannelList: React.FC<Props> = ({
                             </div>
                             {overRefused && (
                                 <div
-                                    className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold text-cl-flash bg-cl-deep border border-cl-flash/40 shadow-lg whitespace-nowrap"
+                                    className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold text-cl-flash-text bg-cl-deep border border-cl-flash/40 shadow-lg whitespace-nowrap"
                                     data-testid="drag-refused-hint"
                                 >
                                     <Ban size={11} aria-hidden="true" />

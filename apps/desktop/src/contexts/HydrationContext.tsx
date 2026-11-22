@@ -40,8 +40,12 @@ interface HydrationValue {
     ready: boolean;
     /** Which core loads have settled (resolved OR exhausted their retries). */
     settled: Record<CoreLoad, boolean>;
-    /** Mark a core load settled. Idempotent. */
-    markSettled: (load: CoreLoad) => void;
+    /**
+     * Mark a core load settled. Idempotent. `via: 'cache'` = last session's copy
+     * is on screen (enough to lift the loading screen), not the network result:
+     * only network settles end the boot burst (the post-boot retry pass below).
+     */
+    markSettled: (load: CoreLoad, via?: 'network' | 'cache') => void;
     /** Give up waiting and render. Called by the gate's timeout. */
     releaseGate: () => void;
     /** Bump the generation — retry everything that can retry. */
@@ -57,8 +61,13 @@ export const HydrationProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
     const [gateReleased, setGateReleased] = useState(false);
 
-    const markSettled = useCallback((load: CoreLoad) => {
+    // What the NETWORK has settled, apart from what a cache let the gate open on.
+    const [networkSettled, setNetworkSettled] = useState<Record<CoreLoad, boolean>>({
+        conversations: false, friends: false, servers: false,
+    });
+    const markSettled = useCallback((load: CoreLoad, via: 'network' | 'cache' = 'network') => {
         setSettled(prev => (prev[load] ? prev : { ...prev, [load]: true }));
+        if (via === 'network') setNetworkSettled(prev => (prev[load] ? prev : { ...prev, [load]: true }));
     }, []);
 
     const releaseGate = useCallback(() => setGateReleased(true), []);
@@ -79,13 +88,20 @@ export const HydrationProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // connecting) that caused the first failure; nothing else bumped the
     // generation until an OS resume or a socket RE-connect. So, once the core
     // loads have first settled, wait for the burst to drain and bump once.
+    //
+    // Keyed on the NETWORK loads (or the gate's timeout), not on `ready`: since the
+    // app can open from last session's cached lists (utils/bootListCache.ts),
+    // `ready` comes BEFORE the burst, and bumping then left every avatar that
+    // failed in the burst without its retry (owner 2026-11-19: profile pictures
+    // missing after the fast start).
+    const bootBurstDone = gateReleased || Object.values(networkSettled).every(Boolean);
     const postBootBumped = useRef(false);
     useEffect(() => {
-        if (!ready || postBootBumped.current) return;
+        if (!bootBurstDone || postBootBumped.current) return;
         postBootBumped.current = true;
         const t = setTimeout(() => setGeneration(g => g + 1), 2_500);
         return () => clearTimeout(t);
-    }, [ready]);
+    }, [bootBurstDone]);
 
     const value = useMemo<HydrationValue>(() => ({
         generation, ready, settled, markSettled, releaseGate, bumpGeneration,

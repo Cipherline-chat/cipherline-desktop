@@ -23,6 +23,7 @@ import { useToast } from '../contexts/ToastContext';
 import {
     activeResetRequests, cancelDeviceReset, describeApprovalError, platformLabel, type PendingDeviceRequest,
 } from '../utils/deviceApproval';
+import { formatDateTime } from '../utils/a11y/timeFormat';
 
 interface Props {
     /** The approver queue (the host's state); this picks out the live resets. */
@@ -33,7 +34,7 @@ interface Props {
 
 function whenLabel(iso: string | null): string {
     const t = iso ? Date.parse(iso) : NaN;
-    return Number.isFinite(t) ? new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'soon';
+    return Number.isFinite(t) ? formatDateTime(t, [], { dateStyle: 'medium', timeStyle: 'short' }) : 'soon';
 }
 
 export const DeviceResetBanner: React.FC<Props> = ({ requests, onResolved }) => {

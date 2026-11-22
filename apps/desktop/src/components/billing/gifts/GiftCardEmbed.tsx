@@ -18,7 +18,7 @@
  * device's accept (`already: true`) goes straight to the opened state.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { useCelebrationReduced } from '../../../utils/a11y/motionPrefs';
 import { AlertTriangle, Gift, RefreshCw } from 'lucide-react';
 import { apiErrorMessage, type GiftView } from '@cipherline/shared';
 import { ClButton, ClSkeleton } from '../../cl';
@@ -55,7 +55,7 @@ export const GiftCardEmbed: React.FC<GiftCardEmbedProps> = ({ giftId, isMine, se
     /** The Pro welcome plays at most once per card, and only on the device
      *  whose Accept actually redeemed (never for `already`). */
     const celebrated = useRef(false);
-    const reduced = useReducedMotion();
+    const reduced = useCelebrationReduced();
     const [fetchState, setFetchState] = useState<GiftFetchState>({ view: null, loading: true, notFound: false, failed: false });
     const [redeeming, setRedeeming] = useState(false);
     const [unwrapping, setUnwrapping] = useState(false);

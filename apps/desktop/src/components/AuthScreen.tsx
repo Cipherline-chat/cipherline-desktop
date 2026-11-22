@@ -1,4 +1,5 @@
 import secureLocalStore from '../utils/secureLocalStore';
+import { celebrationReducedNow } from '../utils/a11y/motionPrefs';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { TurnstileFrame } from './TurnstileFrame';
 import { useAuth } from '../contexts/AuthContext';
@@ -9,6 +10,7 @@ import { apiUrl } from '../utils/apiPath';
 import type { OpenedBackupFile } from '../services/driveBackup';
 import { Lock, Mail, Eye, EyeOff, Upload, KeyRound, Smartphone, Calendar, ShieldCheck, Monitor, Sparkles, CheckCircle2, ChevronRight, HardDrive, Gift, Check, X, Loader2 } from 'lucide-react';
 import { markLocalHistory, probeLocalHistory } from '../utils/localHistoryFlag';
+import { restartApp } from '../utils/restartApp';
 import { startOnboarding } from '../utils/onboardingProgress';
 import cipherlineMark from '../assets/cipherline-mark.svg';
 import { ClButton } from './ClButton';
@@ -143,8 +145,8 @@ const ReferralCodeField: React.FC<{
 
     const rightSlot =
         status === 'checking' ? <Loader2 size={14} className="animate-spin" style={{ color: 'var(--cl-muted)' }} /> :
-        status === 'valid'    ? <Check size={14} style={{ color: 'var(--cl-lume)' }} /> :
-        status === 'invalid' || status === 'error' ? <X size={14} style={{ color: 'var(--cl-flash)' }} /> :
+        status === 'valid'    ? <Check size={14} style={{ color: 'var(--cl-lume-text)' }} /> :
+        status === 'invalid' || status === 'error' ? <X size={14} style={{ color: 'var(--cl-flash-text)' }} /> :
         null;
 
     const handleChange = (v: string) => {
@@ -159,10 +161,10 @@ const ReferralCodeField: React.FC<{
                 <button
                     type="button"
                     onClick={() => setOpen(true)}
-                    className="flex items-center gap-1.5 text-[12px] text-cl-muted hover:text-cl-lume transition-colors"
+                    className="flex items-center gap-1.5 text-[12px] text-cl-muted hover:text-cl-lume-text transition-colors"
                 >
                     <Gift size={12} />
-                    Have a referral code? <span className="text-cl-lume">+7 free days</span>
+                    Have a referral code? <span className="text-cl-lume-text">+7 free days</span>
                 </button>
             ) : status === 'valid' && referrer ? (
                 <ReferralAppliedCard
@@ -183,17 +185,17 @@ const ReferralCodeField: React.FC<{
                         rightSlot={rightSlot}
                     />
                     {status === 'valid' && (
-                        <p className="text-xs mt-1.5 pl-1 transition-all" style={{ color: 'var(--cl-lume)' }}>
+                        <p className="text-xs mt-1.5 pl-1 transition-all" style={{ color: 'var(--cl-lume-text)' }}>
                             +7 free days applied!
                         </p>
                     )}
                     {status === 'invalid' && (
-                        <p className="text-xs mt-1.5 pl-1" style={{ color: 'var(--cl-flash)' }}>
+                        <p className="text-xs mt-1.5 pl-1" style={{ color: 'var(--cl-flash-text)' }}>
                             That referral code isn't valid.
                         </p>
                     )}
                     {status === 'error' && (
-                        <p className="text-xs mt-1.5 pl-1" style={{ color: 'var(--cl-flash)' }}>
+                        <p className="text-xs mt-1.5 pl-1" style={{ color: 'var(--cl-flash-text)' }}>
                             Couldn't check that code right now. Check your connection and try again.
                         </p>
                     )}
@@ -281,7 +283,7 @@ const AuthBackground: React.FC = () => {
                     />
                 ))}
             </div>
-            <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 85% at 50% -10%, transparent 45%, rgba(0,0,0,.4) 100%)' }} />
+            <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 85% at 50% -10%, transparent 45%, rgb(var(--cl-shade-rgb) / var(--cl-auth-vignette, .4)) 100%)' }} />
         </div>
     );
 };
@@ -336,7 +338,7 @@ const AuthBrand: React.FC = () => {
             <h1 className="font-display text-[2rem] text-cl-text leading-none tracking-tight" style={{ fontWeight: 600 }}>cipherline</h1>
             <div className="h-5 mt-2 flex items-center justify-center">
                 {quip
-                    ? <p key={quip} className="cl-egg text-[13px] font-semibold" style={{ color: 'var(--cl-lume)' }}>{quip}</p>
+                    ? <p key={quip} className="cl-egg text-[13px] font-semibold" style={{ color: 'var(--cl-lume-text)' }}>{quip}</p>
                     : <p className="text-cl-faint text-sm">encrypted chat for your community</p>}
             </div>
         </div>
@@ -374,11 +376,11 @@ const Shell: React.FC<{ children: React.ReactNode; shake?: boolean }> = ({ child
                 <div
                     className={`rounded-2xl relative auth-card-rise${shake ? ' auth-shake' : ''}`}
                     style={{
-                        background: 'rgba(19,26,48,0.55)',
+                        background: 'rgb(var(--cl-deep-rgb) / 0.55)',
                         backdropFilter: 'blur(22px) saturate(1.3)',
                         WebkitBackdropFilter: 'blur(22px) saturate(1.3)',
-                        border: '1px solid rgba(255,255,255,0.10)',
-                        boxShadow: '0 24px 64px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.10), 0 0 0 1px rgba(37,224,200,.05)',
+                        border: '1px solid rgb(var(--cl-bright-rgb) / 0.10)',
+                        boxShadow: '0 24px 64px rgb(var(--cl-shade-rgb) / .45), inset 0 1px 0 rgb(var(--cl-bright-rgb) / .10), 0 0 0 1px rgb(var(--cl-lume-rgb) / .05)',
                         height: h,
                         overflow: 'hidden',
                         transition: 'height .34s cubic-bezier(.22,1,.36,1)',
@@ -443,13 +445,13 @@ const ReturningShell: React.FC<{
                     className="auth-returning-check"
                     style={{
                         width: 64, height: 64, borderRadius: 20,
-                        background: 'rgba(37,224,200,0.12)',
-                        border: '1.5px solid rgba(37,224,200,0.28)',
+                        background: 'rgb(var(--cl-lume-rgb) / 0.12)',
+                        border: '1.5px solid rgb(var(--cl-lume-rgb) / 0.28)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         margin: '0 auto 20px',
                     }}
                 >
-                    <CheckCircle2 style={{ width: 32, height: 32, color: 'var(--cl-lume)' }} />
+                    <CheckCircle2 style={{ width: 32, height: 32, color: 'var(--cl-lume-text)' }} />
                 </div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 6 }}>
                     Welcome back!
@@ -468,7 +470,7 @@ const ReturningShell: React.FC<{
 /** A quick confetti burst from (x,y) using the kit's `.cl-conf` particles —
  *  light = commitment, fired when an account is created. Reduced-motion skips it. */
 function authConfetti(x: number, y: number) {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (celebrationReducedNow()) return;
     const colors = ['var(--cl-lume)', 'var(--cl-flash)', 'var(--cl-glow)', 'var(--cl-ok)'];
     for (let i = 0; i < 22; i++) {
         const s = document.createElement('span');
@@ -496,7 +498,7 @@ const LegalLink: React.FC<{ href: string; children: React.ReactNode }> = ({ href
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => { e.preventDefault(); openExternalLink(href); }}
-        className="text-cl-text font-semibold underline decoration-dotted underline-offset-2 hover:text-cl-lume transition-colors"
+        className="text-cl-text font-semibold underline decoration-dotted underline-offset-2 hover:text-cl-lume-text transition-colors"
     >
         {children}
     </a>
@@ -729,9 +731,21 @@ const AuthScreen: React.FC = () => {
             : 'history-unreadable');
     };
 
-    /** Re-run the probe from the `history-unreadable` screen. */
+    /**
+     * "Try again" on the `history-unreadable` screen. When a store load failed
+     * this session (the whole store, or this account), re-probing can never
+     * succeed: a failed load never becomes ready in-session (secureLocalStore's
+     * `unreadAccount`), and Chromium keeps a broken IndexedDB backend for the
+     * life of the process. So it restarts the app instead (utils/restartApp.ts).
+     * Only an unreadable probe with no load failure behind it is re-run here.
+     */
     const retryHistoryProbe = async () => {
         if (!pendingRegPayload) return;
+        if (secureLocalStore.hasLoadFailure()) {
+            setError(''); setLoading(true);
+            await restartApp();
+            return;
+        }
         setError(''); setLoading(true);
         try {
             const probe = await probeLocalHistory(pendingRegPayload.userId);
@@ -1207,7 +1221,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-7">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <ShieldCheck className="w-7 h-7 text-cl-lume" />
+                        <ShieldCheck className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Device Not Approved</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1247,7 +1261,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-7">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <Upload className="w-7 h-7 text-cl-lume" />
+                        <Upload className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Restore Local Backup</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1305,7 +1319,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-7">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <HardDrive className="w-7 h-7 text-cl-lume" />
+                        <HardDrive className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Couldn’t read local data</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1318,6 +1332,12 @@ const AuthScreen: React.FC = () => {
                     <ClButton onClick={retryHistoryProbe} disabled={loading} className="w-full">
                         {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Try again'}
                     </ClButton>
+                    {secureLocalStore.hasLoadFailure() && (
+                        <p className="text-cl-faint text-xs text-center leading-relaxed mb-1">
+                            Trying again restarts Cipherline so it can read your data afresh.
+                            You may need to sign in again.
+                        </p>
+                    )}
                     <button
                         onClick={() => {
                             // No markLocalHistory() here: we never established
@@ -1329,7 +1349,7 @@ const AuthScreen: React.FC = () => {
                         className="w-full text-left rounded-2xl border border-cl-border bg-cl-surface hover:bg-cl-raise transition-colors p-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/50 disabled:opacity-50"
                     >
                         <div className="flex items-center gap-3">
-                            <Monitor className="w-5 h-5 text-cl-lume flex-shrink-0" />
+                            <Monitor className="w-5 h-5 text-cl-lume-text flex-shrink-0" />
                             <div className="flex-1 min-w-0">
                                 <div className="text-sm font-semibold text-cl-text">Continue to Cipherline</div>
                                 <div className="text-xs text-cl-faint mt-0.5">Sign in and leave everything on this device as it is</div>
@@ -1348,7 +1368,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-7">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <HardDrive className="w-7 h-7 text-cl-lume" />
+                        <HardDrive className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">No history on this device</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1378,7 +1398,7 @@ const AuthScreen: React.FC = () => {
                         className="w-full text-left rounded-2xl border border-cl-border bg-cl-surface hover:bg-cl-raise transition-colors p-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/50"
                     >
                         <div className="flex items-center gap-3">
-                            <Monitor className="w-5 h-5 text-cl-lume flex-shrink-0" />
+                            <Monitor className="w-5 h-5 text-cl-lume-text flex-shrink-0" />
                             <div className="flex-1 min-w-0">
                                 <div className="text-sm font-semibold text-cl-text">Sync from existing device</div>
                                 <div className="text-xs text-cl-faint mt-0.5">Continue, then choose a device to sync from once you're in</div>
@@ -1391,7 +1411,7 @@ const AuthScreen: React.FC = () => {
                         className="w-full text-left rounded-2xl border border-cl-border bg-cl-surface hover:bg-cl-raise transition-colors p-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/50"
                     >
                         <div className="flex items-center gap-3">
-                            <Upload className="w-5 h-5 text-cl-lume flex-shrink-0" />
+                            <Upload className="w-5 h-5 text-cl-lume-text flex-shrink-0" />
                             <div className="flex-1 min-w-0">
                                 <div className="text-sm font-semibold text-cl-text">Restore from backup file</div>
                                 <div className="text-xs text-cl-faint mt-0.5">Decrypt a .enc backup you exported previously</div>
@@ -1407,7 +1427,7 @@ const AuthScreen: React.FC = () => {
                         className="w-full text-left rounded-2xl border border-cl-border bg-cl-surface hover:bg-cl-raise transition-colors p-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/50"
                     >
                         <div className="flex items-center gap-3">
-                            <Sparkles className="w-5 h-5 text-cl-lume flex-shrink-0" />
+                            <Sparkles className="w-5 h-5 text-cl-lume-text flex-shrink-0" />
                             <div className="flex-1 min-w-0">
                                 <div className="text-sm font-semibold text-cl-text">Start fresh</div>
                                 <div className="text-xs text-cl-faint mt-0.5">Jump straight in — no history restored</div>
@@ -1442,7 +1462,7 @@ const AuthScreen: React.FC = () => {
                 >
                     <div className="text-center mb-6">
                         <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                            <Mail className="w-7 h-7 text-cl-lume" />
+                            <Mail className="w-7 h-7 text-cl-lume-text" />
                         </div>
                         <h2 className="text-xl font-bold text-cl-text mb-1">Verify your email</h2>
                         <p className="text-cl-faint text-sm leading-relaxed">
@@ -1476,7 +1496,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-6">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        {totpMode ? <Smartphone className="w-7 h-7 text-cl-lume" /> : <Mail className="w-7 h-7 text-cl-lume" />}
+                        {totpMode ? <Smartphone className="w-7 h-7 text-cl-lume-text" /> : <Mail className="w-7 h-7 text-cl-lume-text" />}
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Two-step verification</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1534,7 +1554,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-6">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <KeyRound className="w-7 h-7 text-cl-lume" />
+                        <KeyRound className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Reset password</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1582,7 +1602,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-6">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <Mail className="w-7 h-7 text-cl-lume" />
+                        <Mail className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Check your email</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1605,7 +1625,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-6">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <ShieldCheck className="w-7 h-7 text-cl-lume" />
+                        <ShieldCheck className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">Two-factor verification</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1630,13 +1650,13 @@ const AuthScreen: React.FC = () => {
                     <div className="flex justify-center gap-4 text-[12px]">
                         {reset2faMode === 'totp' && (
                             <button type="button" onClick={() => { setReset2faMode('backup'); setReset2faCode(''); }}
-                                className="text-cl-lume hover:underline" style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                                className="text-cl-lume-text hover:underline" style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
                                 Use a backup code
                             </button>
                         )}
                         {reset2faMode === 'backup' && (
                             <button type="button" onClick={() => { setReset2faMode('totp'); setReset2faCode(''); }}
-                                className="text-cl-lume hover:underline" style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                                className="text-cl-lume-text hover:underline" style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
                                 Use authenticator app
                             </button>
                         )}
@@ -1655,7 +1675,7 @@ const AuthScreen: React.FC = () => {
             <Shell>
                 <div className="text-center mb-6">
                     <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                        <Lock className="w-7 h-7 text-cl-lume" />
+                        <Lock className="w-7 h-7 text-cl-lume-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">New password</h2>
                     <p className="text-cl-faint text-sm leading-relaxed">
@@ -1687,7 +1707,7 @@ const AuthScreen: React.FC = () => {
                         disabled={loading}
                     />
                     {confirmPassword && newPassword !== confirmPassword && (
-                        <p className="text-xs -mt-1" style={{ color: 'var(--cl-flash)' }}>Passwords do not match</p>
+                        <p className="text-xs -mt-1" style={{ color: 'var(--cl-flash-text)' }}>Passwords do not match</p>
                     )}
                     <ClCheckbox
                         checked={resetLogoutOthers}
@@ -1790,7 +1810,7 @@ const AuthScreen: React.FC = () => {
                     </ClButton>
                     <div className="flex justify-center mt-2">
                         <button type="button" onClick={() => switchView('login')} className="text-[13px] text-cl-muted hover:text-cl-text transition-colors">
-                            Already have an account? <span className="text-cl-lume font-semibold">Sign in</span>
+                            Already have an account? <span className="text-cl-lume-text font-semibold">Sign in</span>
                         </button>
                     </div>
                 </form>
@@ -1842,11 +1862,11 @@ const AuthScreen: React.FC = () => {
                     </ClButton>
                     {/* Secondary actions as light text links — not heavy full-width buttons. */}
                     <div className="flex flex-col items-center gap-2.5 mt-2">
-                        <button type="button" onClick={() => switchView('forgot-password')} className="text-[13px] text-cl-faint hover:text-cl-lume transition-colors">
+                        <button type="button" onClick={() => switchView('forgot-password')} className="text-[13px] text-cl-faint hover:text-cl-lume-text transition-colors">
                             Forgot your password?
                         </button>
                         <button type="button" onClick={() => switchView('register')} className="text-[13px] text-cl-muted hover:text-cl-text transition-colors">
-                            Don't have an account? <span className="text-cl-lume font-semibold">Sign up</span>
+                            Don't have an account? <span className="text-cl-lume-text font-semibold">Sign up</span>
                         </button>
                     </div>
                 </form>
@@ -1854,7 +1874,7 @@ const AuthScreen: React.FC = () => {
             {loginMode === 'qr' && (
                 <div className="flex flex-col items-center gap-2.5 mt-4">
                     <button type="button" onClick={() => switchView('register')} className="text-[13px] text-cl-muted hover:text-cl-text transition-colors">
-                        Don't have an account? <span className="text-cl-lume font-semibold">Sign up</span>
+                        Don't have an account? <span className="text-cl-lume-text font-semibold">Sign up</span>
                     </button>
                 </div>
             )}

@@ -166,7 +166,7 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
                 <label className="flex items-center justify-between text-[13px] font-semibold text-cl-faint m-0 uppercase tracking-wide">
                     <span>Add Members</span>
                     {selectedToAdd.size > 0 && (
-                        <span className="text-cl-lume normal-case font-normal tracking-normal">
+                        <span className="text-cl-lume-text normal-case font-normal tracking-normal">
                             {selectedToAdd.size} selected
                         </span>
                     )}
@@ -248,7 +248,7 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
                 <div className="flex items-center justify-between gap-3 text-[12px]">
                     <span
                         data-testid="group-size-note"
-                        className={remaining === 0 || (atCap && selectedToAdd.size > 0) ? 'text-cl-flash' : 'text-cl-faint'}
+                        className={remaining === 0 || (atCap && selectedToAdd.size > 0) ? 'text-cl-flash-text' : 'text-cl-faint'}
                     >
                         {remaining === 0
                             ? `This group is full (${GROUP_MAX_MEMBERS} members).`
@@ -259,18 +259,18 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
                     {/* With no label row above the search, the running count lives here
                         (same line as the size note, so selecting never shifts the layout). */}
                     {!showLabel && selectedToAdd.size > 0 && (
-                        <span className="text-cl-lume shrink-0">{selectedToAdd.size} selected</span>
+                        <span className="text-cl-lume-text shrink-0">{selectedToAdd.size} selected</span>
                     )}
                 </div>
             )}
 
             {error && (
-                <div role="alert" className="text-cl-flash bg-cl-flash/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-flash/20">
+                <div role="alert" className="text-cl-flash-text bg-cl-flash/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-flash/20">
                     {error}
                 </div>
             )}
             {success && (
-                <div role="status" className="text-cl-ok bg-cl-ok/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-ok/20">
+                <div role="status" className="text-cl-ok-text bg-cl-ok/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-ok/20">
                     {success}
                 </div>
             )}

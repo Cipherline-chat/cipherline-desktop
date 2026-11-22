@@ -188,13 +188,19 @@ const SlottedCodeInput = forwardRef<SlottedCodeInputHandle, {
                 return (
                     <div
                         key={i}
+                        // Every colour reads an optional `--slot-*` variable first,
+                        // falling back to exactly what it always was. A surface that
+                        // needs other slot colours sets them on an ancestor (the
+                        // Screen Lock's Light panel, styles/screen-lock.css); no
+                        // other caller (desktop or the website portal) sets any, so
+                        // they render unchanged.
                         style={{
                             width: 44, height: 52, borderRadius: 12, flexShrink: 0,
-                            background: error ? 'rgba(255,107,94,0.10)' : filled ? 'rgba(37,224,200,0.08)' : 'var(--cl-surface)',
-                            border: `1.5px solid ${error ? 'var(--cl-flash, #FF6B5E)' : isCursor ? 'var(--cl-lume)' : filled ? 'rgba(37,224,200,0.32)' : 'var(--cl-border)'}`,
+                            background: error ? 'var(--slot-error-bg, rgba(255,107,94,0.10))' : filled ? 'var(--slot-filled-bg, rgba(37,224,200,0.08))' : 'var(--slot-bg, var(--cl-surface))',
+                            border: `1.5px solid ${error ? 'var(--slot-error-edge, var(--cl-flash, #FF6B5E))' : isCursor ? 'var(--slot-cursor, var(--cl-lume))' : filled ? 'var(--slot-filled-edge, rgba(37,224,200,0.32))' : 'var(--slot-edge, var(--cl-border))'}`,
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                             transition: 'border-color .15s, background .15s, box-shadow .15s',
-                            boxShadow: error ? '0 0 0 3px rgba(255,107,94,0.13)' : isCursor ? '0 0 0 3px rgba(37,224,200,0.13)' : 'none',
+                            boxShadow: error ? 'var(--slot-error-ring, 0 0 0 3px rgba(255,107,94,0.13))' : isCursor ? 'var(--slot-cursor-ring, 0 0 0 3px rgba(37,224,200,0.13))' : 'none',
                             position: 'relative', overflow: 'hidden',
                         }}
                     >
@@ -228,7 +234,7 @@ const SlottedCodeInput = forwardRef<SlottedCodeInputHandle, {
                         ) : (
                             <span style={{
                                 width: 6, height: 6, borderRadius: '50%',
-                                background: isCursor ? 'var(--cl-lume)' : 'var(--cl-faint)',
+                                background: isCursor ? 'var(--slot-cursor, var(--cl-lume))' : 'var(--cl-faint)',
                                 opacity: isCursor ? 0.9 : 0.3,
                                 transition: 'all .15s',
                             }} />

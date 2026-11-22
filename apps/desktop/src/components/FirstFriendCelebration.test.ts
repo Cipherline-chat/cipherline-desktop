@@ -99,7 +99,7 @@ describe('Dashboard trigger (rules unchanged)', () => {
     const effect = dash.slice(dash.indexOf('// ── First friend, ever'), dash.indexOf('const endFirstFriendCelebration'));
     it('once per account, the egg find and the sound, then the reduced-motion gate, then the visual', () => {
         expect(effect).toMatch(/cipherline_first_friend_\$\{userId\}/);
-        const order = ["recordEggFound('first-friend')", "playSound('celebration'", 'prefers-reduced-motion', 'setFirstFriendCelebration(true)'].map(t => effect.indexOf(t));
+        const order = ["recordEggFound('first-friend')", "playSound('celebration'", 'celebrationReducedNow()', 'setFirstFriendCelebration(true)'].map(t => effect.indexOf(t));
         expect(order.every(i => i > 0)).toBe(true);
         expect([...order].sort((a, b) => a - b)).toEqual(order);
     });

@@ -127,10 +127,12 @@ describe('AccessPresetPicker role finder', () => {
         openFinder();
         expect(optionNames()).toEqual(['Role 1', 'Role 3', 'Role 4', 'Role 5', 'Role 6', 'Role 7', 'Role 8']);
         // Role 1 has a colour -> filled dot; Role 3 has none -> hollow outline dot.
-        const dot = (i: number) => options()[i].querySelector<HTMLElement>('span[style]')!;
+        // Query by class, not `[style]`: the hollow dot's border is `rgb(var(--cl-bright-rgb) / .25)`,
+        // which jsdom cannot parse, so it drops the whole declaration (and the attribute).
+        const dot = (i: number) => options()[i].querySelector<HTMLElement>('span.w-2.h-2')!;
         expect(dot(0).style.backgroundColor).not.toBe('');
+        expect(dot(1)).not.toBeNull();
         expect(dot(1).style.backgroundColor).toBe('');
-        expect(dot(1).style.border).not.toBe('');
     });
 
     it('filters by name, case-insensitively, and shows an empty state', () => {

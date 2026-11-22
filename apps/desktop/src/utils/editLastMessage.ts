@@ -15,9 +15,11 @@
 
 export interface EditableMessageLike {
     id?: string | null;
-    content?: { type?: string | null; text?: string | null } | null;
+    content?: { type?: string | null; text?: string | null; sticker?: unknown } | null;
     sender_user_id?: string | null;
     sender_device_id?: string | null;
+    /** Imported history (server-marked): never editable, even by the importer. */
+    import_mark?: unknown;
 }
 
 export interface OwnershipContext {
@@ -49,6 +51,9 @@ export function isOwnMessage(msg: EditableMessageLike, ctx: OwnershipContext): b
 export function isEditableOwnMessage(msg: EditableMessageLike | null | undefined, ctx: OwnershipContext): boolean {
     if (!msg || !msg.id) return false;
     if (msg.content?.type !== 'text') return false;
+    if (msg.import_mark) return false;
+    // A sticker rides a text message but is never edited (utils/stickers/wire.ts).
+    if (msg.content.sticker) return false;
     return isOwnMessage(msg, ctx);
 }
 

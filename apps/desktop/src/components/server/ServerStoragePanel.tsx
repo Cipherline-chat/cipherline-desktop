@@ -12,7 +12,9 @@
  * after every server-save / unsave).
  */
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useEscape } from '../../hooks/useEscape';
 import axios from 'axios';
 import { Archive, Hash, ChevronDown, ChevronRight, AlertTriangle, Check, Info } from 'lucide-react';
 import { formatBytes, STORAGE_TIERS } from '@cipherline/shared';
@@ -70,6 +72,37 @@ export const ServerStoragePanel: React.FC<Props> = ({
     const tierBtnRef = useRef<HTMLSpanElement>(null);
     const tierPopoverRef = useRef<HTMLDivElement>(null);
 
+    // Where the tier popover sits. It is portaled to <body> with fixed
+    // positioning: inside the settings pane it was clipped by the scrolling
+    // panel and painted under the pane's sticky header.
+    const [tierPos, setTierPos] = useState<React.CSSProperties | null>(null);
+    const placeTierPopover = useCallback(() => {
+        const btn = tierBtnRef.current;
+        if (!btn) return;
+        const r = btn.getBoundingClientRect();
+        const gap = 8, margin = 8, width = 288;
+        const h = tierPopoverRef.current?.offsetHeight ?? 320;
+        const left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
+        // Prefer above the button (as before); flip below when there is no room.
+        const above = r.top - gap - h >= margin;
+        setTierPos(above
+            ? { position: 'fixed', left, bottom: window.innerHeight - r.top + gap, width }
+            : { position: 'fixed', left, top: Math.min(r.bottom + gap, window.innerHeight - h - margin), width });
+    }, []);
+    useLayoutEffect(() => {
+        if (!showTierPopover) return;
+        placeTierPopover();
+        // Measure again once the popover has rendered at its real height.
+        const raf = requestAnimationFrame(placeTierPopover);
+        window.addEventListener('resize', placeTierPopover);
+        window.addEventListener('scroll', placeTierPopover, true);
+        return () => {
+            cancelAnimationFrame(raf);
+            window.removeEventListener('resize', placeTierPopover);
+            window.removeEventListener('scroll', placeTierPopover, true);
+        };
+    }, [showTierPopover, placeTierPopover]);
+
     // Dismiss tier popover on outside click
     useEffect(() => {
         if (!showTierPopover) return;
@@ -84,6 +117,9 @@ export const ServerStoragePanel: React.FC<Props> = ({
         document.addEventListener('mousedown', handler);
         return () => document.removeEventListener('mousedown', handler);
     }, [showTierPopover]);
+    // Escape closes only the popover (top of the shared Escape stack), not the
+    // settings window behind it.
+    useEscape(() => setShowTierPopover(false), showTierPopover);
 
     const load = useCallback(async () => {
         if (!token || !serverId) return;
@@ -182,18 +218,21 @@ export const ServerStoragePanel: React.FC<Props> = ({
                             tooltip="Click to view all tiers"
                         >
                             Tier:{' '}
-                            <span className={`${showTierPopover ? 'text-cl-lume' : 'text-cl-muted'} transition-colors`}>
+                            <span className={`${showTierPopover ? 'text-cl-lume-text' : 'text-cl-muted'} transition-colors`}>
                                 {quota.tier_label}
                             </span>
-                            <Info size={10} className={`${showTierPopover ? 'text-cl-lume' : 'text-cl-faint'} transition-colors`} />
+                            <Info size={10} className={`${showTierPopover ? 'text-cl-lume-text' : 'text-cl-faint'} transition-colors`} />
                         </ClButton>
                         </span>
 
                         {/* Tier ladder popover */}
-                        {showTierPopover && (
+                        {showTierPopover && createPortal(
                             <div
                                 ref={tierPopoverRef}
-                                className="absolute bottom-full left-0 mb-2 z-50 w-72 rounded-xl bg-cl-deep border border-cl-border/50 shadow-2xl overflow-hidden"
+                                role="dialog"
+                                aria-label="Storage tiers"
+                                className="cl-tier-popover z-[1100] rounded-xl bg-cl-deep border border-cl-border/50 shadow-2xl overflow-hidden"
+                                style={tierPos ?? { position: 'fixed', visibility: 'hidden', left: 0, top: 0, width: 288 }}
                             >
                                 {/* Header */}
                                 <div className="px-4 pt-3 pb-2 border-b border-cl-border/30">
@@ -226,7 +265,7 @@ export const ServerStoragePanel: React.FC<Props> = ({
                                                 {/* Check / dot */}
                                                 <div className="w-4 shrink-0 flex justify-center">
                                                     {isCurrent ? (
-                                                        <Check size={12} className="text-cl-lume" />
+                                                        <Check size={12} className="text-cl-lume-text" />
                                                     ) : (
                                                         <span className={`w-1.5 h-1.5 rounded-full ${isUnlocked ? 'bg-white/30' : 'bg-white/10'}`} />
                                                     )}
@@ -246,7 +285,7 @@ export const ServerStoragePanel: React.FC<Props> = ({
                                                 {/* Quota */}
                                                 <span className={`text-[11px] font-mono tabular-nums ${
                                                     isCurrent
-                                                        ? 'text-cl-lume font-semibold'
+                                                        ? 'text-cl-lume-text font-semibold'
                                                         : isUnlocked
                                                             ? 'text-cl-faint'
                                                             : 'text-cl-faint'
@@ -268,7 +307,8 @@ export const ServerStoragePanel: React.FC<Props> = ({
                                         member{quota.member_count !== 1 ? 's' : ''}.
                                     </p>
                                 </div>
-                            </div>
+                            </div>,
+                            document.body,
                         )}
                     </span>
                     <span>{Math.round(pct)}% used</span>

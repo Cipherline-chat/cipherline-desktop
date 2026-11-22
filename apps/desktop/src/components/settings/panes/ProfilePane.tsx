@@ -34,6 +34,7 @@ import { ProfileVisibilitySection, type PreviewVisibility } from './ProfileVisib
 import { ProfileCosmeticsSection } from './ProfileCosmeticsSection';
 import { ProfileExtrasSection } from './ProfileExtrasSection';
 import { ProfileSteamSection } from './ProfileSteamSection';
+import { ProfileDiscordSection } from './ProfileDiscordSection';
 import { sanitizeLinks } from '../../../utils/profileLinks';
 import { AnimatedImageDialog } from './AnimatedImageDialog';
 import { isAnimatedFile, animatedPickError } from '../../../utils/animatedImage';
@@ -609,7 +610,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                                         <p className="cl-fmsg">{usernameErrorFor}</p>
                                     )}
                                     {usernameField.kind === 'ok' && !usernameErrorFor && (
-                                        <p className="ps-note" style={{ marginTop: 6, color: 'var(--cl-glow)' }}>
+                                        <p className="ps-note" style={{ marginTop: 6, color: 'var(--cl-glow-text)' }}>
                                             Saves when you leave this page, with a new #tag under this name. You can change it once every 24 hours.
                                         </p>
                                     )}
@@ -696,6 +697,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                     />
                     {/* Steam lives ONLY here (owner, 2026-10-28): connect / unlink, and the stats switch. */}
                     <ProfileSteamSection token={token ?? null} userId={user?.user_id} linked={!!user?.steam} onChanged={refreshProfile} />
+                    {/* Discord import phase 3: link Discord to claim imported messages. */}
+                    <ProfileDiscordSection token={token ?? null} />
                     </PaneTabPanel>
 
                     {/* ── Who can see this ───────────────────────────────────── */}
@@ -718,8 +721,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                     <ProfileFullView
                         userId={user.user_id} token={token ?? ''} isSelf data={ownCard} profile={ownPublic}
                         avatarId={previewData.avatarAttachmentId} bannerId={view.seen.banner ? previewData.bannerAttachmentId : null}
-                        presence={<span className="pcd-status-line"><span className="pcd-status-dot" style={{ backgroundColor: '#4ADE80' }} aria-hidden="true" /><b style={{ color: '#4ADE80' }}>Online</b></span>}
-                        avatarBadge={<span className="pcd-dot" style={{ backgroundColor: '#4ADE80' }} title="Online" />}
+                        presence={<span className="pcd-status-line"><span className="pcd-status-dot" style={{ backgroundColor: 'var(--cl-ok)' }} aria-hidden="true" /><b style={{ color: 'var(--cl-ok-text)' }}>Online</b></span>}
+                        avatarBadge={<span className="pcd-dot" style={{ backgroundColor: 'var(--cl-ok)' }} title="Online" />}
                         connections={ownConnections}
                         actions={<button type="button" className="ps-ghost" onClick={() => { setFullOpen(false); setShareOpen(true); }}><Share2 size={13} aria-hidden="true" /> Share</button>}
                         onClose={() => setFullOpen(false)}

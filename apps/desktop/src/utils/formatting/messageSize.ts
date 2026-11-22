@@ -80,7 +80,8 @@ export function sizeField(size: MessageSize | null | undefined): { size?: Messag
  * text can't drift from the posted message's.
  */
 export const MESSAGE_BODY_PX = 15;
-export const MESSAGE_BODY_LINE_HEIGHT = 'normal';
+/** 'normal' unless Accessibility > Line spacing: Relaxed sets --cl-msg-leading (styles/readability.css). */
+export const MESSAGE_BODY_LINE_HEIGHT = 'var(--cl-msg-leading, normal)';
 
 /**
  * The chat row's message body element classes (ChatPane's row body; harnesses

@@ -60,7 +60,8 @@ describe('share_audio: Wayland window shares take one app\'s audio (mode "app", 
     it('wiring: the app start logs mode app and passes only the handle; the picker logs a count', () => {
         const start = SC.slice(SC.indexOf('const startNativeWindowAudio = React.useCallback'), SC.indexOf('// Electron IPC: fires when getDisplayMedia is intercepted'));
         expect(start).toContain("const logMode: 'screen' | 'window' | 'app' = viaApp ? 'app' : mode;");
-        expect(start).toContain('window.electronAPI!.startAppAudioCapture!(appHandle!, grantTokenFor(shareGrantRef.current, sourceId))');
+        expect(start).toContain('window.electronAPI!.startAppAudioCapture!(appHandle!, audioToken)');
+        expect(start).toContain('let audioToken = grantTokenFor(shareGrantRef.current, sourceId)');
         expect(start).not.toMatch(/logShareAudio\(\{[^}]*\bmode,/);       // every row says logMode
         const picker = fs.readFileSync(path.resolve(__dirname, '../components/ScreenSharePickerModal.tsx'), 'utf8');
         expect(picker).toContain("step: 'picked', mode: 'app', apps: audioApps?.length ?? 0, how: appPick ? appPick.how : 'none'");
@@ -100,7 +101,7 @@ describe('wiring: a source swap keeps the share audio and every step leaves a ro
     it('the hot swap names its stop "swap" and logs when audio is not restarted', () => {
         const swap = SC.slice(SC.indexOf("await stopNativeWindowAudio('swap');"), SC.indexOf("await stopNativeWindowAudio('swap');") + 400);
         expect(swap).toContain("logShareAudio({ step: 'skipped'");
-        expect(swap).toContain('startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle)');
+        expect(swap).toContain('startNativeWindowAudio(nativeMode, options.audioWindowId ?? options.sourceId, options.appAudio?.handle)');
     });
 
     it('the native start logs starting / refused / first_chunk / no_chunks / failed / exited', () => {

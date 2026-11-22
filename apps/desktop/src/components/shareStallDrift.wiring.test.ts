@@ -46,7 +46,9 @@ describe('a fallback that must change the encoder republishes FRESH (never the r
     });
 
     it('every fallback passes { fresh: true }: none of them changes the user\'s resolution or frame rate by itself', () => {
-        const calls = [...SC.matchAll(/republishShareRef\.current\?\.\(([^;]*)\);/g)].map(m => m[1]);
+        // (`screenShare`: not a fallback the app takes by itself - the user clicked "Share the whole screen
+        //  instead" after Windows refused a window, windowShareFallback.ts; a new share of a new source)
+        const calls = [...SC.matchAll(/republishShareRef\.current\?\.\(([^;]*)\);/g)].map(m => m[1]).filter(c => c !== 'screenShare');
         expect(calls.length).toBe(5);
         // The software guard's clamp / step-down used to be the two non-fresh ones (a lower frame rate or a smaller
         // picture, republished by itself). They are gone: a slow CPU encoder is the overload SUGGESTION's business.
@@ -57,7 +59,7 @@ describe('a fallback that must change the encoder republishes FRESH (never the r
 
 describe('codec drift: the sender silently switched codec, viewers get nothing', () => {
     it('a drift watch runs for every share publication and republishes with the failed codec marked', () => {
-        const body = block('const watch = new ShareCodecDriftWatch({', 2200);
+        const body = block('const watch = new ShareCodecDriftWatch({', 3500);
         expect(body).toContain("logCallEvent('share_codec_drift'");
         expect(body).toContain("if (published === 'h265') markHevcFailed();");
         expect(body).toContain('else if (high) markH264HighFailed();');

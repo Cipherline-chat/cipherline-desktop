@@ -159,7 +159,7 @@ const STOCK_RING_COLOUR = new RegExp([
 const NOT_THE_SPEAKING_RING: Array<{ file: string; snippet: string; why: string }> = [
     {
         file: 'components/call/VideoTile.tsx',
-        snippet: "boxShadow: 'inset 0 0 0 2px rgba(37, 224, 200, 0.6)'",
+        snippet: "boxShadow: 'inset 0 0 0 2px rgb(var(--cl-lume-rgb) / 0.6)'",
         why: 'the FOCUS outline (`isFocused && !isFocusedView && !showBorderSpeaking`): brand lume, drawn only when the tile is NOT speaking',
     },
     {

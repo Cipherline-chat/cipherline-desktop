@@ -1,0 +1,417 @@
+/* GENERATED — do not hand-edit. node scripts/gen-theme-light-kit.cjs
+   The Light theme's version of every kit declaration that is a token colour,
+   a white/black lift or an accent used as text (cl-kit.css, cl-kit-ext.css are
+   shared with apps/website and stay untouched). Light only; same specificity
+   as the kit's own rules. Imported right after cl-kit-ext.css. */
+/*  from src/styles/cl-kit.css  */
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) h2 .no {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .say {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--ghost .cap {
+        background-image: radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgb(var(--cl-lume-rgb) / .16),rgb(var(--cl-lume-rgb) / 0) 75%)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--ghost .cap:hover {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--ghost .cap:active {
+        box-shadow: inset 0 0 0 1.5px var(--lume),inset 0 5px 14px rgb(var(--cl-shade-rgb) / .7),inset 0 0 0 999px rgb(var(--cl-shade-rgb) / .18)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb.dis .cap {
+        background-color: rgb(var(--cl-lume-rgb) / .08);
+        box-shadow: inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .22),inset 0 3px 7px rgb(var(--cl-shade-rgb) / .45);
+        color: rgb(var(--cl-lume-text-rgb) / .45)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb.dis .l1 {
+        background: rgb(var(--cl-lume-rgb) / .06)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb.dis .l2 {
+        background: rgb(var(--cl-lume-rgb) / .04)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clt .tsh {
+        background: var(--cl-sink)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clt.on .knob {
+        background: var(--cl-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clc .csh {
+        background: var(--cl-sink)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clc:focus-visible .cbox {
+        box-shadow: inset 0 0 0 1.5px var(--lume),0 0 0 3px rgb(var(--cl-lume-rgb) / .3)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clc.on:focus-visible .cbox {
+        box-shadow: inset 0 0 0 1.5px var(--lume),0 0 0 3px rgb(var(--cl-lume-rgb) / .3)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clr:focus-visible .rbox {
+        box-shadow: inset 0 0 0 1.5px var(--lume),0 0 0 3px rgb(var(--cl-lume-rgb) / .3)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .cls .strk {
+        background: var(--cl-sink);
+        box-shadow: inset 0 1px 2px rgb(var(--cl-shade-rgb) / .6)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .cls.grab .sfill {
+        box-shadow: 0 0 10px rgb(var(--cl-lume-rgb) / .45)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .cls:hover .sth {
+        box-shadow: 0 0 12px rgb(var(--cl-lume-rgb) / .4)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .cls.grab .sth {
+        box-shadow: 0 0 14px rgb(var(--cl-lume-rgb) / .6)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .cls .sbub {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .inp:focus {
+        box-shadow: 0 0 14px rgb(var(--cl-lume-rgb) / .22)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .fld:focus-within>label {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .fmsg {
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .fmsg.note {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clr .rsh {
+        background: var(--cl-sink)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .selm {
+        box-shadow: 0 14px 34px rgb(var(--cl-shade-rgb) / .5)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .selm button:hover {
+        background: rgb(var(--cl-lume-rgb) / .1)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .selm button.on {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .rolet {
+        background: rgb(var(--cl-lume-rgb) / .13);
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .rolet.gold {
+        background: rgb(var(--cl-glow-rgb) / .14);
+        color: var(--cl-glow-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .rolet.coral {
+        background: rgb(var(--cl-flash-rgb) / .14);
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .prog {
+        background: var(--cl-sink);
+        box-shadow: inset 0 1px 2px rgb(var(--cl-shade-rgb) / .6)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .plabel.okay {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .mention {
+        background: rgb(var(--cl-lume-rgb) / .12);
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .field:focus {
+        box-shadow: 0 0 14px rgb(var(--cl-lume-rgb) / .22)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .field.loud {
+        box-shadow: 0 0 14px rgb(var(--cl-glow-rgb) / .28) !important
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) td .mono {
+        color: var(--cl-lume-text)
+    }
+}
+/*  from src/styles/cl-kit-ext.css  */
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--chip.clb--ghost .cap:hover {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--chip.clb--ghost.muted .cap {
+        background-color: rgb(var(--cl-lume-rgb) / .12);
+        box-shadow: inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .55);
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--chip.clb--ghost.perm-danger.muted .cap {
+        background-color: rgb(var(--cl-flash-rgb) / .14);
+        box-shadow: inset 0 0 0 1.5px rgb(var(--cl-flash-rgb) / .55);
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .clb--icon.clb--ghost.dngr .cap:hover,
+:where(:root[data-scheme="light"] :scope) .clb--icon.clb--ghost.dngr .cap:focus-visible {
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm {
+        box-shadow: 0 14px 34px rgb(var(--cl-shade-rgb) / .5)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-title {
+        border-bottom: 1px solid rgb(var(--cl-border-rgb) / .5)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row:hover:not(:disabled),
+:where(:root[data-scheme="light"] :scope) .ctxm-row.focus:not(:disabled),
+:where(:root[data-scheme="light"] :scope) .ctxm-row:focus-visible {
+        background: rgb(var(--cl-lume-rgb) / .1)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row:hover:not(:disabled) .ci,
+:where(:root[data-scheme="light"] :scope) .ctxm-row.focus:not(:disabled) .ci {
+        color: var(--cl-lume-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row.danger {
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row.danger .ci {
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row.danger:hover:not(:disabled),
+:where(:root[data-scheme="light"] :scope) .ctxm-row.danger.focus:not(:disabled),
+:where(:root[data-scheme="light"] :scope) .ctxm-row.danger:focus-visible {
+        background: rgb(var(--cl-flash-rgb) / .1);
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-row.danger:hover:not(:disabled) .ci,
+:where(:root[data-scheme="light"] :scope) .ctxm-row.danger.focus:not(:disabled) .ci {
+        color: var(--cl-flash-text)
+    }
+}
+@scope (.cl-kit) {
+    :where(:root[data-scheme="light"] :scope) .ctxm-sep {
+        background: rgb(var(--cl-border-rgb) / .5)
+    }
+}
+:where(:root[data-scheme="light"]) .clt .tsh {
+    background: var(--cl-sink)
+}
+:where(:root[data-scheme="light"]) .clt.on .knob {
+    background: var(--cl-text)
+}
+:where(:root[data-scheme="light"]) .clb--danger.dis .cap {
+    background-color: rgb(var(--cl-flash-rgb) / .08);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-flash-rgb) / .22),inset 0 3px 7px rgb(var(--cl-shade-rgb) / .45);
+    color: rgb(var(--cl-flash-text-rgb) / .45)
+}
+:where(:root[data-scheme="light"]) .clb--ok.dis .cap {
+    background-color: rgb(var(--cl-ok-rgb) / .08);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-ok-rgb) / .22),inset 0 3px 7px rgb(var(--cl-shade-rgb) / .45);
+    color: rgb(var(--cl-ok-text-rgb) / .45)
+}
+:where(:root[data-scheme="light"]) .clb--ghost .cap {
+    background-image: radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgb(var(--cl-lume-rgb) / .16),rgb(var(--cl-lume-rgb) / 0) 75%)
+}
+:where(:root[data-scheme="light"]) .clb--ghost .cap:hover {
+    color: var(--cl-lume-text)
+}
+:where(:root[data-scheme="light"]) .clb--ghost .cap:active {
+    box-shadow: inset 0 0 0 1.5px var(--lume),inset 0 5px 14px rgb(var(--cl-shade-rgb) / .7),inset 0 0 0 999px rgb(var(--cl-shade-rgb) / .18)
+}
+:where(:root[data-scheme="light"]) .clb.dis .cap {
+    background-color: rgb(var(--cl-lume-rgb) / .08);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .22),inset 0 3px 7px rgb(var(--cl-shade-rgb) / .45);
+    color: rgb(var(--cl-lume-text-rgb) / .45)
+}
+:where(:root[data-scheme="light"]) .clb.dis .l1 {
+    background: rgb(var(--cl-lume-rgb) / .06)
+}
+:where(:root[data-scheme="light"]) .clb.dis .l2 {
+    background: rgb(var(--cl-lume-rgb) / .04)
+}
+:where(:root[data-scheme="light"]) .clb--chip.clb--ghost .cap:hover {
+    color: var(--cl-lume-text)
+}
+:where(:root[data-scheme="light"]) .clb--chip.clb--ghost.muted .cap {
+    background-color: rgb(var(--cl-lume-rgb) / .12);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .55);
+    color: var(--cl-lume-text)
+}
+:where(:root[data-scheme="light"]) .clb--chip.clb--ghost.perm-danger.muted .cap {
+    background-color: rgb(var(--cl-flash-rgb) / .14);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-flash-rgb) / .55);
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .clb--icon.clb--ghost.dngr .cap:hover,
+:where(:root[data-scheme="light"]) .clb--icon.clb--ghost.dngr .cap:focus-visible {
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .selm--search .selm-empty {
+    color: var(--faint, var(--cl-faint))
+}
+:where(:root[data-scheme="light"]) .cl-verify-seal::after {
+    background: linear-gradient(115deg,transparent 35%,rgb(var(--cl-ok-rgb) / .32) 50%,transparent 65%)
+}
+:where(:root[data-scheme="light"]) .cl-verify-confirm {
+    color: var(--cl-ok-text)
+}
+:where(:root[data-scheme="light"]) .cl-allclear {
+    border: 1px solid rgb(var(--cl-ok-rgb) / .28);
+    background: rgb(var(--cl-ok-rgb) / .06)
+}
+:where(:root[data-scheme="light"]) .cl-allclear--seal.cl-allclear::after {
+    background: linear-gradient(115deg,transparent 35%,rgb(var(--cl-ok-rgb) / .30) 50%,transparent 65%)
+}
+:where(:root[data-scheme="light"]) .cl-allclear-head {
+    color: var(--cl-ok-text)
+}
+:where(:root[data-scheme="light"]) .cl-invite-card {
+    box-shadow: 0 2px 10px rgb(var(--cl-shade-rgb) / .28)
+}
+:where(:root[data-scheme="light"]) .cl-invite-eyebrow {
+    color: var(--cl-lume-text)
+}
+:where(:root[data-scheme="light"]) .cl-invite-err {
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .cl-sn-card {
+    box-shadow: 0 2px 10px rgb(var(--cl-shade-rgb) / .28)
+}
+:where(:root[data-scheme="light"]) .cl-sn-card--ok {
+    border-color: rgb(var(--cl-ok-rgb) / .34)
+}
+:where(:root[data-scheme="light"]) .cl-sn-card--ok .cl-sn-grp {
+    color: var(--cl-ok-text);
+    background: rgb(var(--cl-ok-rgb) / .08)
+}
+:where(:root[data-scheme="light"]) .cl-sn-card--bad .cl-sn-grp {
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .cl-sn-result--ok {
+    color: var(--cl-ok-text);
+    background: rgb(var(--cl-ok-rgb) / .10);
+    border: 1px solid rgb(var(--cl-ok-rgb) / .28)
+}
+:where(:root[data-scheme="light"]) .cl-sn-result--bad {
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .cl-sn-result--neutral {
+    background: rgb(var(--cl-bright-rgb) / .04)
+}
+:where(:root[data-scheme="light"]) .cl-sn-result--warn {
+    color: var(--cl-glow-text);
+    background: rgb(var(--cl-glow-rgb) / .08);
+    border: 1px solid rgb(var(--cl-glow-rgb) / .30)
+}
+:where(:root[data-scheme="light"]) .cl-sn-retry {
+    color: var(--cl-lume-text)
+}
+:where(:root[data-scheme="light"]) .cl-sn-share-error {
+    color: var(--cl-flash-text)
+}
+:where(:root[data-scheme="light"]) .cl-sn-seal::after {
+    background: linear-gradient(115deg,transparent 35%,rgb(var(--cl-ok-rgb) / .28) 50%,transparent 65%)
+}
+:where(:root[data-scheme="light"]) .cl-incall-btn--decline {
+    box-shadow: 0 4px 20px rgb(var(--cl-flash-rgb) / .35)
+}
+:where(:root[data-scheme="light"]) .cl-incall-btn--decline:hover {
+    box-shadow: 0 4px 24px rgb(var(--cl-flash-rgb) / .5)
+}
+:where(:root[data-scheme="light"]) .cl-incall-btn--answer {
+    box-shadow: 0 4px 20px rgb(var(--cl-ok-rgb) / .35)
+}
+:where(:root[data-scheme="light"]) .cl-incall-btn--answer:hover {
+    box-shadow: 0 4px 28px rgb(var(--cl-ok-rgb) / .6)
+}
+:where(:root[data-scheme="light"]) .cl-move-dst.is-over {
+    background: rgb(var(--cl-lume-rgb) / .10);
+    box-shadow: inset 0 0 0 2px rgb(var(--cl-lume-rgb) / .6),var(--cl-glow-lume,0 0 14px rgb(var(--cl-lume-rgb) / .22))
+}
+:where(:root[data-scheme="light"]) .cl-move-hint {
+    color: var(--cl-on-lume,var(--cl-on-lume))
+}
+:where(:root[data-scheme="light"]) .cl-move-chip {
+    border: 1px solid rgb(var(--cl-lume-rgb) / .3);
+    box-shadow: var(--cl-shadow-menu,0 14px 34px rgb(var(--cl-shade-rgb) / .5)),var(--cl-glow-lume-hot,0 0 14px rgb(var(--cl-lume-rgb) / .6))
+}
+:where(:root[data-scheme="light"]) .clcrop-mask {
+    border: 1px solid rgb(var(--cl-bright-rgb) / .32)
+}

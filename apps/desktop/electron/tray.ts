@@ -21,6 +21,11 @@ import { app, Tray, Menu, BrowserWindow, nativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { showAndFocusWindow as raiseWindow } from './window-focus';
+import { bootPalette } from './theme-boot';
+
+/** Asked before the tray's Quit (main.ts wires discord-import/quit-guard.ts); absent: quit at once. */
+let trayQuitConfirm: (() => Promise<boolean>) | null = null;
+export function setTrayQuitConfirm(fn: (() => Promise<boolean>) | null): void { trayQuitConfirm = fn; }
 
 let tray: Tray | null = null;
 
@@ -82,7 +87,7 @@ function resolveVariant(): TrayIconVariant {
     return _unreadCount > 0 ? 'unread' : 'clean';
 }
 
-// Two-tone slash: dark (#0B0F1E) border + white inner — reads on both light
+// Two-tone slash: dark (theme abyss, theme-boot.ts) border + white inner — reads on both light
 // and dark menu bars / notification areas.
 const SLASH_DARK = 115;
 const SLASH_WHITE = 75;
@@ -100,7 +105,7 @@ function buildMicSlashSvg(): string {
         // Base
         '<line x1="340" y1="905" x2="684" y2="905" stroke="#F59E0B" stroke-width="75" stroke-linecap="round"/>' +
         // Slash: dark border then white inner
-        `<line ${SLASH_PATH} stroke="#0B0F1E" stroke-width="${SLASH_DARK}" stroke-linecap="round"/>` +
+        `<line ${SLASH_PATH} stroke="${bootPalette().abyss}" stroke-width="${SLASH_DARK}" stroke-linecap="round"/>` +
         `<line ${SLASH_PATH} stroke="white" stroke-width="${SLASH_WHITE}" stroke-linecap="round"/>` +
         '</svg>'
     );
@@ -116,7 +121,7 @@ function buildHeadphoneSlashSvg(): string {
         // Right ear cup
         '<rect x="749" y="510" width="175" height="270" rx="88" fill="#A855F7"/>' +
         // Slash: dark border then white inner
-        `<line ${SLASH_PATH} stroke="#0B0F1E" stroke-width="${SLASH_DARK}" stroke-linecap="round"/>` +
+        `<line ${SLASH_PATH} stroke="${bootPalette().abyss}" stroke-width="${SLASH_DARK}" stroke-linecap="round"/>` +
         `<line ${SLASH_PATH} stroke="white" stroke-width="${SLASH_WHITE}" stroke-linecap="round"/>` +
         '</svg>'
     );
@@ -343,8 +348,10 @@ function buildMenu(
         {
             label: 'Quit Cipherline',
             click: () => {
-                isQuittingRef.value = true;
-                app.quit();
+                const quit = () => { isQuittingRef.value = true; app.quit(); };
+                // A Discord import running in the background: ask first (discord-import/quit-guard.ts).
+                if (!trayQuitConfirm) { quit(); return; }
+                void trayQuitConfirm().then((go) => { if (go) quit(); }, quit);
             },
         },
     ]);

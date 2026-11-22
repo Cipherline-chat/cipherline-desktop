@@ -26,11 +26,31 @@ function bodyOf(src: string, header: RegExp): string {
 
 describe('page-zoom lock wiring', () => {
     it('main.ts imports the module', () => {
-        expect(MAIN).toMatch(/import \{ lockPageZoom \} from '\.\/page-zoom-lock';/);
+        expect(MAIN).toMatch(/import \{ lockPageZoom, setIntendedZoomFactor, resetZoomToIntended \} from '\.\/page-zoom-lock';/);
     });
 
-    it('the main window is locked in createWindow', () => {
-        expect(bodyOf(MAIN, /async function createWindow\(/)).toContain('lockPageZoom(mainWindow.webContents)');
+    it('the main window is locked in createWindow, SCALABLE, after the UI scale is applied', () => {
+        const body = bodyOf(MAIN, /async function createWindow\(/);
+        expect(body).toMatch(/lockPageZoom\(mainWindow\.webContents, \{\s*scalable: true,/);
+        expect(body).toContain("onShortcut: (action) => { uiScale().step(mainWindow, action); }");
+        expect(body.indexOf("uiScale().apply(mainWindow, 'init')")).toBeGreaterThan(-1);
+        expect(body.indexOf("uiScale().apply(mainWindow, 'init')")).toBeLessThan(body.indexOf('lockPageZoom(mainWindow.webContents'));
+        // first paint already scaled: the window is BUILT with the clamped factor
+        expect(body).toContain('const initialZoom = uiScale().factorFor(');
+        expect(body).toContain('zoomFactor: initialZoom,');
+    });
+
+    it('ONLY the main window is scalable (overlay/splash/popup/notice stay at 1)', () => {
+        const all = fs.readdirSync(__dirname).filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'page-zoom-lock.ts')
+            .flatMap(f => (fs.readFileSync(path.join(__dirname, f), 'utf8').match(/scalable: true/g) ?? []).map(() => f));
+        expect(all).toEqual(['main.ts']);
+        expect(OVERLAY).toContain('lockPageZoom(win.webContents)');
+    });
+
+    it('the UI scale IPC is exactly get + set, set validated as a step', () => {
+        expect(MAIN).toContain("ipcMain.handle('ui-scale:get'");
+        expect(MAIN).toMatch(/ipcMain\.handle\('ui-scale:set', \(_e, percent: unknown\) => \{\s*if \(!isUiScaleStep\(percent\)\) throw/);
+        expect((MAIN.match(/ipcMain\.handle\('ui-scale:/g) ?? []).length).toBe(2);
     });
 
     it('the installer splash is locked in createInstallerSplash', () => {
@@ -64,7 +84,7 @@ describe('page-zoom lock wiring', () => {
         expect(hits.sort()).toEqual(['annotation-overlay.ts:1', 'applying-update-window.ts:1', 'keyring-notice.ts:1', 'main.ts:2']);
     });
 
-    it('nothing else sets the zoom (no in-app scale exists; if one is added it must feed page-zoom-lock)', () => {
+    it('nothing else sets the zoom (the UI scale feeds page-zoom-lock, never setZoomFactor directly)', () => {
         for (const f of fs.readdirSync(__dirname)) {
             if (!f.endsWith('.ts') || f.endsWith('.test.ts') || f === 'page-zoom-lock.ts') continue;
             expect(fs.readFileSync(path.join(__dirname, f), 'utf8'), f).not.toMatch(/setZoom(Factor|Level)\(/);

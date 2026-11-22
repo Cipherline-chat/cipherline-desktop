@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffectsEnabled } from '../utils/a11y/motionPrefs';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Check, X, HardDriveDownload, ShieldCheck, Gift, ChevronRight, Copy, Link2 } from 'lucide-react';
@@ -50,7 +51,7 @@ const StatusDot: React.FC<{ status: Status; icon: React.ReactNode }> = ({ status
         style={{
             width: 34, height: 34,
             background: status === 'done' ? 'rgba(74,222,128,.14)' : 'var(--cl-surface)',
-            border: `1px solid ${status === 'done' ? 'rgba(74,222,128,.5)' : 'var(--cl-border)'}`,
+            border: `1px solid ${status === 'done' ? 'rgb(var(--cl-ok-rgb) / .5)' : 'var(--cl-border)'}`,
             color: status === 'done' ? 'var(--cl-ok)' : 'var(--cl-lume)',
         }}
     >
@@ -79,6 +80,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
 
     const [dismissed, setDismissed] = useState(false);
     const [celebrating, setCelebrating] = useState(false);
+    const effectsOn = useEffectsEnabled();
 
     const gateOpen = useMemo(() => {
         if (!userId || dismissed) return false;
@@ -167,7 +169,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
     return (
         <AnimatePresence>
             {/* Full-viewport confetti rain — appears on top of everything when celebrating */}
-            {gateOpen && celebrating && (
+            {gateOpen && celebrating && effectsOn && (
                 <motion.div
                     key="confetti-overlay"
                     className="fixed inset-0 pointer-events-none overflow-hidden"
@@ -204,7 +206,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
                     right: 18, bottom: 18, width: 372,
                     background: 'var(--cl-deep)',
                     border: '1px solid var(--cl-border)',
-                    boxShadow: 'var(--cl-shadow-menu, 0 14px 34px rgba(0,0,0,.5))',
+                    boxShadow: 'var(--cl-shadow-menu, 0 14px 34px rgb(var(--cl-shade-rgb) / .5))',
                 }}
             >
                 {/* Party celebration overlay — fires when all three items are done */}
@@ -326,7 +328,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
                                     style={{ background: 'var(--cl-surface)', border: '1px solid var(--cl-border)' }}
                                 >
                                     <span
-                                        className="flex-1 text-cl-lume font-mono font-bold tracking-widest text-[14px] select-all"
+                                        className="flex-1 text-cl-lume-text font-mono font-bold tracking-widest text-[14px] select-all"
                                         style={{ letterSpacing: '0.18em' }}
                                     >
                                         {referral.referral_code}
@@ -363,7 +365,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
                                             {refCount}/{maxRef} referrals
                                         </span>
                                         {daysEarned > 0 && (
-                                            <span className="text-cl-ok text-[11px] font-medium">
+                                            <span className="text-cl-ok-text text-[11px] font-medium">
                                                 +{daysEarned} free trial days earned
                                             </span>
                                         )}

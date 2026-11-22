@@ -19,6 +19,7 @@
  * state is always already correct before this runs.
  */
 
+import { useOwnSlotNudge } from './useOwnSlotNudge';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { pullSaves, publishSaves, savesRepublishReason } from '../services/personalSavesSyncService';
 import { createSavesSyncEnv, getSavesView, setSavesView, type SavesLocalBinding } from '../services/personalSavesSyncEnv';
@@ -161,5 +162,7 @@ export function usePersonalSavesSync({ userId, deviceId, token, ready, local }: 
     }, []);
 
     const hasPulledOnce = useCallback(() => pulledOnce.current, []);
+    // Real time: another device wrote this slot (own_slot:changed) -> one coalesced pull.
+    useOwnSlotNudge('personal_saves', enabled, () => { syncNow(); });
     return useMemo(() => ({ syncNow, syncSoon, markDirty, hasPulledOnce }), [syncNow, syncSoon, markDirty, hasPulledOnce]);
 }

@@ -34,9 +34,9 @@ export interface JoiningControlBarProps {
     onLeave: () => void;
 }
 
-const offTone: React.CSSProperties = { background: 'rgba(255,107,94,0.16)', color: 'var(--cl-flash)' };
-const neutralTone: React.CSSProperties = { background: 'transparent', color: 'rgba(255,255,255,0.92)' };
-const disabledTone: React.CSSProperties = { background: 'rgba(255,255,255,0.035)', color: 'rgba(255,255,255,0.28)', boxShadow: 'none' };
+const offTone: React.CSSProperties = { background: 'rgb(var(--cl-flash-rgb) / 0.16)', color: 'var(--cl-flash-text)' };
+const neutralTone: React.CSSProperties = { background: 'transparent', color: 'rgb(var(--cl-bright-rgb) / 0.92)' };
+const disabledTone: React.CSSProperties = { background: 'rgb(var(--cl-bright-rgb) / 0.035)', color: 'rgb(var(--cl-bright-rgb) / 0.28)', boxShadow: 'none' };
 
 export const JoiningControlBar = ({ phase, muted, deafened, canSpeak, onToggleMute, onToggleDeafen, onLeave }: JoiningControlBarProps) => {
     const micOff = muted || deafened || !canSpeak;

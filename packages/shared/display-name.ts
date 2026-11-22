@@ -48,7 +48,11 @@
  * any-script names allow look-alike (homoglyph) letters. Both were accepted by
  * the owner as the price of "letters in any script, plus emoji".
  *
- * Roles, server names and usernames are NOT governed by this file.
+ * SERVER names and ROLE names use the same rule (aesthetic names such as
+ * "✦ ꒰ Moonlit Café ꒱ ✦" or "『 𝓐𝓮𝓼𝓽𝓱𝓮𝓽𝓲𝓬 』"): `serverNameError` (2-50 graphemes)
+ * and `roleNameError` (1-50). Neither column has a database CHECK on its
+ * content. Usernames are NOT governed by this file (they have their own
+ * rules); neither are emoji-shortcode names.
  */
 
 /** Combining marks allowed on a single base character. */
@@ -58,6 +62,11 @@ export const DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME = 4;
 
 /** Channel and category names: at most this many grapheme clusters. */
 export const CHANNEL_NAME_MAX_GRAPHEMES = 50;
+/** Server names: 2..SERVER_NAME_MAX_GRAPHEMES grapheme clusters. */
+export const SERVER_NAME_MIN_GRAPHEMES = 2;
+export const SERVER_NAME_MAX_GRAPHEMES = 50;
+/** Role names: 1..ROLE_NAME_MAX_GRAPHEMES grapheme clusters. */
+export const ROLE_NAME_MAX_GRAPHEMES = 50;
 /** A call's name (rename, call-naming fixed name / template): grapheme clusters. */
 export const CALL_DISPLAY_NAME_MAX_GRAPHEMES = 60;
 
@@ -218,6 +227,14 @@ export function isValidDisplayName(raw: unknown, opts: DisplayNameOptions): bool
 /** Channel / category name rule. */
 export const channelNameError = (raw: unknown): string | null =>
     displayNameError(raw, { maxGraphemes: CHANNEL_NAME_MAX_GRAPHEMES });
+
+/** Server name rule (create + rename). */
+export const serverNameError = (raw: unknown): string | null =>
+    displayNameError(raw, { maxGraphemes: SERVER_NAME_MAX_GRAPHEMES, minGraphemes: SERVER_NAME_MIN_GRAPHEMES });
+
+/** Role name rule (create + rename). */
+export const roleNameError = (raw: unknown): string | null =>
+    displayNameError(raw, { maxGraphemes: ROLE_NAME_MAX_GRAPHEMES });
 
 /** Call name rule (manual rename; call-naming literals). */
 export const callNameError = (raw: unknown): string | null =>

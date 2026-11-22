@@ -49,6 +49,8 @@ export async function swapShareCodec(
          */
         box?: { width: number; height: number };
         reason: string;
+        /** Hold the frame rate on a software codec the app fell back to (applyScreenShareSenderParams). */
+        pixelRateBudget?: number;
         /**
          * Tell viewers just before the old track goes, so they hold through it
          * (utils/shareHold.ts). Returns what takes the announcement back.
@@ -78,7 +80,7 @@ export async function swapShareCodec(
         return false;
     }
     if (fresh.sender) {
-        await applyScreenShareSenderParams(fresh.sender, share.frameRate, opts.screenShareEncoding.maxBitrate, { codec, ...(deps.box ? { box: deps.box } : {}) }).catch(() => {});
+        await applyScreenShareSenderParams(fresh.sender, share.frameRate, opts.screenShareEncoding.maxBitrate, { codec, ...(deps.box ? { box: deps.box } : {}), ...(deps.pixelRateBudget ? { pixelRateBudget: deps.pixelRateBudget } : {}) }).catch(() => {});
     }
     // Hold both while viewers subscribe to the new one (see cameraPublish
     // REPUBLISH_HOLD_MS), then stop the old track object — the clone keeps

@@ -228,7 +228,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
             {/* Section A — Default Retention */}
             <div className={sectionCls} style={sectionStyle}>
                 <div className="flex items-center gap-3 mb-2">
-                    <Clock className="w-5 h-5" style={{ color: 'var(--cl-lume)' }} />
+                    <Clock className="w-5 h-5" style={{ color: 'var(--cl-lume-text)' }} />
                     <h3 className="text-base" style={{ color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)', fontWeight: 500, margin: 0 }}>Default retention</h3>
                 </div>
                 <p className="text-xs mb-5" style={{ color: 'var(--cl-faint)' }}>
@@ -258,7 +258,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                                 const effAtt = getEffectiveAttachmentRetention(retention.policy, type);
                                 const isPending = pendingChange?.type === type;
                                 return (
-                                    <div key={type} className={`grid grid-cols-[1fr_140px_140px] gap-3 items-center px-1 py-2 rounded-xl transition-colors ${isPending ? 'bg-[rgba(37,224,200,0.04)]' : 'hover:bg-white/[0.02]'}`}>
+                                    <div key={type} className={`grid grid-cols-[1fr_140px_140px] gap-3 items-center px-1 py-2 rounded-xl transition-colors ${isPending ? 'bg-[color:rgb(var(--cl-lume-rgb)_/_0.04)]' : 'hover:bg-white/[0.02]'}`}>
                                         <span className="text-sm font-medium" style={{ color: 'var(--cl-muted)' }}>{label}</span>
                                         <ClSelect<MessageRetention>
                                             value={effMsg}
@@ -279,8 +279,8 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                             {pendingChange && (
                                 <div className="mt-1 rounded-xl p-4" style={{ border: '1px solid var(--cl-border)', background: 'var(--cl-surface)' }}>
                                     <div className="flex items-start gap-3 mb-3.5">
-                                        <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)' }}>
-                                            <Clock className="w-3.5 h-3.5" style={{ color: 'var(--cl-lume)' }} />
+                                        <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: 'rgb(var(--cl-lume-rgb) / .1)', border: '1px solid rgb(var(--cl-lume-rgb) / .2)' }}>
+                                            <Clock className="w-3.5 h-3.5" style={{ color: 'var(--cl-lume-text)' }} />
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <p className="text-[13px] font-semibold leading-snug" style={{ color: 'var(--cl-text)' }}>
@@ -345,7 +345,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                 <div className={sectionCls} style={sectionStyle}>
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-3">
-                            <BarChart2 className="w-5 h-5" style={{ color: 'var(--cl-lume)' }} />
+                            <BarChart2 className="w-5 h-5" style={{ color: 'var(--cl-lume-text)' }} />
                             <h3 className="text-base" style={{ color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)', fontWeight: 500, margin: 0 }}>Conversation storage</h3>
                         </div>
                         <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
@@ -354,7 +354,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                     </div>
 
                     {top10.length === 0 ? (
-                        <div className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                        <div className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                             No messages stored locally yet.
                         </div>
                     ) : (
@@ -423,9 +423,9 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                         onClick={() => setOrphanOpen(v => !v)}
                     >
                         <div className="flex items-center gap-3">
-                            <Archive className="w-5 h-5" style={{ color: 'var(--cl-glow)' }} />
+                            <Archive className="w-5 h-5" style={{ color: 'var(--cl-glow-text)' }} />
                             <h3 className="text-base" style={{ color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)', fontWeight: 500, margin: 0 }}>Orphaned chats</h3>
-                            <span className="text-[11px] font-bold rounded-full px-2 py-0.5" style={{ color: 'var(--cl-glow)', background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.3)' }}>{orphaned.length}</span>
+                            <span className="text-[11px] font-bold rounded-full px-2 py-0.5" style={{ color: 'var(--cl-glow-text)', background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.3)' }}>{orphaned.length}</span>
                         </div>
                         {orphanOpen
                             ? <ChevronDown className="w-4 h-4" style={{ color: 'var(--cl-faint)' }} />
@@ -441,7 +441,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                             </p>
                             <div className="flex flex-col gap-2">
                                 {orphaned.map(stats => (
-                                    <div key={stats.conversationId} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                                    <div key={stats.conversationId} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                                         <div className="flex-1 min-w-0">
                                             <div className="text-sm font-medium truncate" style={{ color: 'var(--cl-muted)' }}>Unknown Chat</div>
                                             <div className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>{formatBytes(stats.totalBytes)} · {stats.messageCount} messages</div>

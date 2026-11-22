@@ -294,11 +294,11 @@ export const DevicesPane: React.FC = () => {
                             const lastActive = formatLastActive(d.last_active_on);
                             let statusNode: React.ReactNode;
                             if (isCurrent) {
-                                statusNode = <span style={{ color: 'var(--cl-ok)' }}>online now</span>;
+                                statusNode = <span style={{ color: 'var(--cl-ok-text)' }}>online now</span>;
                             } else if (presence?.attentive) {
-                                statusNode = <span style={{ color: 'var(--cl-ok)' }}>active now</span>;
+                                statusNode = <span style={{ color: 'var(--cl-ok-text)' }}>active now</span>;
                             } else if (presence?.connected) {
-                                statusNode = <span style={{ color: 'var(--cl-glow)' }}>connected</span>;
+                                statusNode = <span style={{ color: 'var(--cl-glow-text)' }}>connected</span>;
                             } else {
                                 statusNode = `seen ${relativeSeen(presence?.last_seen_at ?? d.last_seen_at)}`;
                             }

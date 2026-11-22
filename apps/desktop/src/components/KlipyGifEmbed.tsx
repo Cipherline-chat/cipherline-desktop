@@ -99,9 +99,9 @@ export const KlipyGifEmbed: React.FC<Props> = ({ content }) => {
                     title="Loads this GIF from KLIPY's servers. KLIPY will see your IP address."
                     style={{
                         width: '100%', height: Math.max(Math.min(box.height, 160), 96), borderRadius: 10,
-                        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgb(var(--cl-bright-rgb) / 0.05)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.08)',
                         display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center',
-                        cursor: 'pointer', color: 'rgba(255,255,255,0.65)',
+                        cursor: 'pointer', color: 'rgb(var(--cl-bright-rgb) / 0.65)',
                     }}
                 >
                     <ImageIcon className="w-5 h-5 text-white/40" aria-hidden="true" />
@@ -119,7 +119,7 @@ export const KlipyGifEmbed: React.FC<Props> = ({ content }) => {
                     title="Turns on KLIPY for GIFs in chat and GIF search. Change it any time in Settings → Privacy & Safety."
                     style={{
                         all: 'unset', cursor: 'pointer', marginTop: 4, fontSize: 11,
-                        color: 'rgba(37,224,200,0.85)', textDecoration: 'underline',
+                        color: 'rgb(var(--cl-lume-text-rgb) / 0.85)', textDecoration: 'underline',
                     }}
                 >
                     {KLIPY_ALWAYS_LOAD_TEXT}
@@ -132,15 +132,15 @@ export const KlipyGifEmbed: React.FC<Props> = ({ content }) => {
         return (
             <div className="mt-1" style={{
                 width: box.width, maxWidth: '100%', height: Math.min(box.height, 140), minHeight: 80, borderRadius: 10,
-                background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                background: 'rgb(var(--cl-bright-rgb) / 0.04)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.07)',
                 display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center',
-                color: 'rgba(255,255,255,0.5)', fontSize: 12,
+                color: 'rgb(var(--cl-bright-rgb) / 0.5)', fontSize: 12,
             }}>
                 <span>Couldn’t load this GIF from KLIPY.</span>
                 <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setFailed(false); setAttempt(a => a + 1); }}
-                    style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'rgba(37,224,200,0.85)', fontSize: 11.5 }}
+                    style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'rgb(var(--cl-lume-text-rgb) / 0.85)', fontSize: 11.5 }}
                 >
                     <RotateCw style={{ width: 11, height: 11 }} aria-hidden="true" /> Retry
                 </button>
@@ -211,9 +211,9 @@ export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
                     title="Loads this GIF from KLIPY's servers. KLIPY will see your IP address."
                     style={{
                         width: '100%', height: 110, borderRadius: 10,
-                        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgb(var(--cl-bright-rgb) / 0.05)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.08)',
                         display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center',
-                        cursor: 'pointer', color: 'rgba(255,255,255,0.65)',
+                        cursor: 'pointer', color: 'rgb(var(--cl-bright-rgb) / 0.65)',
                     }}
                 >
                     <ImageIcon className="w-5 h-5 text-white/40" aria-hidden="true" />
@@ -223,7 +223,7 @@ export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
                     type="button"
                     onClick={(e) => { e.stopPropagation(); updateGifSettings({ klipyEnabled: true }); }}
                     title="Turns on KLIPY for GIFs in chat and GIF search. Change it any time in Settings → Privacy & Safety."
-                    style={{ all: 'unset', cursor: 'pointer', marginTop: 4, fontSize: 11, color: 'rgba(37,224,200,0.85)', textDecoration: 'underline' }}
+                    style={{ all: 'unset', cursor: 'pointer', marginTop: 4, fontSize: 11, color: 'rgb(var(--cl-lume-text-rgb) / 0.85)', textDecoration: 'underline' }}
                 >
                     {KLIPY_ALWAYS_LOAD_TEXT}
                 </button>
@@ -235,15 +235,15 @@ export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
         return (
             <div className="mt-1" style={{
                 width: 240, maxWidth: '100%', height: 90, borderRadius: 10,
-                background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                background: 'rgb(var(--cl-bright-rgb) / 0.04)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.07)',
                 display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center',
-                color: 'rgba(255,255,255,0.5)', fontSize: 12,
+                color: 'rgb(var(--cl-bright-rgb) / 0.5)', fontSize: 12,
             }}>
                 <span>Couldn’t load this GIF from KLIPY.</span>
                 <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setFailed(false); setAttempt(a => a + 1); }}
-                    style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'rgba(37,224,200,0.85)', fontSize: 11.5 }}
+                    style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'rgb(var(--cl-lume-text-rgb) / 0.85)', fontSize: 11.5 }}
                 >
                     <RotateCw style={{ width: 11, height: 11 }} aria-hidden="true" /> Retry
                 </button>

@@ -74,7 +74,9 @@ describe('Electron fuses (package.json build.electronFuses)', () => {
         for (const f of readdirSync(join(DESKTOP, 'electron')).filter((n) => n.endsWith('.ts') && !n.endsWith('.test.ts'))) {
             const src = code('electron', f);
             if (/ELECTRON_RUN_AS_NODE/.test(src) && f !== 'sources-helper-client.ts') offenders.push(`${f}: ELECTRON_RUN_AS_NODE`);
-            if (/\butilityProcess\b|child_process['"]\)?\s*\.fork|\bfork\(/.test(src)) offenders.push(`${f}: fork/utilityProcess`);
+            // The one utilityProcess: the native audio engine (audio-engine-ipc.ts takes the fork as an injected dependency, main.ts forks ONLY its host)
+            if (f === 'audio-engine-ipc.ts') continue;
+            if (/\butilityProcess\b|child_process['"]\)?\s*\.fork|\bfork\(/.test(src) && !(f === 'main.ts' && (src.match(/utilityProcess\.fork\(/g) ?? []).length === 1 && /utilityProcess\.fork\(hostPath, \[\]/.test(src))) offenders.push(`${f}: fork/utilityProcess`);
         }
         expect(offenders).toEqual([]);
         // The one use is a delete: the sources helper must NOT run as plain Node.
@@ -146,7 +148,7 @@ describe('macOS entitlements (build-assets/entitlements.mac.plist)', () => {
         expect(build.mac.entitlementsInherit).toBe('build-assets/entitlements.mac.plist');
     });
 
-    it('the only native module shipped is our own addon (so Team-ID library validation has one thing to cover)', () => {
+    it('the only native modules shipped are our own addons (so Team-ID library validation has one thing to cover: audio_capture; the separate Strong engine addon is no longer shipped)', () => {
         expect(build.files).toContain('build/Release/audio_capture.node');
         expect(build.asarUnpack).toEqual(['build/Release/audio_capture.node', 'build/Release/cl-wayland-overlay']);
         // The second entry is NOT a native module on the Mac: the helper target is `type: none`

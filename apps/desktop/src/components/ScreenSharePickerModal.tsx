@@ -45,6 +45,12 @@ export interface ScreenShareOptions {
      * the whole display.
      */
     layout?: ShareLayout;
+    /**
+     * Windows only, never set by the picker: a SCREEN shared because Windows would not capture the
+     * window the user picked ("Share the whole screen instead", utils/windowShareFallback.ts). The
+     * share's audio stays that window's (per-app), instead of becoming all of the system's.
+     */
+    audioWindowId?: string;
 }
 // Screenshares are always encoded for motion (games, video, UI with animation).
 // We hardcode contentHint='motion' + degradationPreference='maintain-framerate'
@@ -212,8 +218,8 @@ const CustomDropdown = <T extends string | number>({
                                 row
                                 size="sm"
                             >
-                                <span className={`text-xs ${isActive ? 'text-cl-lume' : 'text-cl-muted'}`}>{opt.label}</span>
-                                {isActive && <Check className="ml-auto w-3 h-3 text-cl-lume shrink-0" />}
+                                <span className={`text-xs ${isActive ? 'text-cl-lume-text' : 'text-cl-muted'}`}>{opt.label}</span>
+                                {isActive && <Check className="ml-auto w-3 h-3 text-cl-lume-text shrink-0" />}
                             </ClButton>
                         );
                     })}
@@ -388,7 +394,7 @@ const SourceGrid = ({
                                 <p
                                     className="text-[13px] font-semibold m-0 break-words leading-[1.35]"
                                     style={{
-                                        color: selected ? 'white' : 'rgba(255,255,255,0.82)',
+                                        color: selected ? 'rgb(var(--cl-bright-rgb))' : 'rgb(var(--cl-bright-rgb) / 0.82)',
                                         display: '-webkit-box',
                                         WebkitLineClamp: 2,
                                         WebkitBoxOrient: 'vertical',
@@ -1186,7 +1192,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
             <div className="flex items-center justify-between px-6 pt-5 pb-0 shrink-0">
                 <div className="flex items-center gap-2.5">
                     <div className="w-7 h-7 rounded-lg bg-cl-lume/15 flex items-center justify-center">
-                        <Monitor className="w-3.5 h-3.5 text-cl-lume" />
+                        <Monitor className="w-3.5 h-3.5 text-cl-lume-text" />
                     </div>
                     <h2 className="m-0 text-cl-text text-lg font-bold tracking-tight">Share Your Screen</h2>
                 </div>
@@ -1290,7 +1296,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                             <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 flex flex-col gap-5" data-testid="share-portal-step">
                                 <div className="flex items-start gap-3 rounded-xl bg-cl-surface border border-white/[0.06] p-3">
                                     <div className="w-10 h-10 rounded-lg bg-cl-lume/15 flex items-center justify-center shrink-0">
-                                        <Monitor className="w-5 h-5 text-cl-lume" />
+                                        <Monitor className="w-5 h-5 text-cl-lume-text" />
                                     </div>
                                     <div className="min-w-0">
                                         {/* <div>s, not <p>s: the kit modal's `.mcard p` rule beats these utilities (see ClNote). */}
@@ -1339,7 +1345,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
 
                     {linuxStep === 'waiting' && (
                         <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6">
-                            <Loader2 className="w-8 h-8 text-cl-lume animate-spin" />
+                            <Loader2 className="w-8 h-8 text-cl-lume-text animate-spin" />
                             <p className="text-cl-faint text-sm m-0 text-center max-w-[320px] leading-snug">
                                 Looking for windows and screens…
                             </p>

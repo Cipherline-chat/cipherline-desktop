@@ -1,0 +1,116 @@
+/* Custom themes (components/settings/panes/CustomThemes.tsx, CustomThemeEditor.tsx,
+   CustomThemeShareDialog.tsx, CustomThemePreview.tsx). Tokens only: the editor
+   chrome follows the ACTIVE theme; the preview (.ctp) carries the edited
+   theme's own --cl-* variables inline, so every rule below paints it in that
+   theme without a single literal colour. */
+
+/* ============ Library tiles ============ */
+.ctl { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--cl-border); }
+.ctl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.ctl-head h4 { margin: 0; font-size: 14.5px; font-weight: 800; color: var(--cl-text); }
+.ctl-head .sd-sub { margin-top: 3px; }
+.ctl-head-actions { display: flex; gap: 8px; flex: none; }
+.ctl-tile { padding: 8px 8px 6px; cursor: default; }
+.ctl-pick {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left;
+  background: none; border: 0; padding: 0; color: inherit; cursor: pointer; border-radius: 10px; min-width: 0;
+}
+.ctl-pick:focus-visible { outline: 3px solid var(--cl-lume-text); outline-offset: 3px; }
+.ctl-pick .tp-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-actions { display: flex; flex-wrap: wrap; gap: 1px; justify-content: flex-end; margin-top: 2px; }
+/* Five actions (Preview, Edit, Duplicate, Share, Delete) on one row down to the 1000px window. */
+.ctl-actions .clb--icon.clb--sm .cap { width: 30px; height: 30px; }
+.ctl-actions .clb { color: var(--cl-muted); }
+/* The tile shown on the whole app by a live preview (ThemePreviewBar). */
+.ctl-tile--preview { box-shadow: 0 0 0 2px rgb(var(--cl-lume-rgb) / .55); }
+.ctl-new {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end; gap: 4px; min-height: 150px;
+  padding: 12px; border-radius: 16px; text-align: left; cursor: pointer; color: var(--cl-text);
+  background: transparent; border: 1.5px dashed var(--cl-border-strong);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.ctl-new:hover:not(:disabled) { border-color: var(--cl-lume-ui); background: rgb(var(--cl-lume-rgb) / .06); }
+.ctl-new:focus-visible { outline: 3px solid var(--cl-lume-text); outline-offset: 2px; }
+.ctl-new:disabled { cursor: not-allowed; opacity: .7; }
+.ctl-new-ic {
+  width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; margin-bottom: auto;
+  background: var(--cl-lume-tint); color: var(--cl-lume-text);
+}
+
+/* ============ Editor ============ */
+.mcard.dlg-card.cte-card { max-height: calc(100vh - 32px); }
+.cte-body { padding-bottom: 8px; }
+.cte-layout { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 22px; align-items: start; }
+.cte-controls { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cte-field { display: flex; flex-direction: column; gap: 6px; }
+.cte-label { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--cl-muted); }
+.cte-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.cte-preset {
+  display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px 0 7px; border-radius: 99px;
+  background: var(--cl-surface); color: var(--cl-text); border: 1px solid var(--cl-border);
+  font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.cte-preset:hover { border-color: var(--cl-border-strong); }
+.cte-preset:focus-visible { outline: 3px solid var(--cl-lume-text); outline-offset: 2px; }
+.cte-preset-sw { display: inline-flex; border-radius: 99px; overflow: hidden; box-shadow: 0 0 0 1px rgb(var(--cl-bright-rgb) / .18); }
+.cte-preset-sw i { width: 7px; height: 16px; display: block; }
+.cte-colors { display: flex; flex-direction: column; border-top: 1px solid var(--cl-border); }
+.cte-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 8px 2px; border-bottom: 1px solid var(--cl-border);
+}
+.cte-row--toggle { grid-template-columns: minmax(0, 1fr) auto; border-bottom: 0; padding-top: 4px; }
+.cte-row-text { display: flex; flex-direction: column; min-width: 0; }
+.cte-row-text b { font-size: 13.5px; font-weight: 800; color: var(--cl-text); }
+.cte-row-text span { font-size: 12px; color: var(--cl-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cte-row-val { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.cte-hex { font-family: var(--cl-font-mono); font-size: 11.5px; color: var(--cl-muted); }
+.cte-ratio { font-size: 11.5px; font-weight: 800; color: var(--cl-ok-text); }
+.cte-adj {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 180px; text-align: right;
+  font-size: 11.5px; font-weight: 800; line-height: 1.25; color: var(--cl-glow-text);
+}
+.cte-adj-sw { flex: none; width: 12px; height: 12px; border-radius: 4px; display: inline-block; box-shadow: 0 0 0 1px rgb(var(--cl-bright-rgb) / .25); }
+.cte-note { display: flex; gap: 7px; align-items: center; margin: -4px 0 0; font-size: 12px; color: var(--cl-muted); }
+.cte-fine { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--cl-faint); }
+.cte-preview-col { position: sticky; top: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cte-preview-label { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--cl-muted); }
+.cte-hint { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--cl-muted); }
+.cte-hint--err { color: var(--cl-danger-text); }
+
+/* The editor's preview grows with the window (the shorter stacked layout below overrides it). */
+.cte-preview-col .ctp { height: clamp(380px, calc(100vh - 300px), 620px); }
+
+@media (max-width: 900px) {
+  .cte-layout { grid-template-columns: minmax(0, 1fr); }
+  .cte-preview-col { position: static; order: -1; }
+  .cte-preview-col .ctp { height: 280px; }
+  .cte-preview-col .ctp-toast { display: none; }
+}
+
+/* ============ Share / import ============ */
+.cts-card .dlg-body { gap: 8px; }
+.cts-preview { margin-bottom: 6px; }
+.cts-code { font-family: var(--cl-font-mono); font-size: 12px; word-break: break-all; resize: vertical; }
+.cts-file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cts-file-note { font-size: 12px; color: var(--cl-faint); }
+.cts-result { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.cts-result-head { display: flex; align-items: baseline; gap: 10px; }
+.cts-result-head b { font-size: 15px; color: var(--cl-text); }
+.cts-result-head span { font-size: 12px; color: var(--cl-muted); }
+.cts-adjusted { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--cl-glow-text); }
+.cts-adjusted li { display: flex; align-items: center; gap: 6px; }
+
+/* ============ Live preview (painted from the edited theme's own variables) ============ */
+.cte-preview-col, .cts-preview { container-type: inline-size; }
+/* The .ctp-* preview rules live in styles/theme-preview.css (imported by CustomThemePreview,
+   which the chat's theme card and the website's /theme page reuse). */
+
+/* Settings' "descent" water column paints navy around Dark's abyss (settings-descent.css
+   .sd-sea-grad); under a dark CUSTOM theme it follows the theme's own grounds instead.
+   (A light-scheme theme, custom or not, already has its own in theme-light.css.) */
+:root[data-scheme="dark"][data-custom-theme] .sd-sea-grad {
+  background: linear-gradient(180deg, var(--cl-deep) 0%, var(--cl-abyss) 45%, var(--cl-sink) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) { .ctl-new { transition: none; } }

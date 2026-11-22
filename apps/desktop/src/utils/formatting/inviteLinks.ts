@@ -1,5 +1,5 @@
 /**
- * Cipherline server-invite links in message text.
+ * Cipherline server-invite links (and theme links) in message text.
  *
  * A bare invite URL that renders an invite card is removed from the displayed
  * text (the card is the message); a masked link `[join us](https://…/invite/x)`
@@ -11,6 +11,12 @@
  * only on the apex host, so `www.` is NOT accepted):
  *   http(s)://cipherline.chat/invite/CODE[/][?query][#fragment]   (host case-insensitive)
  * Not an invite: other paths (`/invite/CODE/icon`, `/ref/CODE`), other hosts.
+ *
+ * Theme links (theme/themeLink.ts) follow the SAME rule: a bare
+ *   http(s)://cipherline.chat/theme[/]#clth1.CODE
+ * that gets a theme card is hidden from the text; a masked link stays.
+ * (A share code always ends in a base64url character the URL grammar keeps:
+ * its JSON ends with `}`, so the last character is `9`, `Q` or `0`.)
  */
 import { embedLinkHitsOf, embedUrlsOf } from './plainText';
 
@@ -20,6 +26,9 @@ const URL_CHARS = '[^\\s<>"{}|\\\\^`[\\]]';
 const URL_END = '[^\\s<>"{}|\\\\^`[\\]\'.,:;!?*_~)]';
 const INVITE_SRC = String.raw`https?:\/\/cipherline\.chat\/invite\/[A-Za-z0-9_-]*[A-Za-z0-9-]\/?(?:[?#]${URL_CHARS}*${URL_END})?`;
 const INVITE_FULL = new RegExp(`^${INVITE_SRC}$`, 'i');
+const THEME_SRC = String.raw`https?:\/\/cipherline\.chat\/theme\/?#clth1\.[A-Za-z0-9_-]*[A-Za-z0-9-]`;
+/** Every bare link that renders a card of its own instead of its text. */
+const CARD_SRC = `(?:${INVITE_SRC}|${THEME_SRC})`;
 const INVITE_CODE = /^https?:\/\/cipherline\.chat\/invite\/([A-Za-z0-9_-]+)/i;
 
 /** The invite code of an invite URL (any accepted form), else null. */
@@ -41,16 +50,16 @@ const EMPTY_LINE = /^\s*(?:>>>|>|-#|#{1,3}|[-*]|\d{1,9}\.)?\s*$/;
 interface Span { s: number; e: number }
 
 /**
- * `text` without the bare invite URLs that get a card. Parsed-message level:
+ * `text` without the bare invite / theme URLs that get a card. Parsed-message level:
  * a candidate counts only if the message parser (the one `embedUrlsOf` uses)
  * sees it as a plain-text link, so code, spoilers, `<url>`, masked links and
  * link labels are untouched; an invite beyond the embed cap keeps its text.
  * Whitespace around a removed URL is tidied (no double spaces, no blank line
  * left behind, no dangling edges). Returns `text` itself when nothing changes.
  */
-export function stripBareInviteLinks(text: string): string {
+export function stripBareCardLinks(text: string): string {
     if (typeof text !== 'string' || text.length === 0) return text;
-    if (!/cipherline\.chat\/invite\//i.test(text)) return text;
+    if (!/cipherline\.chat\/(?:invite\/|theme\/?#)/i.test(text)) return text;
     const hit = MEMO.get(text);
     if (hit !== undefined) return hit;
     const out = compute(text);
@@ -61,7 +70,7 @@ export function stripBareInviteLinks(text: string): string {
 
 function compute(raw: string): string {
     const text = raw.replace(/\r\n?/g, '\n');
-    const re = new RegExp(`(?<![\\p{L}\\p{N}_\\\\])${INVITE_SRC}`, 'giu');
+    const re = new RegExp(`(?<![\\p{L}\\p{N}_\\\\])${CARD_SRC}`, 'giu');
     const cands: Span[] = [];
     for (const m of text.matchAll(re)) cands.push({ s: m.index!, e: m.index! + m[0].length });
     if (cands.length === 0) return raw;
@@ -113,6 +122,9 @@ function compute(raw: string): string {
     const joined = result.join('\n');
     return joined.trim() === '' ? '' : joined;
 }
+
+/** The original name (invite links only, before theme links got cards too). */
+export const stripBareInviteLinks = stripBareCardLinks;
 
 function removeSpan(line: string, { s, e }: Span): string {
     let l = s;

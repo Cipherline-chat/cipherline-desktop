@@ -14,10 +14,11 @@
  *   • the screen-share source → screen or window. Never its title or id.
  */
 import type { SettingsSnapshot, SettingsValue } from './bundle';
+import { holdKeyKind, holdKeyReportName } from '../holdKeys';
 
 export interface VoiceSettingsLike {
-    noiseSuppression?: boolean; noiseSuppressionMode?: string; echoCancellation?: boolean; volumeNormalization?: boolean; voiceGate?: boolean; voiceGateThreshold?: number;
-    pushToTalk?: boolean; micDeviceId?: string; speakerDeviceId?: string; cameraDeviceId?: string;
+    noiseSuppression?: boolean; noiseSuppressionMode?: string; audioEngine?: string; echoCancellation?: boolean; volumeNormalization?: boolean; voiceGate?: boolean; voiceGateThreshold?: number; voiceGateManual?: boolean; voiceGateManualDb?: number;
+    pushToTalk?: boolean; pushToTalkKey?: string | null; pushToMuteKey?: string | null; micDeviceId?: string; speakerDeviceId?: string; cameraDeviceId?: string;
     micVolume?: number; speakerVolume?: number; eqEnabled?: boolean;
     cameraBrightness?: number; cameraContrast?: number; cameraSaturation?: number;
 }
@@ -44,6 +45,22 @@ export interface ShareSessionLike {
 
 export interface DeviceInfoLike { kind: string; deviceId?: string }
 
+/** How push-to-talk / push-to-mute are delivered on this machine (main's hold-key:diagnostics + dry runs). */
+export interface HoldKeyReportLike {
+    /** win32 | x11 | portal | none */
+    backend?: string;
+    nativeWatcher?: boolean;
+    /** The Windows elevated-foreground check exists in this build. */
+    elevationCheck?: boolean;
+    /** The focused window was an elevated program hiding key state from us, at report time. */
+    foregroundBlocked?: boolean;
+    /** Last game window seen while a watch ran: 'yes' (confirmed admin) / 'no' / 'unknown' (Windows hid it). */
+    adminGame?: string | null;
+    /** Per slot: 'ok' or 'focused-only' + reason, and whether that came from a live watch or a dry run. */
+    pushToTalk?: { status?: string; reason?: string; live?: boolean } | null;
+    pushToMute?: { status?: string; reason?: string; live?: boolean } | null;
+}
+
 export interface SettingsSources {
     hardwareAcceleration?: boolean;
     reducedMotion?: boolean;
@@ -56,6 +73,18 @@ export interface SettingsSources {
     shareSession?: ShareSessionLike | null;
     startupFlags?: { active?: { screenCapturer?: string; captureLog?: boolean } } | null;
     devices?: readonly DeviceInfoLike[] | null;
+    /**
+     * This device's encrypted store: did it load? Labels only (utils/storeHealthReport.ts
+     * — a status word, `<stage>_<ErrorName>`, a count). In every category's report,
+     * because a store that did not load explains "my history is gone" in any of them.
+     */
+    storage?: { status?: string; failure?: string; attempts?: number; recovered?: boolean } | null;
+    /**
+     * Push-to-talk delivery (in every category's report: "I can't talk in my game" is
+     * filed as anything). The key is reported as its kind and its token name
+     * ("numpad1", "mouse4", "ctrl_shift_keyv"), never anything typed.
+     */
+    holdKeys?: HoldKeyReportLike | null;
 }
 
 const ENUM_RE = /^[a-z0-9_-]{1,32}$/i;
@@ -71,6 +100,32 @@ function compact(o: Record<string, SettingsValue>): Record<string, SettingsValue
     return out;
 }
 
+/** The push-to-talk keys of a report's `general` group. Scalars only; null-valued keys are dropped by compact(). */
+export function holdKeyFields(v: VoiceSettingsLike | null, h: HoldKeyReportLike | null): Record<string, SettingsValue> {
+    const slot = (x: HoldKeyReportLike['pushToTalk']) => x ? {
+        status: en(x.status), reason: en(x.reason), live: b(x.live),
+    } : { status: null, reason: null, live: null };
+    const ptt = slot(h?.pushToTalk);
+    const ptm = slot(h?.pushToMute);
+    return {
+        ptt_enabled: b(v?.pushToTalk),
+        ptt_key_kind: v ? holdKeyKind(v.pushToTalkKey) : null,
+        ptt_key: v ? en(holdKeyReportName(v.pushToTalkKey)) : null,
+        ptm_key_kind: v ? holdKeyKind(v.pushToMuteKey) : null,
+        ptm_key: v ? en(holdKeyReportName(v.pushToMuteKey)) : null,
+        ptt_backend: en(h?.backend),
+        ptt_native_watcher: b(h?.nativeWatcher),
+        ptt_watcher: ptt.status,
+        ptt_watcher_reason: ptt.reason,
+        ptt_watcher_live: ptt.live,
+        ptm_watcher: ptm.status,
+        ptm_watcher_reason: ptm.reason,
+        ptt_elevation_check: b(h?.elevationCheck),
+        ptt_foreground_elevated: b(h?.foregroundBlocked),
+        ptt_admin_game: en(h?.adminGame),
+    };
+}
+
 export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
     const devs = s.devices ?? null;
     const count = (kind: string) => (devs ? devs.filter(d => d.kind === kind).length : null);
@@ -81,6 +136,11 @@ export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
     const general = compact({
         hardware_acceleration: b(s.hardwareAcceleration),
         reduced_motion: b(s.reducedMotion),
+        storage_status: en(s.storage?.status),
+        storage_load_failure: en(s.storage?.failure),
+        storage_load_attempts: n(s.storage?.attempts),
+        storage_load_recovered: b(s.storage?.recovered),
+        ...holdKeyFields(v, s.holdKeys ?? null),
     });
 
     const screen_share = compact({
@@ -109,10 +169,12 @@ export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
     const call = compact({
         noise_suppression: b(v?.noiseSuppression),
         noise_suppression_mode: en(v?.noiseSuppressionMode),
+        audio_engine: en(v?.audioEngine),
         echo_cancellation: b(v?.echoCancellation),
         volume_normalization: b(v?.volumeNormalization),
-        voice_gate: b(v?.voiceGate),
-        voice_gate_threshold_db: n(v?.voiceGateThreshold),
+        // The manual noise gate under the new engine (the only engine); the old automatic gate's keys otherwise.
+        voice_gate: b(v?.audioEngine === 'v2' ? v?.voiceGateManual === true : v?.voiceGate),
+        voice_gate_threshold_db: n(v?.audioEngine === 'v2' ? v?.voiceGateManualDb : v?.voiceGateThreshold),
         push_to_talk: b(v?.pushToTalk),
         mic_volume: n(v?.micVolume),
         speaker_volume: n(v?.speakerVolume),

@@ -300,7 +300,7 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
                         </motion.div>
                         <div style={{ width: '100%', textAlign: 'left' }}>
                             <DialogNote tone="warn" icon={<AlertTriangle size={16} aria-hidden />}>
-                                If you <strong>lose your authenticator app</strong> and <strong>don't have backup codes</strong>, your account is <strong style={{ color: 'var(--cl-glow)' }}>permanently unrecoverable</strong>.
+                                If you <strong>lose your authenticator app</strong> and <strong>don't have backup codes</strong>, your account is <strong style={{ color: 'var(--cl-glow-text)' }}>permanently unrecoverable</strong>.
                             </DialogNote>
                         </div>
                     </DialogStack>

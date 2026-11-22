@@ -30,7 +30,7 @@ export interface StorageRowProps {
 export const StorageRow: React.FC<StorageRowProps> = ({
     title, lead, badge, subtitle, sizeLabel, barPct, countLabel, purge, attachmentCount = 0, status,
 }) => (
-    <div className="p-3 rounded-xl space-y-2" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+    <div className="p-3 rounded-xl space-y-2" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
         <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
                 {lead}
@@ -38,7 +38,7 @@ export const StorageRow: React.FC<StorageRowProps> = ({
                     <div className="flex items-center gap-2 min-w-0">
                         <span className="text-sm font-medium truncate" style={{ color: 'var(--cl-text)' }}>{title}</span>
                         {badge && (
-                            <span className="text-[10px] font-bold rounded-full px-1.5 py-0.5 shrink-0" style={{ color: 'var(--cl-glow)', background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.3)' }}>{badge}</span>
+                            <span className="text-[10px] font-bold rounded-full px-1.5 py-0.5 shrink-0" style={{ color: 'var(--cl-glow-text)', background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.3)' }}>{badge}</span>
                         )}
                     </div>
                     {subtitle && (
@@ -49,8 +49,8 @@ export const StorageRow: React.FC<StorageRowProps> = ({
             <span className="text-xs shrink-0" style={{ color: 'var(--cl-muted)' }}>{sizeLabel}</span>
         </div>
         <div className="flex items-center gap-2">
-            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,.06)' }}>
-                <div className="h-full rounded-full" style={{ width: `${barPct}%`, background: 'rgba(37,224,200,.6)' }} />
+            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(var(--cl-bright-rgb) / .06)' }}>
+                <div className="h-full rounded-full" style={{ width: `${barPct}%`, background: 'rgb(var(--cl-lume-rgb) / .6)' }} />
             </div>
             <span className="text-[11px] shrink-0" style={{ color: 'var(--cl-faint)' }}>{countLabel}</span>
         </div>

@@ -16,6 +16,16 @@
  * emojis cannot drop them), and overwrites key + file together for each id in
  * the vault so the two never disagree.
  *
+ * Restore writes every image file BEFORE the index that lists it is saved.
+ * The record-based backup used to restore the index first (inside
+ * importLocalHistory) and write the `emoji:<id>` files only afterwards, and
+ * importLocalHistory's BACKUP_RESTORED_EVENT wakes every image on screen in
+ * between: a restored id was then "listed, file not there", which the store
+ * treats as gone for good and deletes (index entry AND key) - so restored My
+ * Emojis / My stickers and the images of old sticker messages could vanish
+ * on the very restore that brought them back. `restoreEmojiVaultPart` now
+ * pulls those files through `opts.sealedFile` itself (2026-11-22).
+ *
  * Pure over an injected `EmojiBackupIO`, so it is unit-tested; the real binding
  * is in `realBackupIO()`.
  */
@@ -23,11 +33,15 @@
 import secureLocalStore from '../secureLocalStore';
 import { emptyLibrary, mergeLibraries, sanitizeLibrary, type EmojiLibState } from './library';
 import { emojiFileName, emojiIndexKey, emojiKeyKey, type BlobIndex } from './store';
-import { emojiLibraryKey } from './service';
-import { b64ToBytes, bytesToB64, isPersonalEmojiId } from './token';
+import { emojiLibraryKey, stickerLibraryKey } from './service';
+import { PERSONAL_BLOB_MAX_BYTES, b64ToBytes, bytesToB64, isPersonalEmojiId } from './token';
 
 export interface EmojiVaultPart {
     emojiLibrary?: EmojiLibState;
+    /** My stickers (2026-11-22): the library state only - its images are ordinary
+     *  entries of the one shared store, so they travel in emojiIndex / emojiKeys /
+     *  `emoji:<id>` records with everything else. An older build ignores it. */
+    stickerLibrary?: EmojiLibState;
     emojiIndex?: Record<string, { s: number; m: string; a: 0 | 1; n: string }>;
     emojiKeys?: Record<string, string>;
     emojiFiles?: Record<string, string>;
@@ -66,7 +80,8 @@ export async function buildEmojiVaultPart(
         index[id] = { s: m.s, m: m.m, a: m.a, n: m.n };
         keys[id] = key;
     }
-    const part: EmojiVaultPart = { emojiLibrary: library, emojiIndex: index, emojiKeys: keys };
+    const stickerLibrary = sanitizeLibrary(parse(io.kvGet(stickerLibraryKey(userId)), emptyLibrary()), PERSONAL_BLOB_MAX_BYTES);
+    const part: EmojiVaultPart = { emojiLibrary: library, stickerLibrary, emojiIndex: index, emojiKeys: keys };
     if (opts.inlineFiles) {
         const files: Record<string, string> = {};
         for (const id of Object.keys(index)) {
@@ -82,29 +97,52 @@ export async function buildEmojiVaultPart(
     return part;
 }
 
-export async function restoreEmojiVaultPart(userId: string, vault: EmojiVaultPart, io: EmojiBackupIO): Promise<void> {
-    if (!vault.emojiLibrary && !vault.emojiIndex) return;
+export interface RestoreEmojiOpts {
+    /** The sealed `.enc` file of `id` when it is not inline in the vault (the
+     *  record-based backup: an `emoji:<id>` record). Null = not in the backup. */
+    sealedFile?: (id: string) => Promise<Uint8Array | null>;
+}
 
+export async function restoreEmojiVaultPart(
+    userId: string, vault: EmojiVaultPart, io: EmojiBackupIO, opts: RestoreEmojiOpts = {},
+): Promise<void> {
+    if (!vault.emojiLibrary && !vault.stickerLibrary && !vault.emojiIndex) return;
+
+    // With a file source, an id is restored only together with its file: a key
+    // without its file would make this device's own copy (if it has one)
+    // unreadable, and an index entry without its file is deleted on first read.
+    // A vault with neither (no `emojiFiles`, no source) keeps the old
+    // key + index restore.
+    const hasFileSource = !!vault.emojiFiles || !!opts.sealedFile;
     const index = parse<BlobIndex>(io.kvGet(emojiIndexKey(userId)), {});
-    const restoredIds = new Set<string>();
     for (const [id, m] of Object.entries(vault.emojiIndex ?? {})) {
         const key = vault.emojiKeys?.[id];
         if (!isPersonalEmojiId(id) || !key || !m || typeof m !== 'object') continue;
         if (typeof m.s !== 'number' || typeof m.m !== 'string' || typeof m.n !== 'string') continue;
+        if (hasFileSource) {
+            let sealed: Uint8Array | null = null;
+            try {
+                const b64 = vault.emojiFiles?.[id];
+                sealed = typeof b64 === 'string' ? b64ToBytes(b64) : (await opts.sealedFile?.(id)) ?? null;
+            } catch (e) { console.warn('[restore] could not read emoji file', id, e); }
+            if (!sealed || sealed.length === 0) continue;
+            try { await io.writeSealed(id, sealed); }
+            catch (e) { console.warn('[restore] failed to write emoji file', id, e); continue; }
+        }
         io.kvSet(emojiKeyKey(userId, id), key);
         index[id] = { s: m.s, m: m.m, a: m.a === 1 ? 1 : 0, n: m.n, t: io.now() };
-        restoredIds.add(id);
     }
-    for (const [id, b64] of Object.entries(vault.emojiFiles ?? {})) {
-        if (!restoredIds.has(id)) continue;
-        try { await io.writeSealed(id, b64ToBytes(b64)); }
-        catch (e) { console.warn('[restore] failed to write emoji file', id, e); }
-    }
+    // Saved last: nothing lists an image before its file and key are in place.
     io.kvSet(emojiIndexKey(userId), JSON.stringify(index));
 
     if (vault.emojiLibrary) {
         const local = sanitizeLibrary(parse(io.kvGet(emojiLibraryKey(userId)), emptyLibrary()));
         io.kvSet(emojiLibraryKey(userId), JSON.stringify(mergeLibraries(local, sanitizeLibrary(vault.emojiLibrary))));
+    }
+    if (vault.stickerLibrary) {
+        const max = PERSONAL_BLOB_MAX_BYTES;
+        const local = sanitizeLibrary(parse(io.kvGet(stickerLibraryKey(userId)), emptyLibrary()), max);
+        io.kvSet(stickerLibraryKey(userId), JSON.stringify(mergeLibraries(local, sanitizeLibrary(vault.stickerLibrary, max), max)));
     }
 }
 

@@ -102,7 +102,7 @@ export const IntervalSwitch: React.FC<{
                     )}
                     {confirm.kind === 'error' && (
                         <>
-                            <p className="text-[13px] leading-relaxed m-0 mb-3" style={{ color: 'var(--cl-flash)' }} role="alert" data-testid="interval-confirm-error">{confirm.message}</p>
+                            <p className="text-[13px] leading-relaxed m-0 mb-3" style={{ color: 'var(--cl-flash-text)' }} role="alert" data-testid="interval-confirm-error">{confirm.message}</p>
                             <ClButton type="button" variant="ghost" onClick={() => setConfirm(null)}>Close</ClButton>
                         </>
                     )}

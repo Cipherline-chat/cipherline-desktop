@@ -43,6 +43,10 @@ const calls = vi.hoisted(() => ({
     outcome: 'time' as 'time' | 'credit',
 }));
 
+vi.mock('../../../utils/a11y/motionPrefs', async (orig) => ({
+    ...(await orig<typeof import('../../../utils/a11y/motionPrefs')>()),
+    useCelebrationReduced: () => motion.reduced,
+}));
 vi.mock('framer-motion', async (orig) => ({
     ...(await orig<typeof import('framer-motion')>()),
     useReducedMotion: () => motion.reduced,

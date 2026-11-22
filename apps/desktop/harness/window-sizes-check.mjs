@@ -5,7 +5,8 @@
 //
 //   WS_PORT=5391 npx vite --config harness/window-sizes.vite.config.ts           (another shell)
 //   SR_PORT=5311 npx vite --config harness/settings-redesign.vite.config.ts      (another shell; settings cases)
-//   node harness/window-sizes-check.mjs --out=<dir> [--only=<screen,...>] [--sizes=min,laptop,large,hidpi]
+//   node harness/window-sizes-check.mjs --out=<dir> [--only=<screen,...>] [--sizes=min,laptop,large,hidpi,floor]
+//        [--scales=100,125,150,200] [--text=12,15,24]   (Interface size / Message text size, see SCALES below)
 //
 // Sizes: min = 1000x720 (electron/main.ts minWidth/minHeight), laptop = 1366x768,
 // large = 1920x1080, hidpi = 1280x800 @ deviceScaleFactor 1.5.
@@ -35,8 +36,32 @@ const SIZES = [
     { id: 'laptop', width: 1366, height: 768, dsf: 1 },
     { id: 'large', width: 1920, height: 1080, dsf: 1 },
     { id: 'hidpi', width: 1280, height: 800, dsf: 1.5 },
-].filter(s => !arg('sizes', '') || arg('sizes', '').split(',').includes(s.id));
+    // The smallest CSS viewport Interface size can produce (electron/ui-scale.ts LAYOUT_MIN_CSS): any scale
+    // above 100 % at its minimum window (1250x750 @ 125 %, 1500x900 @ 150 %, ...). Opt-in: --sizes=floor.
+    { id: 'floor', width: 1000, height: 600, dsf: 1, cssOnly: true },
+    // A 1440p display, the smallest common one that holds 200 % (opt-in: --sizes=qhd).
+    { id: 'qhd', width: 2560, height: 1440, dsf: 1, optIn: true },
+].filter(s => (!arg('sizes', '') && !s.cssOnly && !s.optIn) || arg('sizes', '').split(',').includes(s.id));
 fs.mkdirSync(out, { recursive: true });
+
+// Settings → Accessibility (2026-11-20). --scales=100,125,150,200 emulates Interface size exactly as
+// webContents.setZoomFactor does: the CSS viewport is the window divided by the factor and the device
+// pixel ratio is multiplied by it. The window/display can only hold what electron/ui-scale.ts allows
+// (maxScaleForWorkArea, mirrored below), so an impossible combination runs at the clamped scale and is
+// labelled so. --text=12,15,24 sets Message text size (the two CSS vars A11yRuntime puts on <html>).
+const SCALES = arg('scales', '100').split(',').map(Number).filter(Boolean);
+const TEXTS = arg('text', '').split(',').map(Number).filter(Boolean);
+const UI_STEPS = [80, 90, 100, 110, 125, 150, 175, 200];
+const maxScaleFor = (w, h) => UI_STEPS.filter(z => z <= 100 || (Math.ceil(1000 * z / 100) <= w && Math.ceil(600 * z / 100) <= h)).pop();
+const variants = (s) => {
+    if (s.cssOnly) return [{ z: 'floor', eff: 100, width: s.width, height: s.height, dsf: s.dsf }];
+    // a maximised window on a display of this size (DIP); the taskbar takes ~40 px
+    const max = maxScaleFor(s.width, s.height - 40);
+    return [...new Set(SCALES.map(z => Math.min(z, max)))].map(eff => ({
+        z: eff, eff, width: Math.round(s.width * 100 / eff), height: Math.round(s.height * 100 / eff), dsf: s.dsf * eff / 100,
+    }));
+};
+const textVariants = TEXTS.length ? TEXTS : [null];
 
 const settle = (page, ms = 500) => page.waitForTimeout(ms);
 const clickText = async (page, sel, text) => { await page.locator(sel).filter({ hasText: text }).first().click(); await settle(page, 400); };
@@ -98,6 +123,12 @@ const CASES = {
         { id: 'size-menu', url: 'scene=composer&bar=1', prep: async (p) => { await p.locator('.fmt-btn-size').first().click(); await settle(p); } },
         { id: 'everyone', url: 'scene=everyone' },
         { id: 'invite', url: 'scene=invite', prep: async (p) => { await settle(p, 800); } },
+    ],
+    // The docked call console at the right panel's 240 px floor (the console-specific geometry check is
+    // harness/call-controls-narrow-check.mjs; this runs the generic overflow/clip/overlap check over it).
+    incall: [
+        { id: 'console-240', url: 'scene=incall&selflong=1&rw=240&scroll=bottom' },
+        { id: 'console-240-share', url: 'scene=incall&selflong=1&rw=240&share=1&scroll=bottom' },
     ],
     call: [
         { id: 'gate-cut-pill', url: 'scene=call' },
@@ -181,6 +212,13 @@ const CASES = {
     // WYSIWYG (2026-11-18, owner: "It doesn't match how it would look if I sent it"): the SENT message (row markup +
     // MessageCard + the row body) and the composer preview of the same style and text, side by side; `wysiwygCheck`
     // compares the two cards' computed box and text metrics and (plain text) their width / height / text offset.
+    // Settings → Accessibility (2026-11-20): the Size card at rest, with a preference the display limits, and
+    // keyboard-focused (the focus ring + valuetext path).
+    a11y: [
+        { id: 'pane', base: SR, url: 'tab=accessibility' },
+        { id: 'pane-limited', base: SR, url: 'tab=accessibility&uiscale=200&uimax=125' },
+        { id: 'pane-focus', base: SR, url: 'tab=accessibility', prep: async (p) => { await p.locator('[role="slider"][aria-label="Interface size"]').focus(); await settle(p, 300); } },
+    ],
     wysiwyg: [
         { id: 'event-yo', url: 'scene=wysiwyg&card=event&text=yo', check: true, wys: 'plain', prep: async (p) => { await focusEnd(p); } },
         { id: 'event-empty', url: 'scene=wysiwyg&card=event', check: true, wys: 'empty' },
@@ -518,8 +556,10 @@ try {
     for (const [screen, cases] of Object.entries(CASES)) {
         if (only.length ? !only.includes(screen) : screen === 'broken') continue;
         fs.mkdirSync(path.join(out, screen), { recursive: true });
-        for (const c of cases) for (const s of SIZES) {
-            const ctx = await browser.newContext({ viewport: { width: s.width, height: s.height }, deviceScaleFactor: s.dsf, });
+        for (const c of cases) for (const s0 of SIZES) for (const v of variants(s0)) for (const tx of textVariants) {
+            const tag = (SCALES.length > 1 || SCALES[0] !== 100 || s0.cssOnly ? `-z${v.z}` : '') + (tx ? `-t${tx}` : '');
+            const s = { ...s0, id: `${s0.id}${tag}`, sizeId: s0.id };
+            const ctx = await browser.newContext({ viewport: { width: v.width, height: v.height }, deviceScaleFactor: v.dsf, });
             const page = await ctx.newPage();
             const errors = [];
             page.on('pageerror', e => errors.push(e.message));
@@ -530,6 +570,10 @@ try {
                 if (base === WS) await page.waitForFunction('window.__ready === true', null, { timeout: 240000 });
                 else await page.waitForFunction('window.__booted === true', null, { timeout: 240000 });
                 await page.evaluate(() => Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 4000))]));
+                if (tx) await page.evaluate((px) => {
+                    document.documentElement.style.setProperty('--cl-msg-text-px', `${px}px`);
+                    document.documentElement.style.setProperty('--cl-msg-text-scale', String(+(px / 15).toFixed(4)));
+                }, tx);
                 await settle(page, 900);
                 if (c.prep) await c.prep(page);
                 problems = await page.evaluate(measure);
@@ -543,7 +587,7 @@ try {
             try { await page.screenshot({ path: file }); } catch { /* */ }
             const pass = problems.length === 0;
             if (!pass) failed++;
-            results.push({ screen, case: c.id, size: s.id, pass, problems, file });
+            results.push({ screen, case: c.id, size: s.id, sizeId: s.sizeId, pass, problems, file });
             console.log(`${pass ? 'PASS' : 'FAIL'}  ${screen}/${c.id} @ ${s.id}`);
             for (const pr of problems) console.log(`        ${pr.kind}: ${pr.what}`);
             await ctx.close();
@@ -554,7 +598,7 @@ try {
     for (const screen of [...new Set(results.map(r => r.screen))]) {
         const cases = [...new Set(results.filter(r => r.screen === screen).map(r => r.case))];
         const cell = (c, size) => {
-            const r = results.find(x => x.screen === screen && x.case === c && x.size === size);
+            const r = results.find(x => x.screen === screen && x.case === c && (x.size === size || x.sizeId === size));
             if (!r || !fs.existsSync(r.file)) return '<td></td>';
             const b64 = fs.readFileSync(r.file).toString('base64');
             return `<td><img src="data:image/png;base64,${b64}" style="width:460px;display:block;border:2px solid ${r.pass ? '#25E0C8' : '#FF6B5E'}"></td>`;

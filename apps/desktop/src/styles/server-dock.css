@@ -45,7 +45,7 @@
   background:var(--cl-deep);color:var(--cl-text);overflow:hidden}
 .dock-root--full{position:fixed;inset:0;z-index:50}
 .dock-root--win{width:min(1180px,100%);height:min(820px,100%);
-  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgb(var(--cl-shade-rgb) / .6)}
 
 /* Fullscreen only (--full: the window is too small to float the card away
    from the edges — see dockWindowed's threshold): a plain dark strip,
@@ -72,7 +72,7 @@
    so the two panes read as one lit surface rather than two boxes glued
    together (the specific complaint behind this redesign's round 2). */
 .dock-rail::after{content:'';position:absolute;top:0;right:0;bottom:0;width:1px;z-index:3;
-  background:linear-gradient(180deg,transparent,rgba(37,224,200,.3) 12%,rgba(37,224,200,.3) 88%,transparent);
+  background:linear-gradient(180deg,transparent,rgb(var(--cl-lume-rgb) / .3) 12%,rgb(var(--cl-lume-rgb) / .3) 88%,transparent);
   pointer-events:none}
 
 /* Caustics base — kept for ChannelSettingsDialog's own small-card treatment
@@ -100,7 +100,7 @@
    .dock-workspace above): two blobs, faint enough to sit behind form
    fields, gradient-fill + drift + fade (round 5) rather than a flat disc. */
 .dock-caustic--m1{left:58%;top:-20%;width:260px;height:170px;filter:blur(22px);
-  background:radial-gradient(ellipse,rgba(37,224,200,.45) 0%,rgba(37,224,200,0) 72%);
+  background:radial-gradient(ellipse,rgb(var(--cl-lume-rgb) / .45) 0%,rgb(var(--cl-lume-rgb) / 0) 72%);
   animation:dock-caustic-driftm1 13s ease-in-out infinite}
 .dock-caustic--m2{left:-10%;top:52%;width:220px;height:150px;filter:blur(20px);
   background:radial-gradient(ellipse,rgba(88,101,242,.4) 0%,rgba(88,101,242,0) 72%);
@@ -132,14 +132,14 @@
    glow borrowed wholesale. */
 .dock-bead{position:absolute;left:2px;width:3px;border-radius:3px;z-index:4;
   background:var(--cl-lume);
-  box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4);
+  box-shadow:0 0 10px rgb(var(--cl-lume-rgb) / .9),0 0 28px rgb(var(--cl-lume-rgb) / .4);
   transition:top var(--cl-spring-dur) var(--cl-spring),height var(--cl-spring-dur) var(--cl-spring),opacity .25s;
   animation:dock-beacon-pulse 2.8s ease-in-out infinite;
   pointer-events:none}
 .dock-bead--hidden{opacity:0}
 @keyframes dock-beacon-pulse{
-  0%,100%{box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4)}
-  50%{box-shadow:0 0 14px rgba(37,224,200,1),0 0 38px rgba(37,224,200,.55)}
+  0%,100%{box-shadow:0 0 10px rgb(var(--cl-lume-rgb) / .9),0 0 28px rgb(var(--cl-lume-rgb) / .4)}
+  50%{box-shadow:0 0 14px var(--cl-lume),0 0 38px rgb(var(--cl-lume-rgb) / .55)}
 }
 
 /* ---- content pane: the drafting table, lit by DockBackdrop's mote canvas
@@ -151,7 +151,7 @@
    rather than just a plain title bar sitting on top of the room. */
 .dock-header{position:relative}
 .dock-header::after{content:'';position:absolute;left:40px;right:40px;bottom:0;height:1px;
-  background:linear-gradient(90deg,rgba(37,224,200,.32),rgba(37,224,200,.05) 65%,transparent)}
+  background:linear-gradient(90deg,rgb(var(--cl-lume-rgb) / .32),rgb(var(--cl-lume-rgb) / .05) 65%,transparent)}
 
 /* Card — the app's established grouped-row convention (rounded-[14px]
    border-cl-border/40 bg-cl-surface/40, set as Tailwind utilities directly
@@ -160,9 +160,9 @@
    a faint lume glow, so cards read as catching the room's light rather
    than sitting as flat, inert boxes on top of it — the gap between the
    rail's glow/beacon/active-state and the content pane's plain cards. */
-.dock-card{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px -6px rgba(37,224,200,.12)}
+.dock-card{box-shadow:inset 0 1px 0 rgb(var(--cl-bright-rgb) / .05),0 0 22px -6px rgb(var(--cl-lume-rgb) / .12)}
 
 @media (prefers-reduced-motion:reduce){
   .dock-caustic{animation:none}
-  .dock-bead{transition:opacity .25s;animation:none;box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4)}
+  .dock-bead{transition:opacity .25s;animation:none;box-shadow:0 0 10px rgb(var(--cl-lume-rgb) / .9),0 0 28px rgb(var(--cl-lume-rgb) / .4)}
 }

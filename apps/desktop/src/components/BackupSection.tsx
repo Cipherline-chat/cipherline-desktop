@@ -5,6 +5,7 @@
  * Everything is encrypted on-device before it's written anywhere; nothing
  * backup-related touches the Cipherline server.
  */
+import { takeRestoredThemeName } from '../theme/restoreActiveTheme';
 import { trackActivity } from '../utils/freezeLog';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -18,7 +19,9 @@ import {
     runBackup, restoreFromDrive, restoreFromLocalFile, getCachedPassword, setCachedPassword,
     getLastBackupAt, getDriveBackupInfo, notifyBackupStateChanged, getDestinationStamps, backupFileName, DEFAULT_MAX_ATTACHMENT_BYTES, DEFAULT_DRIVE_FOLDER,
     type DriveBackupProgress, type DestinationLabel, type DestinationStamp, type BackupStaleWarning,
+    type BackupShrinkWarning,
 } from '../services/driveBackup';
+import { backupStoreBlock, BACKUP_STORE_UNREADABLE_MESSAGE } from '../services/backupStoreGuard';
 import { readBackupCfg, writeBackupCfg, type BackupCfg } from '../hooks/useBackupAutoSchedule';
 import { useBackupStateVersion } from '../hooks/useBackupState';
 import {
@@ -26,6 +29,7 @@ import {
 } from '../services/backupIssues';
 import { RestorePasswordModal } from './RestorePasswordModal';
 import { StaleBackupModal } from './StaleBackupModal';
+import { ShrinkBackupModal } from './ShrinkBackupModal';
 import { BackupProgressBars } from './BackupProgressBars';
 import {
     initProgressRows, advanceProgressRows, finishProgressRows, type ProgressRows,
@@ -37,6 +41,7 @@ import { judgeBackupPassphrase } from '../utils/backupPassphrasePolicy';
 import { ClToggle, ClButton, ClInput, ClSelect, ClNote } from './cl';
 import type { ClSelectOption } from './cl';
 import { SettingsDisclosure } from './settings/SettingsDisclosure';
+import { formatDateTime } from '../utils/a11y/timeFormat';
 
 // Module-level cache — persists across BackupSection remounts within the same
 // Electron session. Reset only on explicit disconnect / reconnect.
@@ -103,7 +108,7 @@ const bytesToCapKey = (bytes: number): AttachmentCapKey => {
 };
 const fmtTime = (iso: string | null): string => {
     if (!iso) return 'Never';
-    try { return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); } catch { return 'Unknown'; }
+    try { return formatDateTime(new Date(iso), undefined, { dateStyle: 'medium', timeStyle: 'short' }); } catch { return 'Unknown'; }
 };
 const fmtBytes = (n: number): string => {
     if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
@@ -188,6 +193,15 @@ export const BackupSection: React.FC = () => {
      * floor to compare against (a new device sees nothing at all).
      */
     const [staleAsk, setStaleAsk] = useState<null | { warning: BackupStaleWarning; decide: (ok: boolean) => void }>(null);
+    // "Replace your backup with a much smaller one?" (services/backupShrinkGuard.ts).
+    const [shrinkAsk, setShrinkAsk] = useState<null | { warning: BackupShrinkWarning; decide: (ok: boolean) => void }>(null);
+    const shrinkDeclined = useRef(false);
+    const askAboutShrink = useCallback(
+        (warning: BackupShrinkWarning) => new Promise<boolean>(resolve => {
+            setShrinkAsk({ warning, decide: (ok) => { setShrinkAsk(null); if (!ok) shrinkDeclined.current = true; resolve(ok); } });
+        }),
+        [],
+    );
     const askAboutStaleBackup = useCallback(
         (warning: BackupStaleWarning) => new Promise<boolean>(resolve => {
             setStaleAsk({ warning, decide: (ok) => { setStaleAsk(null); resolve(ok); } });
@@ -311,6 +325,13 @@ export const BackupSection: React.FC = () => {
 
     const onBackupNow = useCallback(async () => {
         if (!userId || !token) return;
+        // Before anything else — even caching the passphrase: this device's data
+        // didn't load, so a backup now would write stand-in empty state over the
+        // good backup. runBackup refuses as well (backupStoreGuard.ts).
+        if (backupStoreBlock(userId)) {
+            toast.push({ kind: 'error', title: 'Backup not started', message: BACKUP_STORE_UNREADABLE_MESSAGE, durationMs: 0 });
+            return;
+        }
         if (!password) { toast.push({ kind: 'error', title: 'Backup', message: 'Enter a backup passphrase first.' }); return; }
         if (!wantLocal && !wantDrive) { toast.push({ kind: 'error', title: 'Backup', message: 'Pick a local folder and/or connect Google Drive.' }); return; }
         // F9: a newly chosen passphrase must be strong; a saved one keeps working.
@@ -334,6 +355,7 @@ export const BackupSection: React.FC = () => {
             }
         }
         setBusy('backup'); setProgress(null);
+        shrinkDeclined.current = false;
         if (rowsHideTimer.current) { clearTimeout(rowsHideTimer.current); rowsHideTimer.current = null; }
         setRows(initProgressRows([...(runLocal ? ['local' as const] : []), ...(wantDrive ? ['drive' as const] : [])]));
         try {
@@ -344,6 +366,7 @@ export const BackupSection: React.FC = () => {
                 includeAttachments: cfg.includeAttachments, maxAttachmentBytes: cfg.maxAttachmentBytes,
                 destinations: { localDir: runLocal ? cfg.localDir : null, drive: wantDrive, driveFolderId: cfg.driveFolderId, fileName: cfg.backupFileBase },
                 onProgress: ev => { setProgress(ev); setRows(r => (r ? advanceProgressRows(r, ev) : r)); },
+                confirmShrink: askAboutShrink,
             }));
             setRows(r => (r ? finishProgressRows(r, res) : r));
             // No timestamp write here — runBackup stamps both keys itself, so
@@ -386,7 +409,9 @@ export const BackupSection: React.FC = () => {
             if (res.errors?.local) failParts.push(`Local backup failed: ${res.errors.local}`);
             if (res.errors?.drive) failParts.push(`Google Drive backup failed: ${res.errors.drive}`);
 
-            if (failParts.length && parts.length) {
+            if (shrinkDeclined.current && !parts.length) {
+                toast.push({ kind: 'info', title: 'Backup not replaced', message: 'Your existing backup was kept as it was.' });
+            } else if (failParts.length && parts.length) {
                 toast.push({ kind: 'error', title: 'Backup partially failed', message: `${parts.join('; ')}. ${failParts.join(' ')}` });
             } else if (failParts.length) {
                 toast.push({ kind: 'error', title: 'Backup failed', message: failParts.join(' ') });
@@ -398,12 +423,17 @@ export const BackupSection: React.FC = () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setRows(r => (r ? finishProgressRows(r, null) : r));
-            toast.push({ kind: 'error', title: 'Backup failed', message: err?.message || 'Unknown error.' });
+            if (shrinkDeclined.current && err?.name === 'AllDestinationsFailedError') {
+                // Every destination was one the user chose to keep: not a failure.
+                toast.push({ kind: 'info', title: 'Backup not replaced', message: 'Your existing backup was kept as it was.' });
+            } else {
+                toast.push({ kind: 'error', title: 'Backup failed', message: err?.message || 'Unknown error.' });
+            }
         } finally {
             setBusy(null); setProgress(null);
             rowsHideTimer.current = setTimeout(() => { setRows(null); rowsHideTimer.current = null; }, 5000);
         }
-    }, [userId, token, password, cfg, wantLocal, wantDrive, toast, persist, checkNewPassphrase]);
+    }, [userId, token, password, cfg, wantLocal, wantDrive, toast, persist, checkNewPassphrase, askAboutShrink]);
 
     /**
      * Turning automatic backups on has to cache the passphrase, otherwise the
@@ -476,7 +506,8 @@ export const BackupSection: React.FC = () => {
             // backed out. Nothing was written; that's a normal outcome, not a
             // failure, so it gets no error toast and no reload.
             if (!applied) return;
-            toast.push({ kind: 'success', title: 'Restored', message: 'Backup applied — reloading…' });
+            const themeName = takeRestoredThemeName();
+            toast.push({ kind: 'success', title: 'Restored', message: `Backup applied${themeName ? `. Theme restored: ${themeName}` : ''} — reloading…` });
             setTimeout(() => window.location.reload(), 1400);
         } catch (err: unknown) {
             if (err instanceof BackupWrongPasswordError) {
@@ -556,9 +587,9 @@ export const BackupSection: React.FC = () => {
                     <label className="text-[12px] font-bold" style={{ color: 'var(--cl-muted)' }}>Back up to</label>
 
                     {/* Local folder */}
-                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}>
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgb(var(--cl-shade-rgb) / .15)' }}>
                         <div className="flex items-center gap-3 p-3.5">
-                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.05)' }}>
+                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgb(var(--cl-bright-rgb) / .05)' }}>
                                 <Folder size={15} style={{ color: 'var(--cl-muted)' }} />
                             </div>
                             <div className="flex-1 min-w-0">
@@ -582,7 +613,7 @@ export const BackupSection: React.FC = () => {
                             {cfg.localEnabled && (
                                 <motion.div {...reveal} className="overflow-hidden">
                                     <div className="px-3.5 pb-3.5 flex items-center gap-2">
-                                        <div className="flex-1 text-[12px] truncate rounded-lg px-3 py-2" style={{ color: 'var(--cl-muted)', background: 'rgba(0,0,0,.25)', border: '1px solid var(--cl-border)' }}>
+                                        <div className="flex-1 text-[12px] truncate rounded-lg px-3 py-2" style={{ color: 'var(--cl-muted)', background: 'rgb(var(--cl-shade-rgb) / .25)', border: '1px solid var(--cl-border)' }}>
                                             {cfg.localDir || <span style={{ fontStyle: 'italic', color: 'var(--cl-faint)' }}>No folder selected</span>}
                                         </div>
                                         <ClButton size="sm" variant="ghost" onClick={onPickFolder}>
@@ -595,9 +626,9 @@ export const BackupSection: React.FC = () => {
                     </div>
 
                     {/* Google Drive */}
-                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}>
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgb(var(--cl-shade-rgb) / .15)' }}>
                         <div className="flex items-center gap-3 p-3.5">
-                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.05)' }}>
+                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgb(var(--cl-bright-rgb) / .05)' }}>
                                 <GoogleMark size={15} />
                             </div>
                             <div className="flex-1 min-w-0">
@@ -657,7 +688,7 @@ export const BackupSection: React.FC = () => {
                             {linked.linked && cfg.driveEnabled && (
                                 <motion.div {...reveal} className="overflow-hidden">
                                     <div className="px-3.5 pb-3.5 space-y-2.5">
-                                        <div className="flex items-start gap-2 rounded-lg px-3 py-2" style={{ background: 'rgba(0,0,0,.25)', border: '1px solid var(--cl-border)' }}>
+                                        <div className="flex items-start gap-2 rounded-lg px-3 py-2" style={{ background: 'rgb(var(--cl-shade-rgb) / .25)', border: '1px solid var(--cl-border)' }}>
                                             <Folder size={13} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-faint)' }} />
                                             <div className="text-[11.5px] leading-relaxed min-w-0" style={{ color: 'var(--cl-muted)' }}>
                                                 <p>
@@ -671,8 +702,8 @@ export const BackupSection: React.FC = () => {
                                                 )}
                                             </div>
                                         </div>
-                                        <div className="flex items-start gap-2 rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid var(--cl-border)' }}>
-                                            <Info size={13} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-lume)' }} />
+                                        <div className="flex items-start gap-2 rounded-lg px-3 py-2" style={{ background: 'rgb(var(--cl-bright-rgb) / .04)', border: '1px solid var(--cl-border)' }}>
+                                            <Info size={13} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-lume-text)' }} />
                                             <p className="text-[11px] leading-relaxed" style={{ color: 'var(--cl-faint)' }}>
                                                 Drive can't update part of a file, so every backup uploads the whole file again
                                                 {stamps.drive?.bytes ? <> (last upload <span style={{ color: 'var(--cl-muted)' }}>{fmtBytes(stamps.drive.bytes)}</span>)</> : null}.
@@ -717,7 +748,7 @@ export const BackupSection: React.FC = () => {
                         </div>
 
                         {/* Include attachments + per-file size limit */}
-                        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.1)' }}>
+                        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgb(var(--cl-shade-rgb) / .1)' }}>
                             <div className="flex items-center gap-3 px-3.5 py-3">
                                 <ImageIcon size={15} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
                                 <span className="text-[13px] flex-1" style={{ color: 'var(--cl-muted)' }}>Include images &amp; files</span>
@@ -766,7 +797,7 @@ export const BackupSection: React.FC = () => {
                 {/* Progress / attachments */}
                 <AnimatePresence>
                     {busy && progress?.attachments && (
-                        <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-[11.5px] flex items-center gap-1.5" style={{ color: 'var(--cl-lume)', opacity: .8 }}>
+                        <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-[11.5px] flex items-center gap-1.5" style={{ color: 'var(--cl-lume-text)', opacity: .8 }}>
                             <Loader2 size={12} className="animate-spin" /> Bundling attachments {progress.attachments.done}/{progress.attachments.total}
                         </motion.div>
                     )}
@@ -776,9 +807,9 @@ export const BackupSection: React.FC = () => {
                 {rows && <BackupProgressBars rows={rows} />}
 
                 {/* Schedule */}
-                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}>
+                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgb(var(--cl-shade-rgb) / .15)' }}>
                     <div className="flex items-center gap-3 p-3.5">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.05)' }}>
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgb(var(--cl-bright-rgb) / .05)' }}>
                             <Clock size={15} style={{ color: 'var(--cl-muted)' }} />
                         </div>
                         <div className="flex-1 min-w-0">
@@ -825,7 +856,7 @@ export const BackupSection: React.FC = () => {
                                         </div>
                                     )}
                                     {!destinationsReady && (
-                                        <div className="flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--cl-glow)' }}>
+                                        <div className="flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--cl-glow-text)' }}>
                                             <AlertTriangle size={12} /> Pick a destination above for scheduled backups to run.
                                         </div>
                                     )}
@@ -860,6 +891,10 @@ export const BackupSection: React.FC = () => {
                 any other way (backdrop, Esc) is a decline, which leaves the
                 device untouched — never a silent restore. */}
             <StaleBackupModal warning={staleAsk?.warning ?? null} onDecide={ok => staleAsk?.decide(ok)} />
+
+            {/* Before a backup replaces one holding far more conversations.
+                Keeping the existing backup is the default and the dismiss. */}
+            <ShrinkBackupModal warning={shrinkAsk?.warning ?? null} onDecide={ok => shrinkAsk?.decide(ok)} />
         </div>
     );
 };

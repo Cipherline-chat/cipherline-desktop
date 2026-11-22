@@ -136,7 +136,7 @@ export const CustomStatusInline: React.FC<Props> = ({ current, open, onSave, onS
                     </button>
                 )}
             </div>
-            {message && <div role="alert" className="text-[12px] text-cl-danger mt-2">{message}</div>}
+            {message && <div role="alert" className="text-[12px] text-cl-danger-text mt-2">{message}</div>}
 
             <div className="flex items-center gap-2 mt-2.5">
                 <span className="text-[11.5px] text-cl-faint shrink-0">Clear after</span>

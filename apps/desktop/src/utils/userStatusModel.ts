@@ -51,13 +51,62 @@ export function initialStatusFromSaved(saved: string | null | undefined): UserSt
 }
 
 /**
- * The fill for a round status dot. Do Not Disturb gets a small black centre
- * (owner 2026-11-16) so it reads as "do not disturb" and not just "red", like the
- * DND glyphs people know. Use as the dot's `background` (not backgroundColor).
+ * The fill for a status dot, shaped so presence never relies on colour alone
+ * (accessibility plan D12 / V8; the shapes Discord users already know). Shown
+ * to everyone, not a setting:
+ *
+ *   online   filled dot
+ *   idle     crescent (the dot with a disc bitten out of its top right)
+ *   dnd      dot with a minus bar (Do Not Disturb)
+ *   offline  ring (hollow dot)
+ *
+ * Pure `background` gradients on the same round box (no mask, so the ring
+ * `box-shadow` every call site paints around the dot is untouched, and the
+ * box keeps its `border-radius: 50%`). Use as the dot's `background`, not
+ * `backgroundColor`.
+ *
+ * The cut-outs are NOT transparent: the crescent's bite and the offline
+ * ring's hole show a solid BACKING disc, `--status-backing` (the colour of
+ * the surface the avatar sits on: row, rail, card, tile), never the avatar
+ * picture behind the dot (Discord-style). Each context that sits on a
+ * different surface, or whose row changes colour on hover / selection, sets
+ * `--status-backing` on the dot's wrapper (or the row); the same variable
+ * colours the ring painted around the dot, so ring and backing always agree.
  */
+export type StatusShape = 'dot' | 'crescent' | 'minus' | 'ring';
+
+/** The backing disc under every status shape: a theme token, `--cl-deep` when a context sets nothing. */
+export const STATUS_BACKING = 'var(--status-backing, var(--cl-deep))';
+export function statusShape(status: UserStatus | string | undefined): StatusShape {
+    return status === 'away' ? 'crescent' : status === 'dnd' ? 'minus' : status === 'offline' ? 'ring' : 'dot';
+}
+
+/** The DND bar: black on Dark, white on Light (theme token, see themes.ts `dot-hole`). */
+const MINUS_BAR = 'var(--cl-dot-hole)';
+
 export function statusDotFill(status: UserStatus | string | undefined, color: string): string {
-    return status === 'dnd'
-        ? `radial-gradient(circle closest-side, #000 0 36%, ${color} 42%)`
-        : color;
+    switch (statusShape(status)) {
+        case 'crescent': return `radial-gradient(ellipse 46% 46% at 72% 28%, transparent 0 94%, ${color} 100%), ${STATUS_BACKING}`;
+        case 'minus':    return `linear-gradient(${MINUS_BAR}, ${MINUS_BAR}) 50% 50% / 64% 24% no-repeat, ${color}`;
+        case 'ring':     return `radial-gradient(circle closest-side, transparent 0 46%, ${color} 52%), ${STATUS_BACKING}`;
+        default:         return color;
+    }
+}
+
+/**
+ * A presence dot's colour as a theme token: the same colours as STATUS_CONFIG
+ * in Dark, a darker shade in Light so a dot on a white panel clears 3:1
+ * (WCAG 1.4.11). For backgrounds only: STATUS_CONFIG keeps the hex for code
+ * that mixes alpha into it or draws SVG attributes.
+ */
+export function statusDotColor(status: UserStatus | string | undefined): string {
+    switch (status) {
+        case 'online': return 'var(--cl-ok-dot)';
+        case 'away': return 'var(--cl-idle-dot)';
+        case 'dnd': return 'var(--cl-dnd-dot)';
+        case 'offline': return 'var(--cl-offline-dot)';
+        // Anything else (an unknown / future status): the neutral grey these dots always fell back to.
+        default: return 'rgb(var(--cl-tw-gray-500))';
+    }
 }
 

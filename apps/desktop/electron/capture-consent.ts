@@ -195,16 +195,29 @@ export function createCaptureConsent(deps: CaptureConsentDeps) {
      * old share is still live and its automatic restarts must still continue (continueLive) - so a
      * new source is ADDED, and only endShare() (the share ended, nothing left) drops them.
      */
-    const liveShare = new Map<number, Map<string, { since: number; audio: boolean }>>();
+    // `viaScreen`: a WINDOW that is live only as the audio of a screen share (its video fell back to that
+    // screen - authorizeAudio). It is live exactly as long as a screen entry is: dropped with the last one.
+    const liveShare = new Map<number, Map<string, { since: number; audio: boolean; viaScreen?: true }>>();
     const MAX_LIVE_SOURCES_PER_SENDER = 4;
-    const markLive = (senderId: number, sourceId: string, audio: boolean): void => {
+    const dropOrphanedViaScreen = (m: Map<string, { viaScreen?: true }>): void => {
+        if ([...m.keys()].some(id => id.startsWith('screen:'))) return;
+        for (const [id, e] of [...m]) if (e.viaScreen) m.delete(id);
+    };
+    const markLive = (senderId: number, sourceId: string, audio: boolean, viaScreen = false): void => {
         let m = liveShare.get(senderId);
         if (!m) { m = new Map(); liveShare.set(senderId, m); }
         m.delete(sourceId);
-        m.set(sourceId, { since: now(), audio });
+        m.set(sourceId, viaScreen ? { since: now(), audio, viaScreen: true } : { since: now(), audio });
         while (m.size > MAX_LIVE_SOURCES_PER_SENDER) m.delete(m.keys().next().value as string);
+        // The screen a fallback window's audio rode on may just have been evicted.
+        dropOrphanedViaScreen(m);
     };
-    const liveOf = (senderId: number, sourceId: string) => liveShare.get(senderId)?.get(sourceId);
+    const liveOf = (senderId: number, sourceId: string) => {
+        const m = liveShare.get(senderId);
+        if (m) dropOrphanedViaScreen(m);
+        return m?.get(sourceId);
+    };
+    const hasLiveScreen = (senderId: number) => [...(liveShare.get(senderId)?.keys() ?? [])].some(id => id.startsWith('screen:'));
     let promptInFlight = false;
     let declinedUntil = 0;
 
@@ -321,11 +334,24 @@ export function createCaptureConsent(deps: CaptureConsentDeps) {
         // same grant's video half having just been spent counts too, so a
         // stop/start republish cannot race the end-of-share report.
         const live = liveOf(senderId, grant.sourceId);
-        const shareLive = grant.videoUsedAt !== null || !!live;
+        // A WINDOW whose video fell back to a capture of a SCREEN, because Windows would not capture
+        // the window itself (src/utils/windowShareFallback.ts: its monitor cropped to it, or "share the
+        // whole screen instead"): the window's own audio rides on that live screen share. This widens
+        // nothing: with a screen share live, a trusted audio grant for that screen already starts ALL of
+        // the system's audio ('exclude' mode), of which one app's audio is a part - and the grant here
+        // must still be trusted (or confirmed), minted with audio, for exactly this window, and main
+        // still admits only an enumerated window's pid (the renderer can re-list sources, so that is no
+        // real limit - the trusted grant is the guard).
+        const viaScreenFallback = !live && grant.videoUsedAt === null
+            && grant.sourceId.startsWith('window:') && hasLiveScreen(senderId);
+        const shareLive = grant.videoUsedAt !== null || !!live || viaScreenFallback;
         if (!shareLive) return { allowed: false, why: 'no_share', grant: status };
         // The share now carries audio the user turned on: a later automatic restart of the SAME share
         // (continueLive) may keep it without a click.
         if (live) live.audio = true;
+        // The window's audio is part of the live share from here: its automatic restarts continue it
+        // (continueLive) like any other live source's.
+        if (viaScreenFallback) markLive(senderId, grant.sourceId, true, true);
         return { allowed: true, via: 'grant', grant: status };
     }
 

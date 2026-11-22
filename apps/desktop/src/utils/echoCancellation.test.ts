@@ -189,12 +189,12 @@ describe('the Settings row', () => {
     const t = read('components', 'VoiceVideoSettings.tsx');
 
     it('is labelled "Echo cancellation" with the agreed hint, wired to the setter', () => {
-        // A settings Row: the "speakers only" line is in the row's info tip ("i" next to the label); on the
-        // page the note is the Auto resolution while Auto is chosen, the agreed line once On / Off is. Owner copy 2026-10-20.
+        // A settings Row: the "speakers only" line is in the row's info tip ("i" next to the label). Owner copy 2026-10-20.
+        // No note line on the page itself, and the control sits on the right of a normal row (owner, 2026-11-20).
         expect(t).toContain('label="Echo cancellation"');
         expect(t).toContain("const ECHO_NOTE = 'Only recommended when using speakers — leave it off with headphones.';");
-        expect(t).toContain('note={echoAutoNote}');
-        expect(t).toContain('voice.echoAuto.auto ? describeAutoEcho(voice.echoAuto.outputKind) : ECHO_NOTE');
+        expect(t).not.toContain('echoAutoNote');
+        expect(t).not.toMatch(/label="Echo cancellation"\s+kind="block"/);
         expect(t).toMatch(/info=\{`Stops people hearing themselves when your mic picks up your speakers\. \$\{ECHO_NOTE\} Auto \(the default/);
         // Auto / On / Off: Auto -> the Auto flag, On / Off -> an explicit choice through the setter
         expect(t).toContain("if (m === 'auto') voice.setEchoCancellationAuto();");

@@ -77,7 +77,7 @@ export const TrialBanner: React.FC = () => {
                 title="Your last payment failed"
                 description={<>
                     Update your card to keep your subscription active.
-                    {error && <span className="ml-2" style={{ color: 'var(--cl-flash)' }}>{error}</span>}
+                    {error && <span className="ml-2" style={{ color: 'var(--cl-flash-text)' }}>{error}</span>}
                 </>}
                 actions={[{
                     key: 'update-payment',
@@ -131,7 +131,7 @@ export const TrialBanner: React.FC = () => {
                 : `${daysLeft} days left in your trial`}
             description={<>
                 Keep video, screen share and 2 GB uploads with Pro.
-                {error && <span className="ml-2" style={{ color: 'var(--cl-flash)' }}>{error}</span>}
+                {error && <span className="ml-2" style={{ color: 'var(--cl-flash-text)' }}>{error}</span>}
             </>}
             actions={[
                 ...(!status.trial_extended ? [{

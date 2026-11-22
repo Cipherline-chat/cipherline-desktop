@@ -13,16 +13,40 @@ describe('system-wide push-to-talk wiring', () => {
         const h = MAIN.slice(MAIN.indexOf("ipcMain.handle('hold-key:set'"));
         expect(h.slice(0, 300)).toContain('isTrustedSender(event)');
         expect(MAIN).toContain("webContents.send('hold-key:state', slot, down)");
-        expect(MAIN).toMatch(/app\.on\('will-quit', \(\) => globalHold\.stop\(\)\)/);
+        expect(MAIN).toMatch(/app\.on\('will-quit', \(\) => \{ globalHold\.stop\(\); holdElevation\.setRunning\(false\); \}\)/);
+    });
+
+    it('the dry-run and diagnostics handlers trust only our renderer too', () => {
+        for (const ch of ["ipcMain.handle('hold-key:check'", "ipcMain.handle('hold-key:diagnostics'"]) {
+            const h = MAIN.slice(MAIN.indexOf(ch));
+            expect(MAIN.indexOf(ch), ch).toBeGreaterThan(0);
+            expect(h.slice(0, 200)).toContain('isTrustedSender(event)');
+        }
+    });
+
+    it('the elevated-foreground monitor runs only on Windows while a native watch is active', () => {
+        expect(MAIN).toContain("process.platform === 'win32' && globalHold.watchingNatively");
+        expect(MAIN).toContain("webContents.send('hold-key:elevation', blocked)");
     });
 
     it('main hands the addon to the watcher lazily (it loads after app.whenReady)', () => {
         expect(MAIN).toMatch(/new GlobalHoldKeyWatcher\(\s*\(\) => audioCaptureAddon,/);
     });
 
-    it('the preload bridge exposes exactly the two PTT calls', () => {
+    it('the preload bridge exposes the PTT calls (set, state, check, elevation, diagnostics)', () => {
         expect(PRELOAD).toContain("ipcRenderer.invoke('hold-key:set', slot, combo)");
         expect(PRELOAD).toContain("ipcRenderer.on('hold-key:state', wrapped)");
+        expect(PRELOAD).toContain("ipcRenderer.invoke('hold-key:check', combo)");
+        expect(PRELOAD).toContain("ipcRenderer.on('hold-key:elevation', wrapped)");
+        expect(PRELOAD).toContain("ipcRenderer.invoke('hold-key:diagnostics')");
+    });
+
+    it('native: mouse buttons and elevation stay read-only polls (no hook, no input injection)', () => {
+        expect(NATIVE).toContain('VK_XBUTTON1');
+        expect(NATIVE).toContain('XIQueryPointer');
+        expect(NATIVE).toContain('MapVirtualKeyExW');
+        expect(NATIVE).toContain('getForegroundElevation');
+        expect(NATIVE).not.toMatch(/SendInput\s*\(|XTestFake|XIGrabDevice\s*\(|XGrabPointer\s*\(/);
     });
 
     it('does not import from src/ (the electron rootDir trap)', () => {

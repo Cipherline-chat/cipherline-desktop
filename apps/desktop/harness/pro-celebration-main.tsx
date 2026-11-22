@@ -12,7 +12,7 @@ import { ProWelcome } from '../src/components/ProWelcome';
  * window.__pcel: { closed, seek(ms) } for harness/pro-celebration-shots.mjs.
  */
 const q = new URLSearchParams(location.search);
-if (q.get('theme') === 'light') document.documentElement.dataset.theme = 'light';
+if (q.get('theme') === 'light') { document.documentElement.dataset.theme = 'light'; document.documentElement.dataset.scheme = 'light'; }
 loadWebFonts();
 const pcel = {
     closed: 0,

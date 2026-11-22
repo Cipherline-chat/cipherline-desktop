@@ -28,7 +28,7 @@
 }
 .fa-n {
   font-family: var(--cl-font-mono); font-size: 11px; font-weight: 700;
-  color: var(--cl-ok); font-variant-numeric: tabular-nums;
+  color: var(--cl-ok-text); font-variant-numeric: tabular-nums;
 }
 .fa-hint {
   margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -229,7 +229,7 @@
 
 .fa-more {
   all: unset; box-sizing: border-box; cursor: pointer; margin: 6px 4px 0; padding: 4px 6px; border-radius: 8px;
-  font-family: var(--cl-font-body); font-size: 12px; font-weight: 700; color: var(--cl-lume);
+  font-family: var(--cl-font-body); font-size: 12px; font-weight: 700; color: var(--cl-lume-text);
 }
 .fa-more:hover { background: var(--cl-lume-tint); }
 .fa-more:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
@@ -254,3 +254,13 @@
 :root[data-cl-motion="idle"] .fa-eq i,
 :root[data-cl-motion="idle"] .fa-skel-av,
 :root[data-cl-motion="idle"] .fa-skel-line { animation: none; }
+
+/* ── Light-scheme themes ───────────────────────────────────────────────────
+   The kind accents are fills first (art tiles, badges); used as TEXT on a
+   cream / white card ("In a call", "You're here") raw green is ~1.6:1. The
+   readable shades instead (dark-scheme themes unchanged). */
+:root[data-scheme="light"] .fa-card[data-kind="call"] .fa-card-kind,
+:root[data-scheme="light"] .fa-here { color: var(--cl-ok-text); }
+:root[data-scheme="light"] .fa-card[data-kind="game"] .fa-card-kind { color: var(--cl-lume-text); }
+:root[data-scheme="light"] .fa-card[data-kind="listening"] .fa-card-kind { color: var(--cl-glow-text); }
+:root[data-scheme="light"] .fa-card[data-kind="watching"] .fa-card-kind { color: color-mix(in oklab, var(--fa-watch) 45%, var(--cl-text)); }

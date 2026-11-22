@@ -115,7 +115,7 @@ describe('emoji picker', () => {
         // @emoji-mart/react forwards every wrapper render as picker.update(props),
         // which emoji-mart treats as a full grid reset whenever `custom` is passed.
         expect(src).toMatch(/const pickerEl = useMemo\(\(\) => \(\s*<Picker/);
-        expect(src).toMatch(/\), \[customCategories, stableOnSelect\]\);/);
+        expect(src).toMatch(/\), \[customCategories, stableOnSelect, themeScheme\]\);/);
         expect(src).toContain('{pickerEl}');
         expect(src).toMatch(/onEmojiSelect=\{stableOnSelect\}/);
     });

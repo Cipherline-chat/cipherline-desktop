@@ -28,8 +28,13 @@
       evaluated. React replaces it on its first render (normally with that same
       loading screen, so there is no visible change), instead of the window
       sitting blank until the whole app bundle has been compiled and run.
+      The CL_BOOT placeholder colours are filled from the theme data
+      (src/theme/themes.ts boot.gradient, Dark and Light; CL_BOOT_THEMES is
+      one rule per other built-in theme) by vite.config.ts themeBootHtml(). The preload puts the stored theme on <html> before
+      this is parsed (electron/preload.ts bootThemeId), so Light starts light.
     -->
-    <div id="root"><div aria-hidden="true" style="position:fixed;inset:0;background:linear-gradient(180deg,#131A30 0%,#0F1526 45%,#0B0F1E 100%)"></div></div>
+    <style>#cl-boot{position:fixed;inset:0;background:linear-gradient(180deg,%CL_BOOT_TOP% 0%,%CL_BOOT_MID% 45%,%CL_BOOT_BOTTOM% 100%)}:root[data-theme="light"] #cl-boot{background:linear-gradient(180deg,%CL_BOOT_L_TOP% 0%,%CL_BOOT_L_MID% 45%,%CL_BOOT_L_BOTTOM% 100%)}%CL_BOOT_THEMES%:root[data-custom-theme] #cl-boot{background:var(--boot-custom-gradient,var(--cl-abyss))}</style>
+    <div id="root"><div id="cl-boot" aria-hidden="true"></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

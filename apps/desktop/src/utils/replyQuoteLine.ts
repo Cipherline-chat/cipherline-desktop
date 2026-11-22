@@ -1,3 +1,4 @@
+import { stickerPreviewText } from './stickers/wire';
 /**
  * The one line a reply quote shows for its original (owner, 2026-11-16):
  * replies to an image say "Image", to any other file "Attachment", to a GIF
@@ -15,6 +16,9 @@ export function replyQuoteLine(
         return typeof content.mime === 'string' && content.mime.toLowerCase().startsWith('image/') ? 'Image' : 'Attachment';
     }
     if (content?.type === 'klipy_gif') return 'GIF';
+    // A sticker rides a text message; quote what it is, not its fallback text.
+    const sticker = stickerPreviewText(content);
+    if (sticker) return sticker;
     const s = content ? snippetOf(content) : '';
     return s || 'Original message';
 }

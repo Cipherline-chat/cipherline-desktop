@@ -17,7 +17,9 @@ describe('index.html splash', () => {
     const splash = html.match(/<div id="root">([\s\S]*?)<\/div>\s*<script/)?.[1] ?? '';
 
     it('is only the loading screen\'s own backdrop: no bar, no text, no canvas, no progress element', () => {
-        expect(splash).toMatch(/linear-gradient/);
+        // The gradient lives in a <style> (#cl-boot, Dark + Light variants), not inline.
+        expect(html).toMatch(/<style>[^<]*#cl-boot\{[^}]*linear-gradient/);
+        expect(splash).toMatch(/id="cl-boot"/);
         expect(splash).toMatch(/aria-hidden="true"/);
         expect(splash).not.toMatch(/<canvas|<progress|<svg|<img|lo-|loading|bar/i);
         // Exactly one element, with no children and no text.
@@ -43,13 +45,32 @@ describe('ScreenLockOverlay covers the app opaquely', () => {
         expect(Number(rootStyle![1])).toBeGreaterThanOrEqual(999999);
     });
 
-    it('has a fully opaque backdrop in both states (field up / not up): no rgba/alpha, no transparent', () => {
-        const bg = rootStyle![2].replace(/\/\/.*$/gm, ''); // code only, not the comments
-        expect(bg).toMatch(/background:/);
-        // Every colour on the backdrop is an opaque hex or the opaque abyss token.
-        expect(bg).not.toMatch(/rgba?\(|hsla?\(|transparent|opacity|backdrop-filter|#[0-9a-fA-F]{8}\b/);
-        expect(bg).toMatch(/#131A30[\s\S]*#0F1526[\s\S]*#0B0F1E/);
-        expect(bg).toMatch(/var\(--cl-abyss\)/);
+    it('has a fully opaque backdrop in every state and theme: an opaque base colour, images only on top', () => {
+        // The backdrop moved from an inline style to `.sl-root` (screen-lock.css)
+        // so the light-scheme themes can paint their own. The inline style must
+        // not paint (or un-paint) it.
+        const inline = rootStyle![2].replace(/\/\/.*$/gm, ''); // code only, not the comments
+        expect(inline).not.toMatch(/background|opacity|backdrop-filter/);
+        expect(overlay).toMatch(/className=\{`sl-root\$\{fieldLive \? ' is-live' : ''\}`\}/);
+
+        const css = read('src/styles/screen-lock.css').replace(/\/\*[\s\S]*?\*\//g, '');
+        const rules = [...css.matchAll(/([^{}]*\.sl-root[^{}]*)\{([^}]*)\}/g)].map(m => ({ sel: m[1].trim(), body: m[2] }));
+        expect(rules.length).toBeGreaterThanOrEqual(3);
+        // The base: the opaque abyss token as background-COLOR (image layers sit on it).
+        const base = rules.find(r => r.sel === '.sl-root');
+        expect(base?.body).toMatch(/background-color:\s*var\(--cl-abyss\)\s*;/);
+        for (const r of rules.filter(x => x !== base)) {
+            // Nothing re-sets the colour, the shorthand (which would reset it), or makes the layer see-through.
+            expect(r.body, r.sel).not.toMatch(/background-color|background:|opacity|backdrop-filter|mix-blend/);
+            // Every image layer list ends in an opaque base (a linear-gradient of tokens), or is `none`.
+            const img = r.body.match(/background-image:\s*([^;]+);/)?.[1].trim();
+            if (img && img !== 'none') {
+                const layers = img.split(/,(?![^(]*\))(?=\s*(?:radial|linear)-gradient)/);
+                const last = layers[layers.length - 1];
+                expect(last, r.sel).toMatch(/^\s*linear-gradient\(/);
+                expect(last, r.sel).not.toMatch(/rgba?\(|hsla?\(|transparent|\/\s*\.\d/);
+            }
+        }
     });
 
     it('--cl-abyss is itself opaque', () => {
@@ -64,8 +85,10 @@ describe('ScreenLockOverlay covers the app opaquely', () => {
         // The panel is translucent by design (rgba .66) — which is exactly why
         // what is BEHIND the overlay's own backdrop (the lock's field) must be
         // dots only: no loading bar, no app.
-        expect(css).toMatch(/\.sl-panel\s*{[^}]*rgba\(11, 15, 30, \.66\)/);
+        expect(css).toMatch(/\.sl-panel\s*{[^}]*rgb\(var\(--cl-abyss-rgb\) \/ \.66\)/);
         expect(overlay).toContain('<LockScreenField');
+        // Light-scheme themes: an opaque card (no field behind it there at all).
+        expect(css).toMatch(/:root\[data-scheme="light"\] \.sl-panel\s*{[^}]*background:\s*var\(--cl-deep\);/);
     });
 });
 

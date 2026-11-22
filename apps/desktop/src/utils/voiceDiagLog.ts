@@ -90,20 +90,23 @@ export interface VoiceSettingsDetail {
     micPct: number;
     eq: boolean;
     ptt: boolean;
+    /** 'v2' = the new audio engine (always, now); absent only for entries of the old legacy chain. `gate` / `thrDb` are then the manual noise gate. */
+    engine?: 'v2';
 }
 
 /** The send-side voice settings as logged. Pure. */
 export function voiceSettingsDetail(s: VoiceSettings): VoiceSettingsDetail {
     return {
         ns: !s.noiseSuppression ? 'off' : s.noiseSuppressionMode === 'light' ? 'light' : 'strong',
-        gate: !!s.voiceGate,
-        thrDb: Math.round(Number(s.voiceGateThreshold) || 0),
+        gate: s.audioEngine === 'v2' ? s.voiceGateManual === true : !!s.voiceGate,
+        thrDb: Math.round(Number(s.audioEngine === 'v2' ? s.voiceGateManualDb : s.voiceGateThreshold) || 0),
         agc: !!s.volumeNormalization,
         ec: !!s.echoCancellation,
         ecAuto: !!s.echoCancellationAuto,
         micPct: Math.round(Number(s.micVolume) || 0),
         eq: !!s.eqEnabled,
         ptt: !!s.pushToTalk,
+        ...(s.audioEngine === 'v2' ? { engine: 'v2' as const } : {}),
     };
 }
 
@@ -151,6 +154,6 @@ export class VoiceSettingsLogger {
 
     private write(d: VoiceSettingsDetail, reasonValue: 'join' | 'change'): void {
         this.last = JSON.stringify(d);
-        logCallEvent('voice_settings', { reason: reasonValue, ns: d.ns, gate: d.gate, thr_db: d.thrDb, agc: d.agc, aec_on: d.ec, ec_auto: d.ecAuto, mic_pct: d.micPct, eq: d.eq, ptt: d.ptt });
+        logCallEvent('voice_settings', { reason: reasonValue, ns: d.ns, gate: d.gate, thr_db: d.thrDb, agc: d.agc, aec_on: d.ec, ec_auto: d.ecAuto, mic_pct: d.micPct, eq: d.eq, ptt: d.ptt, ...(d.engine ? { engine: d.engine } : {}) });
     }
 }

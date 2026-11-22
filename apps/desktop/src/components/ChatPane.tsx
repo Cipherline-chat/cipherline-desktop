@@ -27,6 +27,8 @@ import { useFlashedPlaceholder } from '../hooks/useFlashedPlaceholder';
 import { recordEggFound } from '../utils/eggProgress';
 import { mergeIfChanged, setIfChanged } from '../utils/renderMemo';
 import { formatHourMinute, formatNumericDate, formatWeekdayShortMonthDay, formatWeekdayLongMonthDay, formatLongMonthDayYear } from '../utils/messageTimeFormat';
+import { useTimeFormatRevision } from '../hooks/useReadability';
+import { formatClockShort } from '../utils/a11y/timeFormat';
 import { systemRowTime } from '../utils/systemRowTime';
 import { ClButton } from './ClButton';
 import { createPortal, flushSync } from 'react-dom';
@@ -55,6 +57,8 @@ import type { RetentionHook, MessageRetention, AttachmentRetention } from '../ho
 import { messageRetentionMs, attachmentRetentionMs, UNSAVE_EXPIRY_MS, getEffectiveMessageRetention, getEffectiveAttachmentRetention, resolveChatMessageRetention, resolveChatAttachmentRetention } from '../hooks/useRetentionPolicy';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useChannelMutes } from '../contexts/ChannelMuteContext';
+import { buildMuteItems } from './server/muteMenu';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
 import { useRolePicker } from '../contexts/RolePickerContext';
 import { rolesMenuItem } from './server/roles/rolesMenuItem';
@@ -72,7 +76,7 @@ import { cardStyleOfContent, cardStyledFlag } from '@cipherline/shared';
 import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
 import { requestMoment, mentionMoment, selfReact } from '../utils/moments';
 import { noteAchievementMessage } from '../utils/achievements/tracker';
-import { mentionTokenMatcher, type MentionTokenMatch, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole } from '../utils/mentionTokens';
+import { mentionTokenMatcher, type MentionTokenMatch, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole, mentionTokenLabel } from '../utils/mentionTokens';
 import { displayTextOf, toPlainText, messageTextMatches } from '../utils/messagePreviewText';
 import { isLongMessage, previewSnippet } from '../utils/longMessage';
 import { LongMessageBody } from './LongMessage';
@@ -107,6 +111,10 @@ import { classifySubmit, decideViewportAction, correctedScrollTop } from '../uti
 import { isUnconfirmedSend, sendFailureReason, type SendPatch } from '../utils/pendingSend';
 import { assignRowKeys, createEntranceTracker, createRevealGate, messageRowKey, type EntranceTracker, type RevealGate } from '../utils/messageEntrance';
 import { deliveryQueue, withRateLimitRetry, SEND_POST_TIMEOUT_MS } from '../utils/deliveryQueue';
+import {
+    slowmodeSecondsOf, isSlowmodeExempt, isSlowmodeError, slowmodeRetryMs, startSlowmode, slowmodeLeftMs, clampSlowmode, formatCountdown,
+} from '../utils/channelModeration';
+import { slowmodeLabel, slowmodeShort } from '@cipherline/shared';
 import { sendClock, markDelivered, wasDelivered, markCancelled, wasCancelled, clearCancelled, undeliveredMenu } from '../utils/undeliveredSend';
 import { useUndeliveredSends } from '../hooks/useUndeliveredSends';
 import { UndeliveredIndicator } from './UndeliveredIndicator';
@@ -145,6 +153,12 @@ import type { EmojiSuggestion } from './EmojiPicker';
 import { SuggestionMenu, type SuggestionMenuItem } from './composer/SuggestionMenu';
 import { nextSuggestionIndex, resolveCustomEmojiHint } from './composer/suggestionNav';
 import GifPicker from './GifPicker';
+import StickerPicker, { type StickerPick } from './stickers/StickerPicker';
+import { StickerMessage } from './stickers/StickerMessage';
+import { addToMyStickersItem } from './stickers/stickerActions';
+import { buildStickerContent, stickerRefOf, stickerReportText, type StickerRef } from '../utils/stickers/wire';
+import { serverStickerAsPersonal } from '../utils/stickers/bytes';
+import { rememberRecentSticker } from '../utils/stickers/recent';
 import KlipyGifEmbed, { KlipyLinkEmbed } from './KlipyGifEmbed';
 import { useGifFavorite } from '../hooks/useGifFavorite';
 import { addKlipyFavorite, findKlipyFavorite, loadFavorites, removeFavorite } from '../utils/gifStorage';
@@ -162,7 +176,7 @@ import { apiUrl } from '../utils/apiPath';
 import { safeBlobUrl } from '../utils/safeMediaUrl';
 
 import {
-    PhoneCall, Video, MoreVertical, Paperclip, Smile, Send,
+    PhoneCall, Video, MoreVertical, Paperclip, Smile, Send, Sticker as StickerIcon,
     Edit2, Reply, Trash2, SmilePlus, Lock, Clock, Phone,
     User, Users, UserPlus, UserMinus, Ban, X, CornerUpLeft, Save, ChevronDown,
     Link as LinkIcon, Bookmark, Pin, Archive,
@@ -221,10 +235,16 @@ import { composerPastePrompt, type ComposerPastePrompt } from '../utils/formatti
 import { applyMessageSize, extractUniformSize } from '../utils/formatting/richWire';
 import { RichComposer, type RichComposerHandle, type ActiveFormats } from './composer/RichComposer';
 import { embedUrlsOf } from '../utils/formatting/plainText';
-import { inviteCodeFromUrl, stripBareInviteLinks } from '../utils/formatting/inviteLinks';
+import { inviteCodeFromUrl, stripBareCardLinks } from '../utils/formatting/inviteLinks';
+import { embedKindOf } from '../utils/formatting/embedKind';
+import { ThemeLinkEmbed } from './themeShare/ThemeLinkEmbed';
 import { fontField, fontStackFor, messageFontOf } from '../utils/formatting/messageFont';
-import { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT, MESSAGE_BODY_PX, messageSizeOf, scaledPx, sizeField, sizeScaleFor } from '../utils/formatting/messageSize';
+import { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT, messageSizeOf, sizeField, sizeScaleFor } from '../utils/formatting/messageSize';
+import { messageBodyFontSize, msgTextEm, msgTextPx } from '../utils/a11y/messageTextSize';
 import { MessageCard } from './messageCard/MessageCard';
+import { readableNameColor } from '../utils/roleColor';
+import { buildMemberRoleSecondary, roleNameStyle } from '../utils/roleStyle';
+import { useTheme } from '../theme/engine';
 import { cardModeFor, cardTextColor, composerCardMode, composerTextStyle, resolveMessageCard, resolveCard, type CardRenderContext } from '../utils/cardStyle/cardStyleReact';
 import { cardStyleEditField, cardStyleLabel, cardStyleSendField, type ComposerCard } from '../utils/cardStyle/composerCardStyle';
 import { cardStylePostingGate } from '../utils/cardStyle/cardStyleGate';
@@ -247,6 +267,16 @@ import {
     isTextLikeMessageType,
 } from '../utils/messageMenuGating';
 import type { ContextMenuItem } from './primitives/ContextMenu';
+import { formatFullDateTime } from '../utils/a11y/timeFormat';
+import { importedAuthorView, displayTimeMs, authorGroupKey, verifiedBlockOf } from '../utils/importedAuthor';
+import { ensureReactorClaims, mergeImportedReactions, reactorClaimsFor, subscribeReactorClaims } from '../utils/importedReactions';
+import { ImportedAuthorAvatar, UnclaimedAuthorCard, type UnclaimedCardTarget } from './server/discordImport/ImportedAuthor';
+import { ClaimSlot } from './server/discordImport/ClaimSlot';
+import { ClaimImportDialog } from './server/discordImport/ClaimImportDialog';
+import { requestOpenImportedMessage, type ClaimableAuthor } from '../utils/discordClaims';
+
+/** Stable empty map for memberRoleSecondary outside a server channel. */
+const NO_ROLE_SECONDARY: Record<string, string> = Object.freeze({}) as Record<string, string>;
 
 // ── Large-file chunk encryption ───────────────────────────────────────────────
 // Files that don't have a disk path (getPathForFile returns '') can't use the
@@ -388,7 +418,7 @@ function renderTextWithLinks(text: string, onInviteClick?: (code: string) => voi
                 tabIndex={0}
                 onClick={handleClick}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleClick(e); }}
-                className="text-[#25E0C8] hover:underline underline-offset-2 break-all cursor-pointer"
+                className="text-cl-lume-text hover:underline underline-offset-2 break-all cursor-pointer"
             >
                 {url}
             </span>
@@ -936,9 +966,9 @@ export function ReactionPill({
                    alone still left the text emoji riding its own baseline. */
                 className={`grid grid-cols-2 place-items-center rounded-full border px-0.5 h-7 min-w-[48px] text-[12.5px] font-semibold leading-none transition-colors ${canReact ? 'cursor-pointer' : 'cursor-default'} ${
                     failure
-                        ? 'bg-cl-flash/15 border-cl-flash/60 text-cl-flash'
+                        ? 'bg-cl-flash/15 border-cl-flash/60 text-cl-flash-text'
                         : hasMine
-                        ? 'bg-cl-lume/15 border-cl-lume/30 text-cl-lume'
+                        ? 'bg-cl-lume/15 border-cl-lume/30 text-cl-lume-text'
                         : 'bg-white/[0.04] border-cl-border/40 text-cl-muted hover:border-cl-lume/30 hover:bg-white/[0.07]'
                 }`}
             >
@@ -1103,14 +1133,14 @@ export function renderTextWithMentions(
             let pillStyle: React.CSSProperties = {};
             if (isSelf) {
                 // Own mention — amber highlight
-                pillClass = 'bg-cl-glow/25 text-cl-glow hover:bg-cl-glow/35';
+                pillClass = 'bg-cl-glow/25 text-cl-glow-text hover:bg-cl-glow/35';
             } else if (isSpecial) {
-                pillClass = 'bg-cl-lume/20 text-cl-lume hover:bg-cl-lume/30';
+                pillClass = 'bg-cl-lume/20 text-cl-lume-text hover:bg-cl-lume/30';
             } else if (roleColor) {
-                pillStyle = { background: `${roleColor}33`, color: roleColor };
+                pillStyle = { background: `${roleColor}33`, color: readableNameColor(roleColor) ?? roleColor };
                 pillClass = 'hover:opacity-90';
             } else {
-                pillClass = 'bg-cl-lume/15 text-cl-lume/90 hover:bg-cl-lume/25';
+                pillClass = 'bg-cl-lume/15 text-cl-lume-text/90 hover:bg-cl-lume/25';
             }
             const activate = (e: React.MouseEvent | React.KeyboardEvent) => {
                 e.stopPropagation();
@@ -1375,7 +1405,7 @@ const ImageLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setShouldLoad(true); }}
                     title={(() => { try { return new URL(url).hostname; } catch { return url; } })()}
-                    style={{ width: 200, height: 120, borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'rgba(255,255,255,0.6)' }}
+                    style={{ width: 200, height: 120, borderRadius: 10, background: 'rgb(var(--cl-bright-rgb) / 0.05)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.08)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'rgb(var(--cl-bright-rgb) / 0.6)' }}
                 >
                     <ImageIcon className="w-5 h-5 text-white/40" />
                     <span style={{ fontSize: 12 }}>Load image</span>
@@ -1386,7 +1416,7 @@ const ImageLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
             )}
             {/* Skeleton while fetching */}
             {shouldLoad && !blobUrl && (
-                <div style={{ width: 200, height: 120, borderRadius: 10, background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 200, height: 120, borderRadius: 10, background: 'rgb(var(--cl-bright-rgb) / 0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Clock className="w-5 h-5 text-white/30 animate-pulse" />
                 </div>
             )}
@@ -1453,7 +1483,7 @@ const MessageEmbed: React.FC<{ url: string }> = ({ url }) => {
                     width: '100%',
                     maxWidth: '400px',
                     aspectRatio: '16 / 9',
-                    boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+                    boxShadow: '0 4px 24px rgb(var(--cl-shade-rgb) / 0.4)',
                 }}
             >
                 <iframe
@@ -1509,9 +1539,9 @@ const MessageEmbed: React.FC<{ url: string }> = ({ url }) => {
                 className="flex items-start gap-3 px-3 py-2.5 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] transition-colors"
                 style={{ borderLeft: '3px solid var(--cl-lume)' }}
             >
-                <LinkIcon className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--cl-lume)', opacity: 0.7 }} />
+                <LinkIcon className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--cl-lume-text)', opacity: 0.7 }} />
                 <div className="flex flex-col gap-0.5 min-w-0">
-                    <span className="text-[12px] font-semibold truncate" style={{ color: 'var(--cl-lume)' }}>{domain}</span>
+                    <span className="text-[12px] font-semibold truncate" style={{ color: 'var(--cl-lume-text)' }}>{domain}</span>
                     {pathname && (
                         <span className="text-[11px] text-cl-faint truncate">{pathname}</span>
                     )}
@@ -1640,6 +1670,10 @@ interface ChatPaneProps {
         my_permissions?: string;
         /** 'restricted' when some members can't see it (useServers ChannelInfo). */
         view_scope?: 'all' | 'restricted';
+        /** Seconds between one member's messages (0 / absent = off). Server-enforced. */
+        slowmode_seconds?: number;
+        /** Age-restricted (NSFW) channel. */
+        age_restricted?: boolean;
     } | null;
     /** Fires (via useRealtime → Dashboard) when a moderator adds, renames, or
      *  deletes one of this channel's server's custom emojis. Refetches
@@ -1757,7 +1791,10 @@ const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉'];
 const NOOP_TYPING: (event: 'typing:start' | 'typing:stop', cid: string) => void = () => {};
 
 const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, getCallKey, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, serverChannels, serverCategories, onNavigateToChannel, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, onRetryChannelKeys, historyGaps = NO_HISTORY_GAPS, historyStart = false, onFillHistoryGap, onLoadMessageContext, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
+    // Timestamps are formatted on render: re-render them when the Time format setting changes.
+    useTimeFormatRevision();
     const { token, deviceId, user, userId: authUserId } = useAuth();
+    const chatMute = useChannelMutes();
     const openProfileCtx = useOpenProfile();
     const rolePicker = useRolePicker();
     /** In a server channel, profiles open with the server attached so the card
@@ -2154,6 +2191,47 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }, 1000);
     };
 
+    // ── Slowmode ─────────────────────────────────────────────────────────────
+    // The SERVER enforces it (429 SLOWMODE_ACTIVE on the post); this is the
+    // countdown and a courtesy refusal so a member does not have to be told by
+    // a failed message. The draft stays editable throughout. The clock itself
+    // lives in utils/channelModeration (module state: switching channels and
+    // coming back does not lose it).
+    const slowmodeSecs = slowmodeSecondsOf(activeChannel);
+    const slowmodeExempt = isSlowmodeExempt(activeChannel?.my_permissions);
+    const slowUserId = user?.user_id ?? myUserId;
+    const slowChannelId = activeChannel?.channel_id ?? '';
+    const [slowLeftMs, setSlowLeftMs] = useState(() => (slowChannelId ? slowmodeLeftMs(slowUserId, slowChannelId) : 0));
+    const [slowNudge, setSlowNudge] = useState(0);
+    // Re-read the clock on channel change, lower the window when an admin
+    // shortens (or switches off) the slowmode, and tick while it runs.
+    useEffect(() => {
+        if (!slowChannelId) { setSlowLeftMs(0); return; }
+        clampSlowmode(slowUserId, slowChannelId, slowmodeSecs * 1000);
+        let left = slowmodeLeftMs(slowUserId, slowChannelId);
+        setSlowLeftMs(left);
+        if (left <= 0) return;
+        const t = setInterval(() => {
+            left = slowmodeLeftMs(slowUserId, slowChannelId);
+            setSlowLeftMs(left);
+            if (left <= 0) clearInterval(t);
+        }, 250);
+        return () => clearInterval(t);
+    }, [slowChannelId, slowUserId, slowmodeSecs, slowNudge]);
+    /** A message is being sent here: open the window the server will enforce. */
+    const noteSlowmodeSend = () => {
+        if (!slowChannelId || slowmodeSecs <= 0 || slowmodeExempt) return;
+        startSlowmode(slowUserId, slowChannelId, slowmodeSecs * 1000);
+        setSlowNudge(n => n + 1);
+    };
+    /** The server's word on a refused / failed send overrides our guess. */
+    const syncSlowmodeFromError = (err: unknown, channelId: string) => {
+        const ms = slowmodeRetryMs(err);
+        if (ms) startSlowmode(slowUserId, channelId, ms);
+        else clampSlowmode(slowUserId, channelId, 0);   // not slowmode: the optimistic window was a phantom
+        setSlowNudge(n => n + 1);
+    };
+
     /** Returns the ms to wait before another send is allowed (0 = allowed now). */
     const getRateLimitDelay = (): number => {
         const now = Date.now();
@@ -2430,6 +2508,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // same context applies to every sender kind.
     const [messageStylesMode] = useMessageStylesMode();
     const cardReducedMotion = usePrefersReducedMotion();
+    // The active theme: rows re-render on a theme switch (role-name colours,
+    // theme() card colours resolve per reader). See rowGlobals.
+    const activeTheme = useTheme();
     useShownPlainVersion();
     const cardCtx: CardRenderContext = {
         user: messageStylesMode,
@@ -2737,6 +2818,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const emojiButtonRef = useRef<HTMLButtonElement>(null);
     const [showGifPicker, setShowGifPicker] = useState(false);
     const gifButtonRef  = useRef<HTMLButtonElement>(null);
+    // Stickers: their own button and picker next to the emoji button.
+    const [stickerAnchorRect, setStickerAnchorRect] = useState<DOMRect | null>(null);
+    const stickerButtonRef = useRef<HTMLButtonElement>(null);
     const [showKeyHelpPopover, setShowKeyHelpPopover] = useState(false);
     const keyHelpButtonRef = useRef<HTMLButtonElement>(null);
     const keyHelpPopoverRef = useRef<HTMLDivElement>(null);
@@ -3027,6 +3111,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (token) void preloadAvatars(avatarIds, token);
     }, [token]);
     const liveMentionRoster = useServerRoster(activeChannel?.server_id);
+    // userId -> gradient end colour for author names (gradient role colours).
+    // Role ICONS are deliberately NOT shown in chat (owner 2026-11-22).
+    const memberRoleSecondary = useMemo(
+        () => (activeChannel && liveMentionRoster
+            ? buildMemberRoleSecondary(liveMentionRoster.members, liveMentionRoster.roles)
+            : NO_ROLE_SECONDARY),
+        [activeChannel, liveMentionRoster],
+    );
     useEffect(() => {
         if (activeChannel && liveMentionRoster) syncRosterIdentities(liveMentionRoster);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3286,6 +3378,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             const uids = isMemberEventContent(msg.content)
                 ? memberEventUserIds(msg.content)
                 : (msg.sender_user_id ? [msg.sender_user_id] : []);
+            // A claimed imported author (phase 3) shows as the claimant, who may
+            // not be a member here: resolve them like a sender.
+            const claimant = msg.import_mark?.claimed_user_id;
+            if (typeof claimant === 'string' && claimant) uids.push(claimant);
             for (const uid of uids) {
                 if (userIdToUsername[uid]) continue;
                 if (inFlightUserFetches.current.has(uid)) continue;
@@ -4200,7 +4296,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (suggestion.type === 'user') {
             mentionTokenMapRef.current[suggestion.label] = `<@u:${suggestion.id}:${suggestion.label}>`;
         } else if (suggestion.type === 'role') {
-            mentionTokenMapRef.current[suggestion.label] = `<@r:${suggestion.id}:${suggestion.label}>`;
+            mentionTokenMapRef.current[suggestion.label] = `<@r:${suggestion.id}:${mentionTokenLabel(suggestion.label)}>`;
         }
         setMentionSuggestions([]);
         setMentionQueryRange(null);
@@ -4915,6 +5011,34 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     };
 
     /**
+     * Send a sticker (utils/stickers/wire.ts): a text message whose `text` is
+     * the `[Sticker: name]` fallback and whose `sticker` field the reader draws.
+     * A server sticker inside ITS OWN server's channel travels as a reference
+     * (every member can resolve it); anywhere else (a DM, a group, another
+     * server) it is sent as personal bytes so a recipient who is not a member
+     * still sees it. A personal sticker's bytes are added at encryption time.
+     */
+    const handleSendSticker = async (pick: StickerPick) => {
+        let ref: StickerRef;
+        if (pick.kind === 'personal') {
+            ref = { source: 'personal', id: pick.entry.id, name: pick.entry.name, mime: pick.entry.mime, animated: pick.entry.animated };
+        } else if (activeChannel?.server_id === pick.sticker.server_id) {
+            ref = { source: 'server', id: pick.sticker.sticker_id, name: pick.sticker.name, server_id: pick.sticker.server_id };
+        } else {
+            if (!token) throw new Error('Not signed in');
+            const asPersonal = await serverStickerAsPersonal(pick.sticker.server_id, pick.sticker.sticker_id, pick.sticker.name, token);
+            if (!asPersonal) throw new Error('That sticker could not be loaded. Try again.');
+            ref = asPersonal;
+        }
+        const replyTo = replyingId;
+        await sendClientContent(buildStickerContent(ref, replyTo) as ClientContent);
+        if (replyTo) setReplyingId(null);
+        rememberRecentSticker(pick.kind === 'personal'
+            ? { source: 'personal', id: pick.entry.id, name: pick.entry.name }
+            : { source: 'server', id: pick.sticker.sticker_id, name: pick.sticker.name, server_id: pick.sticker.server_id });
+    };
+
+    /**
      * Send the user's OWN contact verification code into this DM as a
      * `safety_number` embed, so the other side can compare it with one click
      * instead of transcribing forty characters.
@@ -5411,6 +5535,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             reportStaleEpochRefused(err, 'send');
             console.error('Failed to send:', err instanceof Error ? `${err.name}: ${err.message}` : String(err), err);
             onPatchSentMessage?.(job.kind, job.conversationId, clientMsgId, { send_state: 'failed', send_error: sendFailureReason(err) });
+            if (job.kind === 'channel') syncSlowmodeFromError(err, job.conversationId);
             const msg = err instanceof Error ? err.message : String(err);
             // This device hasn't got the channel's Sender Key: start fetching it
             // so a Retry can succeed.
@@ -5571,6 +5696,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             startCooldown(delay);
             return;
         }
+        // Slowmode: not yet (an edit is not a new message and goes through).
+        if (activeChannel && !editingId && slowmodeSecs > 0 && !slowmodeExempt) {
+            const left = slowmodeLeftMs(slowUserId, activeChannel.channel_id);
+            if (left > 0) {
+                setSlowLeftMs(left);
+                setSlowNudge(n => n + 1);
+                return;
+            }
+        }
         // ────────────────────────────────────────────────────────────────────
 
         // ── Big-room @everyone / @here: ask first ───────────────────────────
@@ -5625,6 +5759,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (isSelfChat && !editingId) requestMoment('note-to-self');
         if (!keepViewport) followBottomRef.current = true;   // follow down when the user sends
         setSending(true);
+        if (activeChannel && !editingId) noteSlowmodeSend();
 
         // ── Plain text is INSTANT ────────────────────────────────────────────
         // A text-only send is put in the feed (marked 'sending') and the
@@ -5889,6 +6024,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             // send reports its own failure on the message (enqueueDelivery).
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const status = (err as any)?.response?.status as number | undefined;
+            if (activeChannel && !editingId) syncSlowmodeFromError(err, activeChannel.channel_id);
+            if (isSlowmodeError(err)) {
+                // Slowmode, not the throttler: say so, with the time (a toast, as
+                // the draft / staged files were already consumed by this flow).
+                toast.push({
+                    kind: 'warning',
+                    title: 'Slowmode is on',
+                    message: `You can send another message in ${formatCountdown(slowmodeRetryMs(err) ?? 0)}.`,
+                });
+                return;
+            }
             if (status === 429) {
                 // Server-side rate limit hit — sync the client cooldown so the
                 // UI disables the input until the window expires.
@@ -6121,6 +6267,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     // Removed duplicate activeBanner polling; now handled globally in Dashboard.tsx
 
+    // Imported reactions (utils/importedReactions.ts): load each import's
+    // author -> claimant map once, and re-render when a claim changes.
+    const [, setReactorClaimsTick] = useState(0);
+    useEffect(() => subscribeReactorClaims(() => setReactorClaimsTick(t => t + 1)), []);
     const displayMessages = (chatSearch.trim()
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         ? messages.filter((m: any) => typeof m.content?.text === 'string' && messageTextMatches(m.content.text, chatSearch))
@@ -6269,9 +6419,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // copy/save items below (and not "Copy Text").
         const isKlipyGif = msg.content?.type === 'klipy_gif';
         const klipyRef = isKlipyGif ? parseKlipyGifRef(msg.content) : null;
+        // A sticker rides a text message (utils/stickers/wire.ts): never edited,
+        // no "Copy Text" (its text is only the fallback), "Add to My stickers" instead.
+        const stickerRef = stickerRefOf(msg.content);
+        const isStickerMsg = !!stickerRef;
         const isMe = msg.sender_user_id
             ? msg.sender_user_id === user?.user_id
             : myDeviceIds.has(msg.sender_device_id);
+        // Phase 3: the Discord-verified claimant of an imported row may delete it
+        // (the server allows it too); never edit it.
+        const claimedView = importedAuthorView(msg);
+        const isClaimant = !!user?.user_id && claimedView?.kind === 'claimed' && claimedView.userId === user.user_id;
 
         const sentMs = typeof msg.timestamp === 'number' ? msg.timestamp : Date.parse(msg.timestamp || '');
         const sentMsSafe = Number.isFinite(sentMs) ? sentMs : Date.now();
@@ -6311,7 +6469,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             isChannelMessage: isServerChannel,
             canManageMessages,
             isOwnMessage: isMe,
-            isTextMessage: msg.content?.type === 'text',
+            // Imported history is never editable, not even by the importer (plan B4.1).
+            isTextMessage: msg.content?.type === 'text' && !msg.import_mark && !isStickerMsg,
             canCompose: canComposeInThisChat,
             canReact,
         };
@@ -6324,25 +6483,25 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // ── Status row — deletion countdown or saved badge, info only ───────
         if (isServerSaved) {
             groups.push([{ custom: (
-                <div className="px-1 py-0.5 text-[11px] text-cl-glow/80 select-none flex items-center gap-1.5">
+                <div className="px-1 py-0.5 text-[11px] text-cl-glow-text/80 select-none flex items-center gap-1.5">
                     <Archive className="w-3 h-3" strokeWidth={2} />
                     {isPinned ? 'Saved to server · pinned' : 'Saved to server'}
                 </div>
             ) }]);
         } else if (deletionText) {
             groups.push([{ custom: (
-                <div className="px-1 py-0.5 text-[11px] text-cl-glow/70 select-none">{deletionText}</div>
+                <div className="px-1 py-0.5 text-[11px] text-cl-glow-text/70 select-none">{deletionText}</div>
             ) }]);
         } else if (isPinned) {
             groups.push([{ custom: (
-                <div className="px-1 py-0.5 text-[11px] text-cl-lume/70 select-none flex items-center gap-1.5">
+                <div className="px-1 py-0.5 text-[11px] text-cl-lume-text/70 select-none flex items-center gap-1.5">
                     <Save className="w-3 h-3" strokeWidth={2} />
                     Pinned · kept on this device
                 </div>
             ) }]);
         } else if (saved) {
             groups.push([{ custom: (
-                <div className="px-1 py-0.5 text-[11px] text-cl-lume/70 select-none flex items-center gap-1.5">
+                <div className="px-1 py-0.5 text-[11px] text-cl-lume-text/70 select-none flex items-center gap-1.5">
                     <Save className="w-3 h-3" strokeWidth={2} />
                     Saved
                 </div>
@@ -6366,7 +6525,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     ))}
                     <button
                         type="button"
-                        className="w-7 h-7 flex items-center justify-center rounded-md text-cl-faint hover:bg-white/10 hover:text-cl-lume transition-colors"
+                        className="w-7 h-7 flex items-center justify-center rounded-md text-cl-faint hover:bg-white/10 hover:text-cl-lume-text transition-colors"
                         onClick={() => {
                             const rowEl = document.getElementById(`msg-${msg.id}`);
                             setShowEmojiPicker(msg.id);
@@ -6417,7 +6576,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
         // ── Copy / attachment utilities ──────────────────────────────────────
         const utilGroup: ContextMenuItem[] = [];
-        if (isTextLike && !isKlipyGif) {
+        if (stickerRef) {
+            utilGroup.push(addToMyStickersItem(stickerRef, token, toast.push));
+        }
+        if (isTextLike && !isKlipyGif && !isStickerMsg) {
             utilGroup.push({
                 icon: <Copy />, label: 'Copy Text',
                 onSelect: () => {
@@ -6575,9 +6737,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 ?? 'this user';
             const snippet = isKlipyGif
                 ? `[KLIPY GIF${klipyRef?.title ? `: ${klipyRef.title}` : ''}${klipyRef ? ` — ${klipyRef.media.url}` : ''}]`
+                // A sticker reports as its text + `<:name:id>` token, so its image goes
+                // with the report (utils/stickers/wire.ts stickerReportText).
+                : isStickerMsg
+                ? (stickerReportText(msg.content) ?? '')
                 : isTextLike
                 ? (msg.content?.text ?? '')
-                : `[Attachment: ${msg.content?.filename ?? 'file'}, sent ${new Date(sentMsSafe).toLocaleString()}]`;
+                : `[Attachment: ${msg.content?.filename ?? 'file'}, sent ${formatFullDateTime(sentMsSafe)}]`;
             groups.push([{
                 icon: <Flag />, label: 'Report Message', danger: true,
                 // The message row itself rides along (not just the excerpt) so the report
@@ -6588,12 +6754,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
 
         // ── Delete — destructive, always last ────────────────────────────────
-        if (canDeleteMessage(gateCtx)) {
+        if (canDeleteMessage({ ...gateCtx, isOwnMessage: isMe || isClaimant })) {
             groups.push([{
-                icon: <Trash2 />, label: isMe ? 'Delete' : 'Delete (moderator)', danger: true,
+                icon: <Trash2 />, label: (isMe || isClaimant) ? 'Delete' : 'Delete (moderator)', danger: true,
                 onSelect: () => {
                     const activation: DeleteActivation = { entryPoint: 'contextmenu', shiftKey: false };
-                    requestDelete(msg, activation, isMe);
+                    requestDelete(msg, activation, isMe || isClaimant);
                 },
             }]);
         }
@@ -6704,6 +6870,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const stActiveChannel = useShallowStable(activeChannel);
     const stMemberRoleColors = useShallowStable(memberRoleColors);
     const stServerMemberNicknames = useShallowStable(serverMemberNicknames);
+    // Imported history (plan B6.2 rule 6): the names an unclaimed imported
+    // author must not pass for. Live member list, so a member who joins later
+    // with the same name triggers the disambiguator too.
+    const importCollisionNames = useMemo(() => (activeChannel
+        ? [...Object.values(serverMemberNicknames ?? {}), ...Object.values(userIdToUsername ?? {})].filter((n): n is string => typeof n === 'string' && n.length > 0)
+        : []), [activeChannel, serverMemberNicknames, userIdToUsername]);
+    const [unclaimedCard, setUnclaimedCard] = useState<UnclaimedCardTarget | null>(null);
+    const unclaimedReturnFocus = useRef<HTMLElement | null>(null);
+    // Phase 3: the claim confirm dialog, opened from the card's claim slot.
+    // Lives here (not in the card) because the card closes on any outside click.
+    const [claimDialog, setClaimDialog] = useState<ClaimableAuthor | null>(null);
     const stServers = useShallowStable(servers);
     // Save / pin / personal-save state is PER ROW (utils/rowSaveState): the
     // id lists used to be pane-wide row deps, so saving or pinning ONE message
@@ -6734,7 +6911,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         noServerEmojiContext, canReactServer, canManageMessages, canPinInThisChat, canSaveMessages,
         hasServerSave, hasServerUnsave, hasOpenProfile, hasInviteCodeClick, hasKeyChangeResolved,
         stRetentionShared, channelMessageRetention, channelAttachmentRetention, resolveEmoji,
-        mentionedUserIsKnown, nowTick, linkChannels, hasNavigateToChannel,
+        mentionedUserIsKnown, nowTick, linkChannels, hasNavigateToChannel, activeTheme,
+        importCollisionNames,
     ];
     // Reply quotes: one id/client-id index per `messages` change instead of
     // two linear scans of the whole conversation per reply row per render.
@@ -6824,7 +7002,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             {isDragOver && (
                 <div className="absolute inset-0 z-[100] flex items-center justify-center">
                     <div className="absolute inset-0 bg-cl-lume/10 backdrop-blur-[1px] border-2 border-dashed border-cl-lume/60 rounded-xl" />
-                    <div className="relative flex flex-col items-center gap-2 text-cl-lume">
+                    <div className="relative flex flex-col items-center gap-2 text-cl-lume-text">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                             <polyline points="17 8 12 3 7 8" />
@@ -6845,16 +7023,28 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     <div className="flex items-center gap-3 max-w-[60%] min-w-0">
                         <div className="w-10 h-10 rounded-xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center shrink-0">
                             {activeChannel.icon_name ? (
-                                <ChannelIconRenderer name={activeChannel.icon_name} size={20} className="text-cl-lume" />
+                                <ChannelIconRenderer name={activeChannel.icon_name} size={20} className="text-cl-lume-text" />
                             ) : activeChannel.icon_emoji ? (
                                 <span className="text-[18px] leading-none">{activeChannel.icon_emoji}</span>
                             ) : (
-                                <Hash className="w-5 h-5 text-cl-lume" />
+                                <Hash className="w-5 h-5 text-cl-lume-text" />
                             )}
                         </div>
                         <div className="flex flex-col gap-0 min-w-0">
-                            <h3 className="text-[var(--cl-text)] text-[15px] truncate leading-tight m-0 font-display">
-                                {activeChannel.name}
+                            <h3 className="text-[var(--cl-text)] text-[15px] truncate leading-tight m-0 font-display flex items-center gap-1.5">
+                                <span className="truncate">{activeChannel.name}</span>
+                                {activeChannel.age_restricted && (
+                                    <span className="cl-chan-chip shrink-0" title="Age-restricted channel (18+)" data-testid="age-chip">18+</span>
+                                )}
+                                {slowmodeSecs > 0 && (
+                                    <span
+                                        className="cl-chan-chip shrink-0"
+                                        title={`Slowmode: ${slowmodeLabel(slowmodeSecs).toLowerCase()} between messages${slowmodeExempt ? ' (you are exempt)' : ''}`}
+                                        data-testid="slowmode-chip-header"
+                                    >
+                                        <Clock className="w-2.5 h-2.5" aria-hidden="true" />{slowmodeShort(slowmodeSecs)}
+                                    </span>
+                                )}
                             </h3>
                             {activeChannel.topic ? (
                                 /* Deliberately a plain button, not ClButton. The kit's
@@ -6895,7 +7085,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             fallbackSize={16}
                         />
                         <div className="flex flex-col gap-0">
-                            <h3 className={`text-[var(--cl-text)] text-[15.5px] truncate leading-tight m-0 font-display ${activeChat.type === 'dm' && onOpenProfile ? 'group-hover/hdr:text-cl-lume transition-colors' : ''}`} style={{ fontWeight: 600 }}>
+                            <h3 className={`text-[var(--cl-text)] text-[15.5px] truncate leading-tight m-0 font-display ${activeChat.type === 'dm' && onOpenProfile ? 'group-hover/hdr:text-cl-lume-text transition-colors' : ''}`} style={{ fontWeight: 600 }}>
                                 {activeChat.title || 'Unknown Chat'}
                             </h3>
                             {(() => {
@@ -6927,14 +7117,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             Poking it repeatedly earns the escalation pool. */}
                         <span
                             className="shrink-0 flex cursor-pointer"
-                            style={{ color: 'var(--cl-lume)' }}
+                            style={{ color: 'var(--cl-lume-text)' }}
                             title="End-to-end encrypted"
                             onClick={pokeLock}
                         >
                             <Lock size={13} strokeWidth={2.4} />
                         </span>
                         {lockMsg && (
-                            <span className="text-[11px] font-bold text-cl-lume fade-enter select-none shrink-0">
+                            <span className="text-[11px] font-bold text-cl-lume-text fade-enter select-none shrink-0">
                                 {lockMsg}
                             </span>
                         )}
@@ -7093,7 +7283,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     submenu: [
                                         { icon: <Bell />, label: 'All Messages', checked: notifPref === 'all', onSelect: () => { onSetNotifMode?.('all'); } },
                                         { icon: <BellDot />, label: '@Mentions Only', checked: notifPref === 'mentions', onSelect: () => { onSetNotifMode?.('mentions'); } },
-                                        { icon: <BellOff />, label: 'Off', checked: notifPref === 'none', onSelect: () => { onSetNotifMode?.('none'); } },
+                                        // Timed mute, shared with channels and the phones (utils/muteSync.ts).
+                                        ...buildMuteItems(chatMute, activeChat.id, activeChat.type === 'group' ? 'Group' : 'Conversation'),
                                     ],
                                 });
                                 items.push({ divider: true });
@@ -7224,7 +7415,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     submenu: [
                                         { icon: <Bell />, label: 'All Messages', checked: notifPref === 'all', onSelect: () => { onSetNotifMode?.('all'); } },
                                         { icon: <BellDot />, label: '@Mentions Only', checked: notifPref === 'mentions', onSelect: () => { onSetNotifMode?.('mentions'); } },
-                                        { icon: <BellOff />, label: 'Off', checked: notifPref === 'none', onSelect: () => { onSetNotifMode?.('none'); } },
+                                        // Timed mute, shared with channels and the phones (utils/muteSync.ts).
+                                        ...buildMuteItems(chatMute, activeChat.id, activeChat.type === 'group' ? 'Group' : 'Conversation'),
                                     ],
                                 });
                                 items.push({ divider: true });
@@ -7517,10 +7709,25 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             : myDeviceIds.has(msg.sender_device_id);
                         // Confirmed reactions with this device's pending / failed
                         // ones laid over them (utils/pendingReactions.ts).
-                        const rxView = applyPendingReactions(msg.reactions, pendingRx, reactionMineKeys, reactionSelfId);
+                        // Imported reactions under the live ones (verified rows only; B6.2 for reactors).
+                        const rxBlock = msg.import_mark ? verifiedBlockOf(msg) : null;
+                        if (rxBlock?.reactions?.length && emojiServerId) ensureReactorClaims(token, emojiServerId, msg.import_mark.import_id);
+                        const rxMerged = rxBlock?.reactions?.length
+                            ? mergeImportedReactions(msg.reactions, rxBlock, reactorClaimsFor(msg.import_mark.import_id))
+                            : null;
+                        const rxView = applyPendingReactions(rxMerged ? rxMerged.reactions : msg.reactions, pendingRx, reactionMineKeys, reactionSelfId);
+
+                        // ── Imported history (plan B6.2) ───────────────────────
+                        // Non-null ONLY for a row the server marked as imported whose
+                        // content matches the mark. Everything else is its real sender.
+                        const imported = importedAuthorView(msg, importCollisionNames);
 
                         // ── Shared timestamp for this message ─────────────────
+                        // `msgMs` = the server time: what retention counts from.
+                        // `shownMs` = what the row DISPLAYS: the original time for
+                        // imported history (D17), else the same.
                         const msgMs = typeof msg.timestamp === 'number' ? msg.timestamp : Date.parse(msg.timestamp || '');
+                        const shownMs = imported ? displayTimeMs(msg) : msgMs;
                         // Hover time for the centred system / call pills (utils/systemRowTime),
                         // owner 2026-11-18. Shown INSIDE the pill on row hover or keyboard focus
                         // ("Mara joined · Today at 3:42 PM"), so it can never be clipped at the
@@ -7539,17 +7746,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         // ── Date divider helpers ──────────────────────────────
                         // Find the previous non-system, non-call_key message for date comparison.
                         const prevAny = index > 0 ? displayMessages[index - 1] : null;
-                        const prevAnyMs = prevAny
-                            ? (typeof prevAny.timestamp === 'number' ? prevAny.timestamp : Date.parse(prevAny.timestamp || ''))
-                            : 0;
-                        const showDateDivider = Number.isFinite(msgMs) && (
+                        const prevAnyMs = prevAny ? displayTimeMs(prevAny) : 0;
+                        const showDateDivider = Number.isFinite(shownMs) && (
                             index === 0 ||
                             !Number.isFinite(prevAnyMs) ||
-                            new Date(msgMs).toDateString() !== new Date(prevAnyMs).toDateString()
+                            new Date(shownMs).toDateString() !== new Date(prevAnyMs).toDateString()
                         );
                         const dateLabel = (() => {
-                            if (!showDateDivider || !Number.isFinite(msgMs)) return '';
-                            const d   = new Date(msgMs);
+                            if (!showDateDivider || !Number.isFinite(shownMs)) return '';
+                            const d   = new Date(shownMs);
                             const now = new Date();
                             const todayStr     = now.toDateString();
                             const yday = new Date(now); yday.setDate(now.getDate() - 1);
@@ -7587,6 +7792,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     ? canReactServer
                                                     : (isFriend || activeChat?.type === 'group');
                                                 const reactorNames: string[] = ids.map(id => {
+                                                    if (rxMerged && rxMerged.names[id] !== undefined) {
+                                                        const claimant = rxMerged.claimed[id];
+                                                        if (claimant) return claimant === user?.user_id ? (user?.username ?? 'You') : (userIdToUsername[claimant] ?? rxMerged.names[id]);
+                                                        return rxMerged.names[id];
+                                                    }
                                                     if (id === user?.user_id || myDeviceIds.has(id)) return user?.username ?? 'You';
                                                     // Prefer user-id map (server channels), fall back to device-id map (DMs).
                                                     // Final fallback is "Unknown" — never the raw id.
@@ -7681,7 +7891,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         >
                                             <div className="flex items-center gap-3 select-none">
                                                 <div className="flex-1 h-px bg-white/[0.05]" />
-                                                <div data-member-event-pill title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
+                                                <div data-member-event-pill title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border cl-sys-text font-medium ${
                                                     isJoin ? 'bg-blue-500/[0.07] border-blue-500/20 text-blue-400/80'
                                                            : 'bg-white/[0.03] border-white/[0.06] text-cl-faint'
                                                 }`}>
@@ -7706,7 +7916,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         {DateDivider}
                                         <div className="flex items-center gap-3 my-2 px-4 select-none" role="note">
                                             <div className="flex-1 h-px bg-white/[0.05]" />
-                                            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-cl-glow/20 bg-cl-glow/[0.05] text-cl-glow/70 text-[11px] font-medium">
+                                            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-cl-glow/20 bg-cl-glow/[0.05] text-cl-glow-text/70 cl-sys-text font-medium">
                                                 <Lock className="w-3 h-3 flex-shrink-0" />
                                                 <span>{placeholderText(systemRow.data?.reason)}</span>
                                             </div>
@@ -7727,7 +7937,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         {DateDivider}
                                         <div className="flex items-center gap-3 my-2 px-4 select-none">
                                             <div className="flex-1 h-px bg-white/[0.05]" />
-                                            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-cl-glow/20 bg-cl-glow/[0.05] text-cl-glow/70 text-[11px] font-medium">
+                                            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-cl-glow/20 bg-cl-glow/[0.05] text-cl-glow-text/70 cl-sys-text font-medium">
                                                 <Lock className="w-3 h-3 flex-shrink-0" />
                                                 {/* Says WHY (utils/channelDecryptFailure.ts): only a missing
                                                     key is "waiting"; an unverifiable sender or a key withheld
@@ -7750,7 +7960,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     {DateDivider}
                                     <div className="group flex items-center gap-3 my-2 px-4 select-none">
                                         <div className="flex-1 h-px bg-white/[0.05]" />
-                                        <div title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
+                                        <div title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border cl-sys-text font-medium ${
                                             isJoin  ? 'bg-blue-500/[0.07] border-blue-500/20 text-blue-400/80' :
                                             isLeave ? 'bg-white/[0.03] border-white/[0.06] text-cl-faint' :
                                                       'bg-white/[0.03] border-white/[0.06] text-cl-faint'
@@ -7798,12 +8008,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     {DateDivider}
                                     <div className="group flex items-center gap-3 my-2 px-4 select-none" data-system-row="call">
                                         <div className="flex-1 h-px bg-white/[0.05]" />
-                                        <div title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-2 px-3 py-1 rounded-full border text-[11px] font-medium ${
+                                        <div title={sysTime?.full} className={`flex min-w-0 max-w-full items-center gap-2 px-3 py-1 rounded-full border cl-sys-text font-medium ${
                                             active
-                                                ? 'bg-cl-ok/[0.08] border-cl-ok/20 text-cl-ok'
+                                                ? 'bg-cl-ok/[0.08] border-cl-ok/20 text-cl-ok-text'
                                                 : 'bg-white/[0.03] border-white/[0.06] text-cl-faint'
                                         }`}>
-                                            <PhoneCall className={`w-3 h-3 flex-shrink-0 ${active ? 'text-cl-ok' : 'text-cl-faint'}`} />
+                                            <PhoneCall className={`w-3 h-3 flex-shrink-0 ${active ? 'text-cl-ok-text' : 'text-cl-faint'}`} />
                                             {active ? (
                                                 <>
                                                     <span>{callerName} started a call</span>
@@ -7840,11 +8050,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             }
                             return null;
                         })();
-                        const prevMs = prev ? (typeof prev.timestamp === 'number' ? prev.timestamp : Date.parse(prev.timestamp || '')) : 0;
+                        const prevMs = prev ? displayTimeMs(prev) : 0;
+                        // Imported authors group by their own ref: two people imported
+                        // by one device are two people, and never the importer.
                         const sameSender = !!prev
-                            && prev.sender_device_id === msg.sender_device_id
-                            && Number.isFinite(msgMs) && Number.isFinite(prevMs)
-                            && (msgMs - prevMs) < 30 * 60 * 1000;
+                            && authorGroupKey(prev) === authorGroupKey(msg)
+                            && Number.isFinite(shownMs) && Number.isFinite(prevMs)
+                            && (shownMs - prevMs) >= 0
+                            && (shownMs - prevMs) < 30 * 60 * 1000;
                         const showHeader = !sameSender;
 
                         // Save/retention state for this message (text, server_invite, or attachment).
@@ -7922,16 +8135,32 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             userIdToUsername, deviceToUsername,
                             myUserId: user?.user_id, myUsername: user?.username, myDeviceIds,
                         };
+                        // A claimed imported author (phase 3) shows as that Cipherline
+                        // user; the server never sets a claim in phase 2.
+                        const claimedId = imported?.kind === 'claimed' ? imported.userId : null;
+                        const isClaimantRow = !!claimedId && claimedId === user?.user_id;
                         const resolvedName = senderDisplayName(msg, nameCtx);
-                        const resolvedAvatar = isMe
+                        const resolvedAvatar = claimedId
+                            ? userIdToAvatar[claimedId]
+                            : isMe
                             ? (user?.avatar_url || undefined)
                             : (msg.sender_user_id
                                 ? userIdToAvatar[msg.sender_user_id]
                                 : deviceToAvatar[msg.sender_device_id]);
+                        const openUnclaimed = imported?.kind === 'unclaimed'
+                            ? (e: React.MouseEvent<HTMLElement>) => {
+                                e.stopPropagation();
+                                unclaimedReturnFocus.current = e.currentTarget;
+                                setUnclaimedCard({
+                                    authorRef: imported.authorRef, name: imported.name, username: imported.username,
+                                    avatar: imported.avatar, authorKind: imported.authorKind, x: e.clientX, y: e.clientY,
+                                });
+                            }
+                            : null;
 
                         // Smart timestamp
                         const smartTimestamp = (() => {
-                            const d = new Date(msgMs || Date.now());
+                            const d = new Date(shownMs || Date.now());
                             const now = new Date();
                             const isToday = d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
                             const yesterday = new Date(now);
@@ -8014,7 +8243,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         // of who sent the message — including messages you sent yourself
                         // (self-mentions, @everyone you sent, roles you belong to).
                         const msgText = msg.content?.type === 'text' ? (msg.content.text ?? '') : '';
-                        const mentionsMe = !!(
+                        const mentionsMe = !imported && !!(
                             msgText && (
                                 // @everyone / @here
                                 msgText.includes('@everyone') || msgText.includes('@here')
@@ -8025,22 +8254,35 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             )
                         );
 
-                        const authorUserId = isMe
+                        const authorUserId = claimedId
+                            ? claimedId
+                            : isMe
                             ? (user?.user_id ?? null)
                             : (msg.sender_user_id ?? null);
-                        const avatarEl = showHeader ? (
+                        const avatarEl = showHeader && imported?.kind === 'unclaimed' ? (
+                            <ImportedAuthorAvatar
+                                authorRef={imported.authorRef}
+                                name={imported.name}
+                                avatar={imported.avatar}
+                                token={token}
+                                className="cl-msg-av mt-0.5 ring-1 ring-white/5 shadow-sm"
+                                onClick={openUnclaimed ?? undefined}
+                            />
+                        ) : showHeader ? (
                             <AuthorHoverAvatar
                                 // Plays while the pointer is on this message's author NAME too.
                                 hoverKey={msg.id}
                                 attachmentId={resolvedAvatar}
                                 userId={authorUserId}
                                 token={token}
-                                className="w-10 h-10 shrink-0 mt-0.5 ring-1 ring-white/5 shadow-sm"
+                                className="cl-msg-av w-10 h-10 shrink-0 mt-0.5 ring-1 ring-white/5 shadow-sm"
                                 fallbackSize={24}
                                 bypassFriendGate={isServerChannel}
                             />
                         ) : (
-                            <div className="w-10 shrink-0" />
+                            // Compact density shows the send time in this gutter on hover (CSS ::before
+                            // reads data-t, so it is never part of a copy or selection).
+                            <div className="cl-msg-gutter w-10 shrink-0" data-t={Number.isFinite(shownMs) ? formatClockShort(shownMs) : ''} aria-hidden="true" />
                         );
 
                         return (
@@ -8048,7 +8290,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             {DateDivider}
                             <div
                                 id={`msg-${msg.id}`}
-                                className={`group relative flex gap-3 py-0.5 pr-2 pl-3 ${showHeader ? 'mt-3' : ''} ${
+                                className={`cl-msg-row group relative flex gap-3 py-0.5 pr-2 pl-3 ${showHeader ? 'cl-msg-row--head' : ''} ${
                                     mentionsMe ? '' : 'hover:bg-white/[0.015]'
                                 } ${highlightedMsgId === msg.id ? 'msg-reply-highlight' : ''} ${(isTextLike || (msg.content?.type === 'attachment' && attId)) ? 'cursor-pointer' : ''} ${
                                     entering ? (impacting ? 'cl-msg-enter-impact' : isMe ? 'cl-msg-enter-sent' : 'cl-msg-enter-recv') : ''
@@ -8142,10 +8384,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         Server-saved and pinned icons are always visible; compact expiry
                                         and local-save icon remain hover-only. */}
                                     {!showHeader && (isServerSaved || pinnedMsgIds.includes(msg.id) || saved || compactExpiry) && (
-                                        <span className="absolute top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none right-full pr-2">
+                                        <span className="cl-msg-gutter-icons absolute top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none right-full pr-2">
                                             {isServerSaved && (
                                                 <span className="inline-flex shrink-0" title="Saved to server">
-                                                    <Archive className="w-2.5 h-2.5 text-cl-glow" />
+                                                    <Archive className="w-2.5 h-2.5 text-cl-glow-text" />
                                                 </span>
                                             )}
                                             {/* Pin icon. In a channel every pinned message is also
@@ -8166,7 +8408,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     {saved ? (
                                                         <Save className="w-3 h-3 text-cl-muted" strokeWidth={2} />
                                                     ) : (
-                                                        <ChromeText className="text-[10px] text-cl-glow/70 whitespace-nowrap" text={compactExpiry!} label={deletionText ?? undefined} />
+                                                        <ChromeText className="text-[10px] text-cl-glow-text/70 whitespace-nowrap" text={compactExpiry!} label={deletionText ?? undefined} />
                                                     )}
                                                 </span>
                                             )}
@@ -8175,13 +8417,37 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
                                     {showHeader && (() => {
                                         // Click target: own profile for "You", sender's profile for others.
-                                        const nameTargetId = isMe ? (user?.user_id ?? null) : (msg.sender_user_id ?? null);
-                                        const nameClickable = !!nameTargetId && !!(openProfileCtx || onOpenProfile);
+                                        // An unclaimed imported author is never a profile link: it opens
+                                        // the "Not on Cipherline yet" card instead (plan B6.2 rule 5).
+                                        const nameTargetId = claimedId ?? (isMe ? (user?.user_id ?? null) : (msg.sender_user_id ?? null));
+                                        const nameClickable = !openUnclaimed && !!nameTargetId && !!(openProfileCtx || onOpenProfile);
                                         return (
-                                        <div className="flex items-baseline gap-2 mb-0.5">
+                                        <div className="cl-msg-head flex items-baseline gap-2 mb-0.5">
+                                            {openUnclaimed ? (
+                                                <span className="inline-flex items-baseline gap-1 min-w-0">
+                                                    <button
+                                                        type="button"
+                                                        data-imported-author-name
+                                                        className="text-[14px] font-semibold leading-tight cursor-pointer hover:underline bg-transparent border-0 p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--cl-glow)] rounded-sm"
+                                                        style={{ color: 'var(--cl-bright)' }}
+                                                        onClick={openUnclaimed}
+                                                    >
+                                                        {resolvedName}
+                                                    </button>
+                                                    {imported?.kind === 'unclaimed' && imported.suffix && (
+                                                        <span data-imported-author-suffix className="text-[12px] text-cl-faint leading-tight whitespace-nowrap">· {imported.suffix}</span>
+                                                    )}
+                                                </span>
+                                            ) : (
                                             <span
-                                                className={`text-[14px] font-semibold leading-tight ${nameClickable ? 'cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
-                                                style={{ color: (msg.sender_user_id && memberRoleColors?.[msg.sender_user_id]) || 'white' }}
+                                                {...(() => {
+                                                    const uid = msg.sender_user_id;
+                                                    const ns = roleNameStyle(uid ? memberRoleColors?.[uid] : null, uid ? memberRoleSecondary[uid] : null, 'var(--cl-bright)', activeTheme);
+                                                    return {
+                                                        className: `text-[14px] font-semibold leading-tight ${nameClickable ? 'cursor-pointer hover:brightness-125 transition-[filter]' : ''} ${ns.className ?? ''}`,
+                                                        style: ns.style,
+                                                    };
+                                                })()}
                                                 // Hovering the name plays this message's animated avatar.
                                                 onMouseEnter={() => enterAuthorName(msg.id)}
                                                 onMouseLeave={() => leaveAuthorName(msg.id)}
@@ -8198,16 +8464,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             >
                                                 {resolvedName}
                                             </span>
+                                            )}
                                             <span className="text-[11px] text-cl-faint leading-tight">
                                                 {smartTimestamp}
                                             </span>
-                                            {msg.edited && (
+                                            {(msg.edited || imported?.edited) && (
                                                 <ChromeText className="text-[10px] text-cl-faint italic" text="(edited)" label="edited" />
                                             )}
                                             {/* Saved to server (amber) — channel only. Pinned or not. */}
                                             {isServerSaved && (
                                                 <span className="inline-flex shrink-0" title="Saved to server">
-                                                    <Archive className="w-2.5 h-2.5 text-cl-glow" />
+                                                    <Archive className="w-2.5 h-2.5 text-cl-glow-text" />
                                                 </span>
                                             )}
                                             {/* Pinned — channel (shared, and always also saved, so it
@@ -8225,7 +8492,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 <span className="relative group/cd inline-flex items-center cursor-default opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                                                     {/* ChromeText: painted from a data attribute so the badge and its
                                                         tooltip are never part of a drag-selection / copy. */}
-                                                    <ChromeText className="text-[10px] text-cl-glow/70 tabular-nums font-medium" text={`· ${inlineBadge}`} label={deletionText} />
+                                                    <ChromeText className="text-[10px] text-cl-glow-text/70 tabular-nums font-medium" text={`· ${inlineBadge}`} label={deletionText} />
                                                     <ChromeText className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] bg-cl-deep border border-white/10 rounded-md text-cl-text whitespace-nowrap opacity-0 group-hover/cd:opacity-100 transition-opacity duration-150 z-50 shadow-lg" text={deletionText} />
                                                 </span>
                                             ) : saved ? (
@@ -8247,10 +8514,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 onClick={(e) => { e.stopPropagation(); jumpToMessage(msg.content.reply_to_id); }}
                                                 data-testid="reply-quote"
                                                 aria-label={`Reply to ${replyWho ?? 'a message'}: ${replyLine}`}
-                                                className="flex flex-col gap-0.5 text-[12px] px-2 py-1.5 rounded-lg mb-1 opacity-80 border-l-2 border-cl-lume/50 bg-white/[0.03] w-fit max-w-full min-w-0 overflow-hidden cursor-pointer hover:bg-white/[0.06] hover:opacity-95 transition-colors"
+                                                style={{ fontSize: msgTextPx(12) }}
+                                                className="flex flex-col gap-0.5 px-2 py-1.5 rounded-lg mb-1 opacity-80 border-l-2 border-cl-lume/50 bg-white/[0.03] w-fit max-w-full min-w-0 overflow-hidden cursor-pointer hover:bg-white/[0.06] hover:opacity-95 transition-colors"
                                             >
                                                 {replyWho && (
-                                                    <span data-testid="reply-quote-author" className="text-[11px] font-bold leading-tight text-cl-lume truncate">{replyWho}</span>
+                                                    <span data-testid="reply-quote-author" style={{ fontSize: msgTextPx(11) }} className="font-bold leading-tight text-cl-lume-text truncate">{replyWho}</span>
                                                 )}
                                                 <span className="leading-snug text-cl-text truncate">{replyLine}</span>
                                             </div>
@@ -8258,17 +8526,22 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     })()}
 
                                     {/* Body */}
-                                    {msg.content?.type === 'text' ? (
+                                    {stickerRefOf(msg.content) ? (
+                                        // A sticker: drawn large with no text and no card chrome
+                                        // (components/stickers/StickerMessage.tsx). Its `text` is only
+                                        // the fallback an older client shows.
+                                        <StickerMessage sticker={stickerRefOf(msg.content)!} token={token} />
+                                    ) : msg.content?.type === 'text' ? (
                                         <>
                                             {/* Hide the link text when the whole message is just a bare image URL or
                                                 a bare Cipherline invite URL — the embed below will render instead. */}
                                             {(() => {
                                                 const sourceText: string = typeof msg.content.text === 'string' ? msg.content.text : '';
-                                                // Bare invite URLs that get a card below are not shown as
+                                                // Bare invite / theme URLs that get a card below are not shown as
                                                 // text (a masked link stays). Display only: copy / edit /
                                                 // quote keep `msg.content.text`. Everything below (long-
                                                 // message collapse, jumbo emoji) sees this post-removal text.
-                                                const rawText: string = stripBareInviteLinks(sourceText);
+                                                const rawText: string = stripBareCardLinks(sourceText);
                                                 const trimmed = rawText.trim();
                                                 const isBareImageUrl = /^https?:\/\/\S+$/.test(trimmed) && isImageUrl(trimmed);
                                                 const inviteOnly = sourceText.trim() !== '' && trimmed === '';
@@ -8286,13 +8559,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 // The sender's message size (validated allowlist, capped;
                                                 // utils/formatting/messageSize.ts). Jumbo emoji ignore it.
                                                 const msgSize = messageSizeOf(msg.content);
-                                                let fontSize = scaledPx(MESSAGE_BODY_PX, msgSize);
+                                                // Accessibility → Message text size feeds the body through one CSS
+                                                // var (utils/a11y/messageTextSize.ts); 15px when unset.
+                                                let fontSize = messageBodyFontSize(sizeScaleFor(msgSize));
                                                 let lineHeight: string | number = MESSAGE_BODY_LINE_HEIGHT;
                                                 if (emojiOnly) {
                                                     const n = countEmojis(trimmed);
-                                                    if (n <= 3)      { fontSize = '3em';   lineHeight = 1.1; }
-                                                    else if (n <= 5) { fontSize = '2em';   lineHeight = 1.15; }
-                                                    else if (n <= 8) { fontSize = '1.5em'; lineHeight = 1.2; }
+                                                    if (n <= 3)      { fontSize = msgTextEm(3);   lineHeight = 1.1; }
+                                                    else if (n <= 5) { fontSize = msgTextEm(2);   lineHeight = 1.15; }
+                                                    else if (n <= 8) { fontSize = msgTextEm(1.5); lineHeight = 1.2; }
                                                 }
 
                                                 // One renderer for the row, the collapsed preview, the
@@ -8400,6 +8675,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 return (
                                                     <div className="flex flex-col gap-1 w-full items-start">
                                                         {unique.map((u, i) => {
+                                                            // A theme link renders from its own fragment, on this device:
+                                                            // decided first, so it never reaches the image / link fetchers.
+                                                            if (embedKindOf(u) === 'theme') return <ThemeLinkEmbed key={i} url={u} />;
                                                             const code = inviteCodeFromUrl(u);
                                                             if (code) {
                                                                 return (
@@ -8432,13 +8710,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                    intentional deletions. */
                                                 <div className="flex items-start gap-3 p-3.5 bg-cl-flash/[0.08] border border-cl-flash/25 rounded-xl min-w-[260px] max-w-[360px]">
                                                     <div className="w-7 h-7 rounded-lg bg-cl-flash/15 border border-cl-flash/25 flex items-center justify-center shrink-0 mt-0.5">
-                                                        <AlertTriangle className="w-3.5 h-3.5 text-cl-flash" />
+                                                        <AlertTriangle className="w-3.5 h-3.5 text-cl-flash-text" />
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <p className="text-[12px] font-semibold text-cl-text leading-tight truncate">
                                                             Couldn't decrypt {safeDisplayFilename(msg.content.filename)}
                                                         </p>
-                                                        <p className="text-[11px] text-cl-flash/70 mt-0.5 leading-snug">
+                                                        <p className="text-[11px] text-cl-flash-text/70 mt-0.5 leading-snug">
                                                             {decryptErrors[msg.id].message}
                                                         </p>
                                                         <ClButton
@@ -8474,7 +8752,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             ) : manualDecryptIds.has(msg.id) ? (
                                                 <div className="flex flex-col gap-3 p-4 bg-white/5 rounded-xl">
                                                     <div className="flex items-center gap-3">
-                                                        <Lock className="w-6 h-6 text-cl-lume" />
+                                                        <Lock className="w-6 h-6 text-cl-lume-text" />
                                                         <div className="flex flex-col">
                                                             <span className="text-[13px] font-semibold">{safeDisplayFilename(msg.content.filename)}</span>
                                                             <span className="text-[11px] opacity-50">Large file encrypted</span>
@@ -8494,11 +8772,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         </div>
                                     ) : msg.content?.type === 'call_key' ? (
                                         <div className="inline-flex items-center gap-2 py-2 px-3 bg-white/5 rounded-xl text-[12px] opacity-80 border border-white/5 w-fit">
-                                            <PhoneCall className="w-4 h-4 text-cl-lume" />
+                                            <PhoneCall className="w-4 h-4 text-cl-lume-text" />
                                             <div className="flex flex-col">
                                                 <span>{isMe ? (user?.username ?? 'You') : (msg.sender_user_id ? userIdToUsername[msg.sender_user_id] : deviceToUsername[msg.sender_device_id]) || 'Someone'} started a call.</span>
                                                 {callDurations[msg.content.call_id!] && (
-                                                    <span className="text-[10px] opacity-60 font-semibold mt-0.5 text-cl-lume">
+                                                    <span className="text-[10px] opacity-60 font-semibold mt-0.5 text-cl-lume-text">
                                                         {callDurations[msg.content.call_id!].active
                                                             ? "Call in progress..."
                                                             : `Call ended • ${Math.floor(callDurations[msg.content.call_id!].duration / 60)}m ${callDurations[msg.content.call_id!].duration % 60}s`}
@@ -8604,7 +8882,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         const t = String(msg.content?.text ?? '').trim();
                                         const textShown = msg.content?.type === 'text'
                                             && !(/^https?:\/\/\S+$/.test(t) && isImageUrl(t))
-                                            && !(t !== '' && stripBareInviteLinks(t).trim() === '');
+                                            && !(t !== '' && stripBareCardLinks(t).trim() === '');
                                         return textShown ? null : (
                                             <div className="mt-1">
                                                 <UndeliveredIndicator
@@ -8772,13 +9050,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 }}
                                             />
                                         )}
-                                        {isMe && msg.content?.type === 'text' && (
+                                        {isMe && msg.content?.type === 'text' && !msg.import_mark && !msg.content.sticker && (
                                             <MsgBarBtn icon={<Edit2 />} label="Edit" onClick={() => startEdit(msg)} />
                                         )}
-                                        {(isMe || (canManageMessages && !isMe)) && (
+                                        {(isMe || isClaimantRow || (canManageMessages && !isMe)) && (
                                             <MsgBarBtn
                                                 icon={<Trash2 />}
-                                                label={isMe ? 'Delete — Shift to skip prompt' : 'Delete (moderator) — Shift to skip prompt'}
+                                                label={(isMe || isClaimantRow) ? 'Delete — Shift to skip prompt' : 'Delete (moderator) — Shift to skip prompt'}
                                                 danger
                                                 onClick={(e) => {
                                                     // `detail === 0` is how the DOM distinguishes a click
@@ -8790,7 +9068,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                         entryPoint: e.detail === 0 ? 'msgbar-keyboard' : 'msgbar-mouse',
                                                         shiftKey: e.shiftKey,
                                                     };
-                                                    requestDelete(msg, activation, isMe);
+                                                    requestDelete(msg, activation, isMe || isClaimantRow);
                                                 }}
                                             />
                                         )}
@@ -8923,8 +9201,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         {editingId && (
                             <div className="flex items-center justify-between px-3 py-2 bg-cl-surface border border-cl-lume/30 rounded-[14px] relative">
                                 <div className="flex items-center gap-2 text-[13px]">
-                                    <Edit2 className="w-4 h-4 text-cl-lume" />
-                                    <span className="font-semibold text-cl-lume">Editing Message</span>
+                                    <Edit2 className="w-4 h-4 text-cl-lume-text" />
+                                    <span className="font-semibold text-cl-lume-text">Editing Message</span>
                                 </div>
                                 <ClButton variant="ghost" size="sm" onClick={cancelEdit} style={{ fontSize: 12 }}>✕ Cancel</ClButton>
                             </div>
@@ -8973,7 +9251,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 type="button"
                                                 onClick={(e: React.MouseEvent) => { e.preventDefault(); removeStagedFile(i); }}
                                                 title="Remove"
-                                                className="absolute top-1.5 right-1.5 z-20 flex items-center justify-center w-[22px] h-[22px] rounded-full bg-black/55 text-white/80 opacity-0 group-hover:opacity-100 transition-all duration-150 hover:bg-black/75 hover:text-white active:scale-90"
+                                                className="absolute top-1.5 right-1.5 z-20 flex items-center justify-center w-[22px] h-[22px] rounded-full bg-pure-black/55 text-pure-white/80 opacity-0 group-hover:opacity-100 transition-all duration-150 hover:bg-pure-black/75 hover:text-pure-white active:scale-90"
                                                 style={{ backdropFilter: 'blur(6px)' }}
                                             >
                                                 <X className="w-3.5 h-3.5" strokeWidth={2.6} />
@@ -8981,12 +9259,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         );
 
                                         const uploadOverlay = uploading && (
-                                            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 bg-black/55" style={{ backdropFilter: 'blur(2px)' }}>
+                                            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 bg-pure-black/55" style={{ backdropFilter: 'blur(2px)' }}>
                                                 {pct === 0 ? (
                                                     <span className="text-[10px] font-medium text-white/80 tracking-wide animate-pulse">{uploadLabels[f.name] ?? ENCRYPTING_POOL[0]}</span>
                                                 ) : (
                                                     <>
-                                                        <span className="text-[12px] font-bold text-cl-lume tabular-nums">{pct}%</span>
+                                                        <span className="text-[12px] font-bold text-cl-lume-text tabular-nums">{pct}%</span>
                                                         <div className="w-14 h-1 rounded-full overflow-hidden bg-white/15">
                                                             <div className="h-full bg-cl-lume rounded-full transition-[width] duration-300 ease-out" style={{ width: `${pct}%` }} />
                                                         </div>
@@ -9005,7 +9283,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     )}
                                                     {isVideo && !uploading && (
                                                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                            <div className="flex items-center justify-center w-9 h-9 rounded-full bg-black/45" style={{ backdropFilter: 'blur(6px)' }}>
+                                                            <div className="flex items-center justify-center w-9 h-9 rounded-full bg-pure-black/45" style={{ backdropFilter: 'blur(6px)' }}>
                                                                 <Play className="w-4 h-4 text-white fill-white ml-[1px]" />
                                                             </div>
                                                         </div>
@@ -9026,7 +9304,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         return (
                                             <div key={i} className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-cl-deep p-3 shadow-[0_2px_8px_rgba(0,0,0,.25)]" style={{ width: 158, height: 100 }}>
                                                 <div className="flex items-center justify-center w-9 h-9 rounded-xl shrink-0" style={{ background: 'var(--cl-lume-tint)' }}>
-                                                    <FileText className="w-[18px] h-[18px] text-cl-lume" />
+                                                    <FileText className="w-[18px] h-[18px] text-cl-lume-text" />
                                                 </div>
                                                 <div className="min-w-0">
                                                     <p className="text-[12px] font-semibold text-white/90 truncate leading-tight">{f.name}</p>
@@ -9040,11 +9318,20 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 </div>
                             )}
 
+                            {/* Slowmode countdown. The draft stays editable; Send is held until it ends. */}
+                            {activeChannel && slowLeftMs > 0 && (
+                                <div className="mx-2 mb-1 px-3 py-1.5 rounded-lg bg-cl-glow/10 border border-cl-glow/20 flex items-center gap-2" role="status" aria-live="polite" data-testid="slowmode-strip">
+                                    <Clock className="w-3 h-3 text-cl-glow-text shrink-0" aria-hidden="true" />
+                                    <span className="text-cl-glow-text text-[11px] font-semibold tabular-nums">Slowmode: {formatCountdown(slowLeftMs)}</span>
+                                    <span className="text-cl-glow-text/70 text-[11px]">— you can send again then. Keep typing.</span>
+                                </div>
+                            )}
+
                             {/* Rate-limit warning strip */}
                             {cooldownSecs > 0 && (
                                 <div className="mx-2 mb-1 px-3 py-1.5 rounded-lg bg-cl-glow/10 border border-cl-glow/20 flex items-center gap-2">
-                                    <span className="text-cl-glow text-[11px] font-semibold">⚡ Slow down</span>
-                                    <span className="text-cl-glow/70 text-[11px]">— you can send again in {cooldownSecs}s</span>
+                                    <span className="text-cl-glow-text text-[11px] font-semibold">⚡ Slow down</span>
+                                    <span className="text-cl-glow-text/70 text-[11px]">— you can send again in {cooldownSecs}s</span>
                                 </div>
                             )}
 
@@ -9055,10 +9342,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 a failure, and removing the URL clears it. */}
                             {blockedByEmbed && (
                                 <div className="mx-2 mb-1 px-3 py-2 rounded-xl bg-cl-glow/[0.08] border border-cl-glow/20 flex items-center gap-2.5">
-                                    <Lock className="w-3.5 h-3.5 text-cl-glow/80 shrink-0" />
+                                    <Lock className="w-3.5 h-3.5 text-cl-glow-text/80 shrink-0" />
                                     <div className="flex-1 min-w-0 leading-tight">
-                                        <p className="text-[11.5px] font-semibold text-cl-glow">No link permission</p>
-                                        <p className="text-[10.5px] text-cl-glow/55 mt-0.5">
+                                        <p className="text-[11.5px] font-semibold text-cl-glow-text">No link permission</p>
+                                        <p className="text-[10.5px] text-cl-glow-text/55 mt-0.5">
                                             You can't send links in this channel. Remove the URL to send your message.
                                         </p>
                                     </div>
@@ -9094,13 +9381,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     // a bare rgba(255,255,255,.02) let message text show straight through.
                                     // Dimmed tint layered over a solid base keeps the look, loses the leak.
                                     background: !canSend
-                                        ? 'linear-gradient(rgba(255,255,255,.02), rgba(255,255,255,.02)), var(--cl-deep)'
-                                        : 'var(--cl-surface)',
+                                        ? 'linear-gradient(rgb(var(--cl-bright-rgb) / .02), rgb(var(--cl-bright-rgb) / .02)), var(--cl-deep)'
+                                        : 'var(--cl-composer-bg, var(--cl-surface))',
                                     border: `1.5px solid ${
-                                        !canSend ? 'rgba(255,255,255,.05)'
+                                        !canSend ? 'rgb(var(--cl-bright-rgb) / .05)'
                                             : loudInput ? 'var(--cl-glow)'
-                                                : composerFocused ? 'var(--cl-lume)'
-                                                    : 'var(--cl-border)'
+                                                : composerFocused ? 'var(--cl-lume-ui)'
+                                                    : 'var(--cl-composer-edge, var(--cl-border))'
                                     }`,
                                     borderRadius: 26,
                                     // A card preview gets its own first line: a little more room
@@ -9108,7 +9395,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     padding: composerCard ? '10px 8px 6px 10px' : '6px 6px 6px 8px',
                                     boxShadow: loudInput
                                         ? '0 0 16px rgba(255,201,77,.28)'
-                                        : '0 2px 12px rgba(0,0,0,.22)',
+                                        // Dark: today's black lift; Light: the website's warm one.
+                                        : 'var(--cl-shadow-composer)',
                                     transition: 'border-color .18s ease',
                                     transform: loudInput ? 'scale(1.012)' : 'none',
                                 }}
@@ -9120,6 +9408,32 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     line UNDER the card while a card preview is on (composerLeftControls). */}
                                 {!composerCard && composerLeftControls}
 
+                                {unclaimedCard && (
+                                    <UnclaimedAuthorCard
+                                        target={unclaimedCard}
+                                        token={token}
+                                        onClose={() => { setUnclaimedCard(null); unclaimedReturnFocus.current?.focus?.(); }}
+                                        claimSlot={unclaimedCard.authorKind === 'user' && activeChannel ? (
+                                            <ClaimSlot
+                                                token={token}
+                                                serverId={activeChannel.server_id}
+                                                authorRef={unclaimedCard.authorRef}
+                                                onClaim={(a) => { setUnclaimedCard(null); setClaimDialog(a); }}
+                                            />
+                                        ) : undefined}
+                                    />
+                                )}
+                                {claimDialog && (
+                                    <ClaimImportDialog
+                                        open
+                                        mode="claim"
+                                        author={claimDialog}
+                                        token={token}
+                                        channelName={(cid) => { const c = serverChannels?.find(x => x.channel_id === cid); return c ? `#${c.name}` : null; }}
+                                        onOpenMessage={requestOpenImportedMessage}
+                                        onClose={() => { setClaimDialog(null); unclaimedReturnFocus.current?.focus?.(); }}
+                                    />
+                                )}
                                 {cardDialog && <CardStyleDialog
                                     open
                                     title={cardDialog?.mode === 'restyle' ? (cardStyleOfContent(cardDialog.msg.content) ? 'Edit style' : 'Add a style') : 'Style this message'}
@@ -9348,7 +9662,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             return {
                                                 key: `${s.type}-${s.id}`,
                                                 icon: isSpecial ? (
-                                                    <span className="w-5 h-5 rounded-full bg-cl-lume/20 flex items-center justify-center shrink-0 text-[11px] font-bold text-cl-lume">@</span>
+                                                    <span className="w-5 h-5 rounded-full bg-cl-lume/20 flex items-center justify-center shrink-0 text-[11px] font-bold text-cl-lume-text">@</span>
                                                 ) : isRole ? (
                                                     <span className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: s.color ? `${s.color}33` : 'rgba(255,255,255,0.08)' }}>
                                                         <span className="w-2 h-2 rounded-full" style={{ background: s.color ?? 'rgba(255,255,255,0.4)' }} />
@@ -9413,7 +9727,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     className="bg-cl-raise border border-white/[0.08] rounded-xl p-3 shadow-2xl"
                                                 >
                                                     <div className="flex items-center gap-2 mb-1.5">
-                                                        <Lock className="w-3.5 h-3.5 text-cl-lume shrink-0" />
+                                                        <Lock className="w-3.5 h-3.5 text-cl-lume-text shrink-0" />
                                                         <span className="text-[12.5px] font-semibold text-cl-text">
                                                             {channelKeyCoolingOff ? "Couldn't install channel key" : 'Waiting for channel keys'}
                                                         </span>
@@ -9510,8 +9824,52 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         />
                                     )}
                                     {canSend && (
+                                        <button
+                                            ref={stickerButtonRef}
+                                            type="button"
+                                            className="cmp-ico"
+                                            onClick={() => {
+                                                setStickerAnchorRect(r => (r ? null : stickerButtonRef.current?.getBoundingClientRect() ?? null));
+                                                setShowGifPicker(false);
+                                                setShowInputEmojiPicker(false);
+                                            }}
+                                            disabled={sending || cooldownSecs > 0}
+                                            title="Stickers"
+                                            aria-label="Stickers"
+                                            aria-haspopup="dialog"
+                                            aria-expanded={!!stickerAnchorRect}
+                                        >
+                                            <StickerIcon className="w-[18px] h-[18px]" />
+                                        </button>
+                                    )}
+                                    {stickerAnchorRect && (
+                                        <StickerPicker
+                                            anchorRect={stickerAnchorRect}
+                                            token={token}
+                                            currentServerId={activeChannel?.server_id ?? null}
+                                            servers={servers}
+                                            onPick={async (pick) => {
+                                                setStickerAnchorRect(null);
+                                                followBottomRef.current = true;
+                                                try {
+                                                    await handleSendSticker(pick);
+                                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / Error); read defensively
+                                                } catch (err: any) {
+                                                    console.error('[StickerPicker] Failed to send sticker:', err?.message);
+                                                    toast.push({
+                                                        kind: 'error',
+                                                        title: "Couldn't send sticker",
+                                                        message: err?.response?.data?.message || err?.message || 'Please try again.',
+                                                    });
+                                                }
+                                                requestAnimationFrame(() => inputRef.current?.focus());
+                                            }}
+                                            onClose={() => { pickerJustClosedRef.current = true; setStickerAnchorRect(null); }}
+                                        />
+                                    )}
+                                    {canSend && (
                                         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-                                        <button ref={emojiButtonRef as any} type="button" className="cmp-ico" onClick={() => { setShowInputEmojiPicker(v => !v); setShowGifPicker(false); }} disabled={sending || cooldownSecs > 0} title="Emoji">
+                                        <button ref={emojiButtonRef as any} type="button" className="cmp-ico" onClick={() => { setShowInputEmojiPicker(v => !v); setShowGifPicker(false); setStickerAnchorRect(null); }} disabled={sending || cooldownSecs > 0} title="Emoji">
                                             <Smile className="w-[18px] h-[18px]" />
                                         </button>
                                     )}
@@ -9547,6 +9905,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         />
                                     )}
                                     {canSend && (() => {
+                                        if (activeChannel && slowLeftMs > 0) return (
+                                            <div
+                                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 40, height: 34, color: 'var(--cl-glow-text)', fontWeight: 800, fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}
+                                                title="Slowmode: you can send again when this reaches 0:00"
+                                                aria-label={`Slowmode, ${formatCountdown(slowLeftMs)} left`}
+                                                data-testid="slowmode-chip"
+                                            >
+                                                {formatCountdown(slowLeftMs)}
+                                            </div>
+                                        );
                                         if (cooldownSecs > 0) return (
                                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, color: 'rgb(251,191,36)', fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
                                                 {cooldownSecs}
@@ -9684,19 +10052,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 <div
                     style={{
                         position:      'fixed',
-                        left:          Math.max(8, Math.min(
-                                           reactionTooltip.rect.left + reactionTooltip.rect.width / 2 - 90,
-                                           window.innerWidth - 188
+                        // Centred ON the pill (translateX(-50%)): the box is 120-220px wide, so the old
+                        // fixed "-90" offset put a narrow tooltip ~30px left of its pill, over the avatar column.
+                        left:          Math.max(118, Math.min(
+                                           reactionTooltip.rect.left + reactionTooltip.rect.width / 2,
+                                           window.innerWidth - 118
                                        )),
                         top:           reactionTooltip.rect.top > 80
                                            ? reactionTooltip.rect.top - 8
                                            : reactionTooltip.rect.bottom + 8,
-                        transform:     reactionTooltip.rect.top > 80 ? 'translateY(-100%)' : 'none',
+                        transform:     reactionTooltip.rect.top > 80 ? 'translate(-50%, -100%)' : 'translateX(-50%)',
                         zIndex:        9999,
                         background:    'var(--cl-deep)',
-                        border:        '1px solid rgba(255,255,255,0.10)',
+                        border:        '1px solid rgb(var(--cl-bright-rgb) / 0.10)',
                         borderRadius:  10,
-                        boxShadow:     '0 4px 20px rgba(0,0,0,0.55)',
+                        boxShadow:     '0 4px 20px rgb(var(--cl-shade-rgb) / 0.55)',
                         padding:       '8px 12px',
                         minWidth:      120,
                         maxWidth:      220,

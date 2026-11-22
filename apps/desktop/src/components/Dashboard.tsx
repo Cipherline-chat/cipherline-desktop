@@ -1,4 +1,6 @@
 import { ingestInboundContent, ingestInboundStatusEmoji, releaseInboundStatusEmoji } from '../utils/personalEmoji/inbound';
+import { celebrationReducedNow } from '../utils/a11y/motionPrefs';
+import { drawsOwnWindowControls, currentWindowControlsEnv } from '../utils/windowControls';
 import { useStatusEmojiShare } from '../hooks/useStatusEmojiShare';
 import { useActivityKeyShare } from '../hooks/useActivityKeyShare';
 import { clearParkedStatusEmoji } from '../utils/personalEmoji/statusEmoji';
@@ -7,10 +9,16 @@ import type { ReportEvidence } from '../utils/integrations/coverReport';
 import { keepsakeRainEmojiRef } from '../utils/profileCosmetics';
 import { decorationLook } from '../utils/decorationLook';
 import { invalidateProfile } from '../utils/profileCache';
-import { usePersonalEmojiSync } from '../hooks/usePersonalEmojiSync';
+import { usePersonalEmojiSync, usePersonalStickerSync } from '../hooks/usePersonalEmojiSync';
 import { useServerRailSync } from '../hooks/useServerRailSync';
 import { useCardStyleSync } from '../hooks/useCardStyleSync';
+import { useCustomThemeSync } from '../hooks/useCustomThemeSync';
+import { useMuteSync } from '../hooks/useMuteSync';
 import secureLocalStore from '../utils/secureLocalStore';
+import { DiscordClaimNotices } from './server/discordImport/DiscordClaimNotices';
+import { makeImportGuildHandler } from '../utils/discordImport/importGuildHandler';
+import { OPEN_IMPORTED_MESSAGE_EVENT } from '../utils/discordClaims';
+import { noteImportAuthorClaim } from '../utils/importedReactions';
 import { memberGroupsCollapsedKey } from '../utils/memberGroupCollapse';
 import { toPlainText } from '../utils/messagePreviewText';
 import { withEditFont } from '../utils/formatting/messageFont';
@@ -21,8 +29,13 @@ import { unpinChannelMessage, unsaveChannelMessage, type ChannelSaveActionDeps }
 import { quotaExceededMessage } from '../utils/serverStorageCopy';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { GiftActionsProvider, type GiftActions, type GiftFriend } from './billing/gifts/GiftActionsContext';
+import { ThemeShareActionsProvider, type ThemeShareActions } from './themeShare/ThemeShareActionsContext';
+import { ThemeDeepLinkHost } from './themeShare/ThemeDeepLinkHost';
+import { ThemePreviewBar } from './themeShare/ThemePreviewBar';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
+import { declineCallOnServer } from '../utils/callDecline';
+import { setAlonePresenceProbe } from '../utils/aloneLeave';
 import { useAuth } from '../contexts/AuthContext';
 import FriendsPane from './FriendsPane';
 import { FriendsActivityPanel } from './FriendsActivityPanel';
@@ -122,6 +135,8 @@ import {
 import { findOrphanActions, addOrphans, readyOrphans, applyOrphans } from '../utils/channelOrphanActions';
 import type { ChannelRow, ServerWindow } from '../utils/channelHistoryMerge';
 import { channelNavigationFor, revealChannelRow } from '../utils/channelRefs';
+import { isChannelAgeGated, isAgeGateError } from '../utils/channelModeration';
+import { AgeGatePane } from './server/AgeGatePane';
 import { isChannelServeRejection, oldestFirst } from '../utils/channelIntegrity';
 import { notePrekeyUsage } from '../utils/prekeyHealth';
 import { getPurgedMessageIds, markMessagesPurged } from '../utils/retentionTombstones';
@@ -226,6 +241,10 @@ import { ServerContextPanel } from './server/ServerContextPanel';
 import { DmProfileCard } from './profile/DmProfileCard';
 import type { ProfileFullTab } from './profile/profileCardData';
 import { CreateServerModal } from './server/CreateServerModal';
+import { DiscordImportHost } from './server/discordImport/DiscordImportHost';
+import { CopyFromDiscordModal } from './server/discordImport/CopyFromDiscordModal';
+import { getDiscordImportApi } from '../utils/discordImport/types';
+import { createDiscordHistoryHost } from '../utils/discordImport/history/host';
 import { JoinServerModal } from './server/JoinServerModal';
 import { ServerSettingsModal } from './server/ServerSettingsModal';
 import { ServerInviteModal } from './server/ServerInviteModal';
@@ -277,7 +296,7 @@ import type { SavesLocalBinding } from '../services/personalSavesSyncEnv';
 import { addedSaves, mergeScope } from '../utils/personalSavesSync';
 import { withPersonalChannelSaves, attachmentIdsOf } from '../utils/personalChannelSaves';
 import * as messageStore from '../utils/messageStore';
-import { Permissions, hasPermission, withEditCardStyle, gateCardStyleByFlag } from '@cipherline/shared';
+import { Permissions, hasPermission, withEditCardStyle, gateCardStyleByFlag, gateImportedFrom, importMarkOf, type ImportMark } from '@cipherline/shared';
 import {
     resolveQuickReplyTarget,
     normalizeQuickReplyText,
@@ -307,9 +326,15 @@ import { invalidateRoster, invalidateAllRosters, dropRoster, patchRosterUser, re
 import { invalidateServerChannelViewers, invalidateAllChannelViewers, dropServerChannelViewers, peekChannelViewers, isChannelViewersFresh, refreshChannelViewers } from '../utils/channelViewerCache';
 import { judgeKeyDistributor, resolveRefreshVerdict, distributorRefreshKey, isHistoricalEpoch, type DistributorVerdict } from '../utils/channelKeyDistributorCheck';
 import { resolveNotification, decideChannelMessage, type NotifDecision } from '../utils/notificationDecision';
+import { decideDmReactionAlert, reactionAlertKey, rememberAlerted, reactionTargetPreview, reactionToastBody } from '../utils/dmReactionAlert';
+import { ChannelMuteProvider, useChannelMuteState } from '../contexts/ChannelMuteContext';
+import { effectiveMutedChannels, withoutMuted } from '../utils/channelMute';
+import { buildMuteItems, MutedGlyph } from './server/muteMenu';
 import { ChannelMentionRecovery, recoverChannelMentions, scanReconcilePage, shouldAlertForReplay } from '../utils/channelMentionRecovery';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { createFriendsSync, type FriendsPayload, type FriendsLoadStatus } from '../utils/friendsSync';
+import { readCachedConversations, cacheConversations, readCachedFriends, cacheFriends } from '../utils/bootListCache';
+import { takeBootFetch } from '../utils/bootFetch';
 import { useHydration } from '../contexts/HydrationContext';
 import { RailKeys as Mascot } from './rail/RailKeys';
 import { API_BASE } from '../constants';
@@ -351,7 +376,7 @@ import { contentProblem, sanitizeStoredThreads, unshowablePlaceholderContent } f
 import { recordUnshowable, unshowableDisposition } from '../utils/unshowableContent';
 import { buildGroupMemberList, canAddGroupMembers, mergeAddedGroupMembers } from '../utils/groupAddMembers';
 
-import { Minus, Square, X, MoreVertical, Info, Volume2, Folder as FolderIcon, FolderInput, FolderMinus, FolderX, Palette, Pencil } from 'lucide-react';
+import { Minus, Square, X, MoreVertical, Info, Volume2, Folder as FolderIcon, FolderInput, FolderMinus, FolderX, Palette, Pencil, Download as DownloadIcon } from 'lucide-react';
 import { ReportModal } from './ReportModal';
 import { SharedContentModal, type SharedTab } from './SharedContentModal';
 import { APP_SUSPENDED_EVENT } from '../utils/clientControl';
@@ -427,6 +452,11 @@ interface RawChannelRow {
     // Message franking (utils/franking.ts): the relay's {c, t, kid, ts} for this
     // row. Additive; absent from an API that predates franking.
     franking?: unknown;
+    // The SERVER's import mark (Discord import phase 2): present only on rows an
+    // import session's batch endpoint inserted. Read with importMarkOf.
+    import_id?: unknown;
+    import_author_id?: unknown;
+    import_claimed_user_id?: unknown;
 }
 
 /**
@@ -460,6 +490,9 @@ interface StoredChannelMsg {
     conversation_id: string;
     /** What lets a report of this message be VERIFIED (utils/franking.ts). */
     franking?: StoredFranking;
+    /** The server's import mark: the ONLY thing that lets a row show an imported
+     *  author (utils/importedAuthor.ts). Set from the history row, never from content. */
+    import_mark?: ImportMark;
 }
 
 // isUndecryptablePlaceholder and the channel-history fold now live together in
@@ -468,34 +501,29 @@ interface StoredChannelMsg {
 // own. That in-place upgrade is the invariant the envelopes-ready handler
 // depends on to refresh a channel WITHOUT dropping its cache.
 
-/** Custom window controls — shown on Linux only since we use native overlay on Windows */
-const isMac = navigator.userAgent.toLowerCase().includes('macintosh');
-const isWindows = navigator.userAgent.toLowerCase().includes('windows');
+/**
+ * Fallback window controls. Windows and Linux get Electron's native caption
+ * overlay (electron/window-chrome.ts) and macOS its traffic lights, so these
+ * draw only on a Linux window that ended up WITHOUT the overlay
+ * (utils/windowControls.ts) — never a second set beside native buttons.
+ */
+/** The title bar's left inset: clear of a native caption overlay placed on the left (Linux button layouts). */
+const TITLE_BAR_PADDING_LEFT = 'calc(env(titlebar-area-x, 0px) + 12px)';
 
 const WindowControls: React.FC = () => {
     const [maximized, setMaximized] = React.useState(false);
+    const own = drawsOwnWindowControls(currentWindowControlsEnv());
     React.useEffect(() => {
         const api = window.electronAPI;
-        if (!api) return;
+        if (!api || !own) return;
         if (typeof api.isMaximized === 'function') {
             api.isMaximized().then(setMaximized).catch(() => {});
         }
         if (typeof api.onMaximizeChange === 'function') {
             return api.onMaximizeChange(setMaximized);
         }
-    }, []);
-    // Linux only: macOS has native traffic lights, Windows has the native
-    // titleBarOverlay (main.ts). Outside Electron there's no window to control.
-    if (isMac || isWindows || !window.electronAPI) return null;
-    // Backstop against drawing a SECOND set of caption buttons. This is the
-    // ground truth for "is Electron already painting native window controls",
-    // rather than inferring it from the platform: main.ts scopes
-    // titleBarOverlay to win32, but it rendered on Linux too when that was
-    // `!== 'darwin'`, putting the native overlay on top of these buttons and
-    // leaving this minimise glyph poking out beside it — the stray dash next
-    // to the minimize button. Checking the API means re-enabling the overlay
-    // on Linux can never silently resurrect that.
-    if (navigator.windowControlsOverlay?.visible) return null;
+    }, [own]);
+    if (!own) return null;
     // Flat caption buttons: fully transparent at rest so the abyss drag bar
     // shows straight through, with a subtle hover (cl-surface for min/maximise,
     // flash for close) for feedback.
@@ -594,28 +622,28 @@ const ReferralWelcomeBanner: React.FC<{ days: number; onDismiss: () => void }> =
                 position: 'relative',
                 display: 'flex', alignItems: 'center', gap: 14,
                 background: 'linear-gradient(135deg, #0B1428 0%, #0e1e38 100%)',
-                border: '1px solid rgba(37,224,200,0.35)',
+                border: '1px solid rgb(var(--cl-lume-rgb) / 0.35)',
                 borderRadius: 16,
                 padding: '14px 20px',
-                boxShadow: '0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(37,224,200,0.12), 0 0 24px rgba(37,224,200,0.18)',
+                boxShadow: '0 8px 32px rgb(var(--cl-shade-rgb) / 0.55), 0 0 0 1px rgb(var(--cl-lume-rgb) / 0.12), 0 0 24px rgb(var(--cl-lume-rgb) / 0.18)',
             }}>
                 <div style={{
                     width: 40, height: 40, borderRadius: 12, flexShrink: 0,
-                    background: 'rgba(37,224,200,0.12)',
+                    background: 'rgb(var(--cl-lume-rgb) / 0.12)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
                     <motion.div
                         animate={{ rotate: [0, -12, 12, -8, 8, 0] }}
                         transition={{ duration: 0.7, delay: 0.3 }}
                     >
-                        <Gift size={20} style={{ color: 'var(--cl-lume)' }} />
+                        <Gift size={20} style={{ color: 'var(--cl-lume-text)' }} />
                     </motion.div>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ color: '#fff', fontWeight: 700, fontSize: 14, fontFamily: 'var(--cl-font-body)' }}>
                         Referral applied!
                     </div>
-                    <div style={{ color: 'var(--cl-lume)', fontWeight: 600, fontSize: 13, marginTop: 1 }}>
+                    <div style={{ color: 'var(--cl-lume-text)', fontWeight: 600, fontSize: 13, marginTop: 1 }}>
                         +{days} free trial days added to your account
                     </div>
                 </div>
@@ -748,7 +776,7 @@ const DmAvatarBadge: React.FC<{
                     <StatusIcon status={status} currentGame={currentGame} size={14} />
                 </span>
             ) : (
-                <span className="absolute bottom-0 right-0 border-[2px] border-cl-deep rounded-full z-10 flex items-center justify-center">
+                <span className="absolute bottom-0 right-0 border-[2px] border-[color:var(--status-backing,var(--cl-deep))] rounded-full z-10 flex items-center justify-center">
                     <StatusIcon status={status} currentGame={null} onMobile={onMobile} size={8} />
                 </span>
             )}
@@ -1242,8 +1270,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             return {};
         } catch { return {}; }
     });
-    /** Current notification mode for a conversation (default 'all'). */
-    const notifMode = useCallback((id: string): NotifMode => notifPrefs[id] ?? 'all', [notifPrefs]);
+    // `notifMode` (the EFFECTIVE mode, with timed mutes overlaid) is defined after useChannelMuteState below.
     /** Set a specific notification mode for a conversation (used by ChatPane three-dots menu). */
     const setConvNotifMode = useCallback((id: string, mode: NotifMode) => setNotifPrefs(prev => ({ ...prev, [id]: mode })), []);
 
@@ -1728,7 +1755,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // see utils/proCelebration.ts) and records it before it shows.
     const { proCelebration, dismissProCelebration } = useSubscription();
     // Pro puts the crown in Keys' Home wardrobe draw (utils/keysWardrobe).
-    const { isPaid } = useSubscription();
+    const { isPaid, maxUploadBytes: importMaxUploadBytes } = useSubscription();
     const showProWelcome = proCelebration && !!userId;
 
     const [referralWelcomeDismissed, setReferralWelcomeDismissed] = useState(false);
@@ -1879,7 +1906,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         loadHuddleCalls, loadGuestCallRoster, dropGuestCallRoster, removeServerLocal, restoreServerLocal,
         applyHuddleCallsSnapshot, applyHuddleSpawn, applyHuddleDestroy, applyHuddleRename, applyHuddleParticipant,
         spawnHuddleCall, joinHuddleCall, leaveHuddleCall, renameHuddleCall,
-        createServer, previewDiscordTemplate, importDiscordTemplate, joinServer,
+        createServer, previewDiscordTemplate, importDiscordTemplate, previewDiscordGuild, importDiscordGuild, joinServer,
     } = useServers(token, userId, deviceId);
     // One member role picker for the whole app (member-list menu, chat message
     // menu, profile card "+"); see components/server/roles/MemberRolePicker.
@@ -2002,6 +2029,32 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // main list, the "Active Now" panel, Home and avatar gating all read this;
     // FriendsPane no longer keeps a private copy. See utils/friendsSync.ts.
     const [globalFriends, setGlobalFriends] = useState<FriendsPayload | null>(null);
+    // FAST COLD START (owner 2026-11-19): paint last session's lists the moment
+    // the account is known and count those loads as settled, so the loading
+    // screen lifts at mount instead of after three network round trips. The
+    // fetches still run as before and replace the lists when they land; with
+    // no cache (first launch, new device) nothing changes.
+    const seededFromCacheRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!userId || seededFromCacheRef.current === userId) return;
+        seededFromCacheRef.current = userId;
+        const convs = readCachedConversations(userId);
+        if (convs) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- cached rows are untyped JSON, the same shape the fetch returns
+            setConversations(prev => (prev.length > 0 ? prev : labelSelfConversations(convs as any[], userId)));
+            markSettled('conversations', 'cache');
+        }
+        const friends = readCachedFriends(userId);
+        if (friends) {
+            setGlobalFriends(prev => prev ?? friends);
+            markSettled('friends', 'cache');
+        }
+    }, [userId, markSettled]);
+    // useServers paints its own cache: a non-empty list means there is something to show.
+    useEffect(() => {
+        if (servers.length > 0) markSettled('servers', 'cache');
+    }, [servers.length, markSettled]);
+
     const [friendsLoadStatus, setFriendsLoadStatus] = useState<FriendsLoadStatus>('loading');
     // Accepted-friend ids for the DM pull loop (a friend's personal-emoji status
     // image is only filed when it comes from one). A ref: the loop is a stable callback.
@@ -2037,9 +2090,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * success, null on any failure. Shared by invites and gift cards.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-    const sendE2eeContent = React.useCallback(async (content: Record<string, any> & { client_msg_id: string; type: string }, conversationId: string): Promise<any | null> => {
+    const sendE2eeContent = React.useCallback(async (content: Record<string, any> & { client_msg_id: string; type: string }, conversationId: string, opts?: { frank?: boolean }): Promise<any | null> => {
         if (!token || !deviceId) return null;
         try {
+            // A text message (a shared theme link) is franked like the composer's sends,
+            // so a report of it can be verified (utils/franking.ts). Cards are not.
+            const franked = opts?.frank
+                ? await frankForSend(JSON.stringify(content), { contextKind: 'dm', contextId: conversationId, senderUserId: userId ?? undefined, senderDeviceId: deviceId })
+                : { contentJson: JSON.stringify(content) };
             // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
             const devicesRes = await axios.get(
                 apiUrl`/conversations/${conversationId}/devices?claim_otp=1`,
@@ -2048,7 +2106,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             const recipientDevices = devicesRes.data as { device_id: string; spk_pub_b64: string }[];
             // RC-2: address exactly the devices that got wrapped.
             const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(
-                JSON.stringify(content),
+                franked.contentJson,
                 userId!,
                 recipientDevices,
                 deviceId ?? undefined,
@@ -2062,7 +2120,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     ciphertext_b64,
                     sent_at_client: new Date().toISOString(),
                 },
-                { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } },
+                { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) } },
             );
             return content;
         } catch (e) {
@@ -2152,6 +2210,29 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * user's point of view: a re-sent card is the same gift, fetched by id.
      */
     const sendGiftCardToFriend = React.useCallback(async (targetUserId: string, giftId: string): Promise<boolean> => {
+        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `gift-${Date.now()}`;
+        return sendContentToFriend(targetUserId, { client_msg_id: safeUUID, type: 'pro_gift', gift_id: giftId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sendContentToFriend is declared below; read at call time through the closure of the latest render
+    }, [token, deviceId, conversations, sendE2eeContent]);
+
+    /**
+     * Theme sharing ("Send to a friend" in the custom theme Share dialog): the
+     * theme LINK as an ordinary franked E2EE text message into the DM with a
+     * friend (components/themeShare/ThemeShareActionsContext.tsx).
+     */
+    const sendThemeTextToFriend = React.useCallback(async (targetUserId: string, text: string): Promise<boolean> => {
+        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `theme-${Date.now()}`;
+        return sendContentToFriend(targetUserId, { client_msg_id: safeUUID, type: 'text', text }, { frank: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- as above
+    }, [token, deviceId, conversations, sendE2eeContent]);
+
+    /**
+     * Send one E2EE `content` into the DM with a friend, opening the DM if
+     * needed (the API allows that only for accepted friends), and append it to
+     * the thread optimistically. Shared by gift cards and theme links.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- E2EE content objects are untyped JSON here, as in sendE2eeContent
+    async function sendContentToFriend(targetUserId: string, content: Record<string, any> & { client_msg_id: string; type: string }, opts?: { frank?: boolean }): Promise<boolean> {
         if (!token || !deviceId) return false;
         let convId: string | null = conversations.find(c => c.type === 'dm' && c.other_user_id === targetUserId)?.conversation_id ?? null;
         if (!convId) {
@@ -2163,14 +2244,13 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 );
                 convId = res.data.conversation_id ?? null;
             } catch (e) {
-                console.error('[Dashboard] sendGiftCardToFriend: could not open DM:', e);
+                console.error('[Dashboard] sendContentToFriend: could not open DM:', e);
                 return false;
             }
         }
         if (!convId) return false;
         const cId = convId;
-        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `gift-${Date.now()}`;
-        const sentContent = await sendE2eeContent({ client_msg_id: safeUUID, type: 'pro_gift', gift_id: giftId }, cId);
+        const sentContent = await sendE2eeContent(content, cId, opts);
         if (!sentContent) return false;
         setMessagesState(prev => {
             const thread = [...(prev[cId] || [])];
@@ -2188,10 +2268,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         try {
             const convsRes = await axios.get(`${API_BASE}/conversations`, { headers: { Authorization: `Bearer ${token}` } });
             setConversations(labelSelfConversations(convsRes.data, userId));
-        } catch { /* non-critical: the card is already sent */ }
+        } catch { /* non-critical: the message is already sent */ }
         return true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- userId only changes together with token/deviceId on an account switch
-    }, [token, deviceId, conversations, sendE2eeContent]);
+    }
 
     /** Everything the gift UI (Settings → Subscription, the chat card) needs from here. */
     const giftActions = React.useMemo<GiftActions>(() => {
@@ -2436,6 +2515,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      *  the correct display name for server channel messages. */
     const [serverMemberNicknames, setServerMemberNicknames] = useState<Record<string, string>>({});
     const [showCreateServerModal, setShowCreateServerModal] = useState(false);
+    /** "Copy messages from Discord" into an existing server (owner / IMPORT_HISTORY). */
+    const [copyDiscordTarget, setCopyDiscordTarget] = useState<{ serverId: string; serverName: string } | null>(null);
     const [showJoinServerModal, setShowJoinServerModal] = useState(false);
     const [showServerSettings, setShowServerSettings] = useState(false);
     /**
@@ -2575,6 +2656,84 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         } catch { return {}; }
     });
 
+    // ── Channel / category / server mute (utils/channelMute.ts) ──────────────
+    // Timed or indefinite, client-side only. Folded into the notification
+    // machinery as an OVERLAY on the saved modes: a muted channel (by itself,
+    // its category chain or its server) resolves to 'none' everywhere the
+    // saved mode is read, so unread badges, category/server/rail totals, the
+    // tray count, sounds and OS toasts all follow one rule. Direct @mentions
+    // still count; @everyone/@here do not (decideChannelMessage `muted`).
+    const channelMute = useChannelMuteState(userId);
+    const effMutedChannelIds = useMemo(() => {
+        const catOf = new Map<string, string | null>();
+        const parentOf = new Map<string, string | null>();
+        const srvOf = new Map<string, string>();
+        const ids: string[] = [];
+        for (const [sid, chs] of Object.entries(serverChannels)) {
+            for (const c of chs) { catOf.set(c.channel_id, c.parent_category_id ?? null); srvOf.set(c.channel_id, sid); ids.push(c.channel_id); }
+        }
+        for (const cats of Object.values(serverCategories)) {
+            for (const c of cats) parentOf.set(c.category_id, c.parent_category_id ?? null);
+        }
+        return effectiveMutedChannels(channelMute.mutes, ids, {
+            categoryOfChannel: id => catOf.get(id),
+            parentOfCategory: id => parentOf.get(id),
+            serverOfChannel: id => srvOf.get(id),
+        }, channelMute.now);
+    }, [channelMute.mutes, channelMute.now, serverChannels, serverCategories]);
+    const effChannelNotifPrefs = useMemo<Record<string, NotifMode>>(() => {
+        if (effMutedChannelIds.size === 0) return channelNotifPrefs;
+        const out = { ...channelNotifPrefs };
+        for (const id of effMutedChannelIds) out[id] = 'none';
+        return out;
+    }, [channelNotifPrefs, effMutedChannelIds]);
+    const effServerNotifPrefs = useMemo<Record<string, NotifMode>>(() => {
+        let out = serverNotifPrefs;
+        for (const srv of servers) {
+            if (channelMute.isMuted(srv.server_id)) { if (out === serverNotifPrefs) out = { ...serverNotifPrefs }; out[srv.server_id] = 'none'; }
+        }
+        return out;
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- channelMute.isMuted is derived from mutes+now
+    }, [serverNotifPrefs, servers, channelMute.mutes, channelMute.now]);
+
+    // DMs and group chats: the same timed-mute record as channels (id = conversation id). A live mute overlays
+    // the saved All / @Mentions mode with 'none', so unread badges, the tray count, sound and toasts all follow
+    // the one rule already used for 'none' (a direct @mention still counts). Unmuting restores the saved mode.
+    const effNotifPrefs = useMemo<Record<string, NotifMode>>(() => {
+        const ids = Object.keys(channelMute.mutes);
+        if (ids.length === 0) return notifPrefs;
+        const out = { ...notifPrefs };
+        for (const id of ids) out[id] = 'none';
+        return out;
+    }, [notifPrefs, channelMute.mutes]);
+    /** Effective notification mode for a conversation (default 'all'). */
+    const notifMode = useCallback((id: string): NotifMode => effNotifPrefs[id] ?? 'all', [effNotifPrefs]);
+    /** Picking All / @Mentions while muted also turns the mute off (the pick is the user's newest intent). */
+    const pickConvNotifMode = useCallback((id: string, mode: NotifMode) => {
+        if (channelMute.isMuted(id)) channelMute.unmute(id);
+        setConvNotifMode(id, mode);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- isMuted/unmute are derived from mutes+now
+    }, [channelMute.mutes, channelMute.now, channelMute.unmute, setConvNotifMode]);
+    // One-time, idempotent: the old permanent per-conversation "Mute" (mode 'none', never synced) becomes a
+    // shared mute so it follows the account. Reads the store AFTER it is hot (a cold read would see nothing).
+    useEffect(() => {
+        if (!userId) return;
+        let cancelled = false;
+        void secureLocalStore.whenAccountReady().then(() => {
+            if (cancelled || !secureLocalStore.isAccountReady(userId)) return;
+            try {
+                const saved = JSON.parse(secureLocalStore.getItem(`cipherline_notif_prefs_${userId}`) || 'null');
+                if (!saved || typeof saved !== 'object') return;
+                const next = channelMute.adoptLegacyConvMutes(saved as Record<string, NotifMode>);
+                if (!next) return;
+                secureLocalStore.setItem(`cipherline_notif_prefs_${userId}`, JSON.stringify(next));
+                setNotifPrefs(next);
+            } catch { /* best-effort; the legacy 'none' keeps muting until this runs */ }
+        });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per account; adoptLegacyConvMutes is stable
+    }, [userId]);
+
     // Unread counts and mention counts for server channels.
     //
     // These are live-delivery counters: they're incremented by the
@@ -2624,6 +2783,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // Refs for stale-closure avoidance in handleChannelMessage (useCallback([], []))
     const serverNotifPrefsRef = useRef(serverNotifPrefs);
     const channelNotifPrefsRef = useRef(channelNotifPrefs);
+    const effMutedChannelIdsRef = useRef<ReadonlySet<string>>(new Set());
     const activeChannelRef = useRef<ChannelInfo | null>(null);
     const serversRef = useRef(servers);
     const channelUnreadCountsRef = useRef(channelUnreadCounts);
@@ -2670,8 +2830,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
 
     // Keep refs in sync with state
     useEffect(() => { serverMyRoleIdsRef.current = serverMyRoleIds; }, [serverMyRoleIds]);
-    useEffect(() => { serverNotifPrefsRef.current = serverNotifPrefs; }, [serverNotifPrefs]);
-    useEffect(() => { channelNotifPrefsRef.current = channelNotifPrefs; }, [channelNotifPrefs]);
+    useEffect(() => { serverNotifPrefsRef.current = effServerNotifPrefs; }, [effServerNotifPrefs]);
+    useEffect(() => { channelNotifPrefsRef.current = effChannelNotifPrefs; }, [effChannelNotifPrefs]);
+    useEffect(() => { effMutedChannelIdsRef.current = effMutedChannelIds; }, [effMutedChannelIds]);
     useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
     useEffect(() => { serversRef.current = servers; }, [servers]);
     useEffect(() => { channelUnreadCountsRef.current = channelUnreadCounts; }, [channelUnreadCounts]);
@@ -2986,6 +3147,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         }
     }, [globalIncomingCall, activeCall, nightDive]);
 
+    // Decline = "not taking this call on any of my devices": the card goes at once and the server stops the account's other devices
+    // ringing and records that nothing was missed (utils/callDecline.ts). The 15 s ring timeout above is NOT this.
+    const declineGlobalCall = () => {
+        const incoming = globalIncomingCall;
+        setGlobalIncomingCall(null);
+        if (incoming) declineCallOnServer(axios, apiUrl`/calls/${incoming.session_id}/decline`, token, deviceId);
+    };
+
     const acceptGlobalCall = async () => {
         if (!globalIncomingCall || !token) return;
         const incoming = globalIncomingCall;
@@ -3045,7 +3214,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         if (activeVoiceChannelId && token) {
             const vcId = activeVoiceChannelId;
             setActiveVoiceChannelId(null);
-            axios.post(apiUrl`/channels/${vcId}/leave_voice`, {}, { headers: { Authorization: `Bearer ${token}` } })
+            // x-device-id: the server only lets THIS device's leave remove the
+            // account from the call (a leave from another device of ours while
+            // this one is still connected is ignored).
+            axios.post(apiUrl`/channels/${vcId}/leave_voice`, {}, { headers: { Authorization: `Bearer ${token}`, ...(deviceId ? { 'x-device-id': deviceId } : {}) } })
                 .catch(() => { /* best-effort */ });
         }
         if (activeHuddleCallId) {
@@ -3060,7 +3232,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         }
     };
 
-    const handleDisconnectCall = async (wasLastPerson: boolean = false, deliberate: boolean = false) => {
+    // `displaced` = LiveKit closed this connection because the same account
+    // connected again elsewhere (utils/callTransition.isDisplacedByOtherConnection):
+    // the account is still in the call, so this client only drops its own state and
+    // sends NO leave / end - those routes are per user and would remove the
+    // connection that took over.
+    const handleDisconnectCall = async (wasLastPerson: boolean = false, deliberate: boolean = false, displaced: boolean = false) => {
         // Covers a leave before CallPane ever mounted (still securing the
         // key): nothing else would end the join's warm-up or its trace.
         releaseMicPrewarm();
@@ -3085,13 +3262,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // Voice channel call — notify server we left so participant count
         // updates. Fire-and-forget: leaving must never block on a round-trip.
         let huddleLeaveOwnsTeardown = false;
-        if (activeVoiceChannelId && token) {
+        if (displaced) {
+            setActiveVoiceChannelId(null);
+            setActiveHuddleCallId(null);
+            setActiveHuddleChannelId(null);
+        } else if (activeVoiceChannelId && token) {
             const vcId = activeVoiceChannelId;
             setActiveVoiceChannelId(null);
             axios.post(
                 apiUrl`/channels/${vcId}/leave_voice`,
                 {},
-                { headers: { Authorization: `Bearer ${token}` } },
+                { headers: { Authorization: `Bearer ${token}`, ...(deviceId ? { 'x-device-id': deviceId } : {}) } },
             ).catch(e => console.error('[Dashboard] Failed to leave voice channel:', e));
         } else if (activeHuddleCallId) {
             // Huddle call — delegate to handleLeaveHuddleCall which handles
@@ -3467,6 +3648,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const pullAgainRef = React.useRef(false);
 
     // Hoist pullMessages so it can be called both by the WS push AND the polling interval
+    // Reaction alerts already raised (utils/dmReactionAlert.ts): in memory only,
+    // never persisted or logged. And the message a DM's latest alerting reaction
+    // targeted, so clicking its toast can jump there.
+    const alertedReactionsRef = React.useRef<Set<string>>(new Set());
+    const pendingReactionJumpRef = React.useRef<Map<string, string>>(new Map());
     const pullMessagesOnce = React.useCallback(() => trackActivity('dm:pull', async () => {
         if (!token || !deviceId || !userId) return;
         if (!dmHistoryLoadedRef.current) return; // see dmHistoryLoadedRef
@@ -3973,7 +4159,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     const notifCandidates: Record<string, {
                         text: string; mode: NotifMode; decision: NotifDecision;
                         senderUserId: string | null;
+                        /** Toast body under the hidden-preview setting (reactions only). */
+                        hiddenText?: string;
                     }> = {};
+                    // DMs whose unread count was raised by a reaction this batch (see
+                    // utils/dmReactionAlert.ts): their list activity time is bumped below.
+                    const reactionAlertedConvs = new Set<string>();
 
                     // Read focus ONCE for the whole batch. It used to be sampled
                     // per message inside the loop and AGAIN inside notify(), after
@@ -4003,8 +4194,57 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             // must not buzz — it would be the very bug where the second
                             // PC shows unread what the first one read.
                             if (isReadByCursor(dmReadCursorsRef.current, cId, m)) continue;
+                            // Reactions alert ONLY in one-to-one DMs (owner decision;
+                            // utils/dmReactionAlert.ts is the one pure rule). They are
+                            // never a row, so they bypass the message list below, then
+                            // go through the SAME resolveNotification as a message so
+                            // DND / mode / suppress-when-active apply unchanged.
+                            if (m.content?.type === 'reaction') {
+                                const conv = conversationsRef.current.find((c: { conversation_id?: string; id?: string }) => c.conversation_id === cId || c.id === cId);
+                                const mode: NotifMode = effNotifPrefs[cId] ?? 'all';
+                                const targetId = m.content.target_id as string;
+                                const emoji = String(m.content.emoji ?? '');
+                                const reactorId = m.sender_user_id as string | null | undefined;
+                                const target = messagesStateRef.current[cId]?.find((t: { id?: string }) => t.id === targetId)
+                                    ?? msgs.find((t: { id?: string }) => t.id === targetId);
+                                const key = reactionAlertKey(cId, targetId, emoji, reactorId ?? '');
+                                const inState = !!m.sender_device_id && Array.isArray(target?.reactions?.[emoji]) && target.reactions[emoji].includes(m.sender_device_id);
+                                const base = decideDmReactionAlert({
+                                    op: m.content.action === 'add' ? 'add' : 'remove',
+                                    // Unknown conversation fails closed (not a DM we can vouch for).
+                                    conversationKind: conv && !convIsSelf && conv.type === 'dm' ? 'dm' : 'group',
+                                    reactorIsMe: !reactorId || reactorId === userId,
+                                    muted: mode === 'none',
+                                    dmOpenAndFocused: windowFocused && activeConvId === cId,
+                                    eventMs: messageServerMs(m),
+                                    lastReadMs: dmReadCursorsRef.current[cId],
+                                    alreadyAlerted: alertedReactionsRef.current.has(key) || inState,
+                                });
+                                if (base.affectsUnread && base.notify) {
+                                    rememberAlerted(alertedReactionsRef.current, key);
+                                    const decision = resolveNotification({
+                                        text: '', directMention: false, keywords: gPrefs.keywords, mode,
+                                        windowFocused, isActiveConversation: activeConvId === cId,
+                                        suppressWhenActiveConv: gPrefs.suppress_when_active_conv,
+                                        dndActive, dndLetMentionsThrough: gPrefs.dnd_let_mentions_through,
+                                    });
+                                    if (decision.countsUnread) {
+                                        newUnreadCountByConv[cId] = (newUnreadCountByConv[cId] || 0) + 1;
+                                        newUnreadsForAudio = true;
+                                        reactionAlertedConvs.add(cId);
+                                        if (targetId) pendingReactionJumpRef.current.set(cId, targetId);
+                                        // A message in the same batch keeps its own toast.
+                                        notifCandidates[cId] ??= {
+                                            text: reactionToastBody(emoji, reactionTargetPreview(target?.content), false),
+                                            hiddenText: reactionToastBody(emoji, '', true),
+                                            mode, decision, senderUserId: reactorId ?? null,
+                                        };
+                                    }
+                                }
+                                continue;
+                            }
                             if (!isSilentIncoming({ senderUserId: m.sender_user_id, myUserId: userId, convIsSelf }) && (isPlaceholder || ['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif', 'pro_gift'].includes(m.content.type))) {
-                                const mode: NotifMode = notifPrefs[cId] ?? 'all';
+                                const mode: NotifMode = effNotifPrefs[cId] ?? 'all';
                                 const text = isPlaceholder ? `🔒 ${placeholderText(m.content.data?.reason)}`
                                     : m.content.type === 'text' ? (m.content.text ?? '')
                                     : m.content.type === 'attachment' ? '📎 Attachment'
@@ -4061,12 +4301,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             active_conv_id: activeConvId,
                             ctx: notifCtxRef.current,
                             decision: cand.decision,
+                            ...(cand.hiddenText ? { hidden_text: cand.hiddenText } : {}),
                         });
                     }
                     // Keys on Home: a paper plane for a message that is allowed
                     // to alert (not yours, not muted, not swallowed by DND). The
                     // beat is a bare kind: no content, no sender, no conversation.
                     if (Object.values(notifCandidates).some(c => c.decision.playsSound)) emitKeysBeat('message');
+
+                    // A reaction that alerted orders its DM like a new message would.
+                    if (reactionAlertedConvs.size > 0) {
+                        const nowMs = Date.now();
+                        setLastActivityAt(prev => {
+                            const next = { ...prev };
+                            for (const c of reactionAlertedConvs) next[c] = Math.max(next[c] ?? 0, nowMs);
+                            return next;
+                        });
+                    }
 
                     if (newUnreadsForAudio) {
                         setUnreadCounts(oldUnread => {
@@ -4224,7 +4475,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchIdentityKeys, notify and pinAndDetect are per-render closures; adding them would rebuild this poll callback (and its dependents) on every render
-    }), [token, deviceId, notifPrefs, userId]);
+    }), [token, deviceId, effNotifPrefs, userId]);
 
     /** Serialised entry point — this is what the WS push and the poll call.
      *  See pullInFlightRef above for why concurrent pulls are not merely
@@ -4480,6 +4731,27 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const channelOrphansRef = useRef<Record<string, ChannelRow[]>>({});
     const serverChannelsRef = useRef<typeof serverChannels>({});
     useEffect(() => { serverChannelsRef.current = serverChannels; });
+    /** Is this channel age-restricted and not yet confirmed by this account?
+     *  While true its history is not fetched, decrypted, previewed or notified
+     *  (the API refuses it as well). Reads the freshest channel list. */
+    const channelAgeGatedNow = useCallback((channelId: string): boolean => {
+        for (const chs of Object.values(serverChannelsRef.current)) {
+            const ch = (chs as ChannelInfo[]).find(c => c.channel_id === channelId);
+            if (ch) return isChannelAgeGated(ch);
+        }
+        return false;
+    }, []);
+    /** The server refused this channel's history as unconfirmed (a stale or
+     *  cached list said otherwise): flag it so the gate shows. */
+    const markChannelAgeGated = useCallback((channelId: string) => {
+        for (const [sid, chs] of Object.entries(serverChannelsRef.current)) {
+            if (!(chs as ChannelInfo[]).some(c => c.channel_id === channelId)) continue;
+            const flag = (list: ChannelInfo[]) => list.map(c => c.channel_id === channelId ? { ...c, age_restricted: true, age_gate_confirmed: false } : c);
+            serverChannelsRef.current = { ...serverChannelsRef.current, [sid]: flag(chs as ChannelInfo[]) };
+            applyChannelsLocal(sid, flag);
+            return;
+        }
+    }, [applyChannelsLocal]);
     /** What a channel decrypt failure needs to be classified honestly
      *  (utils/channelDecryptFailure.ts): the row's epoch, the channel's latest
      *  known epoch, and whether this member may read its history. */
@@ -4554,9 +4826,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // Per-conversation mode, so a DM set to @mentions-only shows a
             // quiet grey count rather than the red one it would otherwise
             // have started drawing now that such conversations accrue unread.
-            id => notifPrefs[id] ?? 'all',
+            id => effNotifPrefs[id] ?? 'all',
         ),
-        [unreadCounts, mentionCounts, conversationTypeById, notifPrefs],
+        [unreadCounts, mentionCounts, conversationTypeById, effNotifPrefs],
     );
     // Right-click / Menu key / Shift+F10 on the rail's Direct messages and
     // Group chats buttons: Mark all as read + New message + New group chat.
@@ -4571,8 +4843,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         onNewGroup: () => setShowCreateGroupModal(true),
     });
     const serverRailBadges = useMemo(
-        () => serverChannelBadges(channelUnreadCounts, channelMentionCounts, id => channelToServerId[id]),
-        [channelUnreadCounts, channelMentionCounts, channelToServerId],
+        // Muted channels (own / category / server mute) drop out of the plain
+        // unread total; their direct mentions stay.
+        () => serverChannelBadges(withoutMuted(channelUnreadCounts, effMutedChannelIds), channelMentionCounts, id => channelToServerId[id]),
+        [channelUnreadCounts, channelMentionCounts, channelToServerId, effMutedChannelIds],
     );
     /** serverId → who is in a voice call there right now. Drives the rail's
      *  speaker badge and its hover roster. Both inputs are already
@@ -4589,7 +4863,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      *  aggregate these (rail/serverFolders.aggregateFolderBadge). */
     const railServerBadge = (serverId: string): BadgeState | null => {
         const srv = serverById.get(serverId);
-        const mode: NotifMode = serverNotifPrefs[serverId] ?? (srv?.default_notification_level ?? 'all');
+        const mode: NotifMode = effServerNotifPrefs[serverId] ?? (srv?.default_notification_level ?? 'all');
         const t = serverRailBadges.byServer[serverId];
         return resolveBadge(t?.unread ?? 0, t?.mentions ?? 0, mode);
     };
@@ -4681,6 +4955,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         },
                     ],
                 },
+                ...buildMuteItems(channelMute, srv.server_id, 'Server'),
                 {
                     icon: <CheckCheck />,
                     label: 'Mark as Read',
@@ -4708,6 +4983,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         setActiveServerView({ serverId: srv.server_id, serverName: srv.name });
                         setShowServerSettings(true);
                     },
+                }] : []),
+                // Fill an existing server's channels with Discord messages (e.g. channels an import left
+                // empty). Offered exactly when the API would accept the session: owner, ADMINISTRATOR or
+                // IMPORT_HISTORY; desktop app only (the bot token lives in Electron main).
+                ...(getDiscordImportApi()?.history && (isOwner || hasPermission(myPermissions[srv.server_id] ?? 0n, Permissions.IMPORT_HISTORY)) ? [{
+                    icon: <DownloadIcon />,
+                    label: 'Copy messages from Discord',
+                    onSelect: () => { setCopyDiscordTarget({ serverId: srv.server_id, serverName: srv.name }); },
                 }] : []),
                 {
                     icon: <LinkIcon />,
@@ -4891,10 +5174,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const { syncNow: syncGifsNow } = useGifLibrarySync({ userId, deviceId, token });
     // My Emojis library: pull at start/focus, publish after local edits.
     usePersonalEmojiSync({ userId, deviceId, token });
+    usePersonalStickerSync({ userId, deviceId, token });
     // Server rail layout (order + folders): whole-layout LWW through the
     // `server_rail` slot, so the mobile app and other desktops stay in step.
     useServerRailSync({ userId, deviceId, token });
     useCardStyleSync({ userId, deviceId, token });
+    // Custom themes follow the account across its devices (`themes` slot, plan T5 / D8).
+    useCustomThemeSync({ userId, deviceId, token });
+    // Every notification mute (channel/category/server/DM/group) follows the account (`mutes` slot) and
+    // is pulled the moment another device writes it (`own_slot:changed`).
+    useMuteSync({ userId, deviceId, token });
     const gifSyncAtRef = useRef(0);
     useEffect(() => {
         if (!savesRestored) return;
@@ -5248,6 +5537,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     useEffect(() => { confirmModeratorDeleteRef.current = confirmModeratorDelete; }, [confirmModeratorDelete]);
 
     const handleChannelMessage = useCallback(async (evt: ChannelMessageEvent, opts?: { replay?: boolean }) => {
+        // Age-restricted and not confirmed: the message is not decrypted, shown,
+        // sounded or notified. (The API does not send it to unconfirmed accounts
+        // either; this covers a stale client list.)
+        if (channelAgeGatedNow(evt.channel_id)) return;
         try {
             // Reject before decryption if the wire sender key doesn't match
             // the pinned key for this user+DEVICE (prevents a compromised server
@@ -5307,7 +5600,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 });
             }
             // A card style counts only on a row the server checked (STYLE_MESSAGES).
-            const content = problem ? unshowablePlaceholderContent() : gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: evt.styled });
+            // Imported history never arrives live (no per-row fan-out), so a live
+            // row's `imported_from` is ALWAYS dropped: it renders as its real sender.
+            const content = problem ? unshowablePlaceholderContent() : gateImportedFrom(gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: evt.styled }), null);
             // A live message just decrypted fine — this channel has recovered
             // (or never lost) its key, so stop the retry timer from sweeping it.
             undecryptableChannelsRef.current.delete(evt.channel_id);
@@ -5481,6 +5776,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         userId,
                         mentionsEveryone: evt.mentions_everyone,
                         myRoleIds: new Set<string>(serverMyRoleIdsRef.current[evt.server_id] ?? []),
+                        muted: effMutedChannelIdsRef.current.has(evt.channel_id),
                         keywords: gPrefs.keywords,
                         mode: effectiveMode,
                         windowFocused: document.hasFocus(),
@@ -5659,7 +5955,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         });
     }, []);
 
-    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, sendPresenceIdle, sendPresenceGame, sendPresenceGameDetail, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, cosmeticsUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, guestKeyEvents, setGuestKeyEvents, guestKeyRequestEvents, setGuestKeyRequestEvents, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
+    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, sendPresenceIdle, sendPresenceGame, sendPresenceGameDetail, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, cosmeticsUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, guestKeyEvents, setGuestKeyEvents, guestKeyRequestEvents, setGuestKeyRequestEvents, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, channelImportEvent, importReportedEvent, importClaimEvent, discordClaimsEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
 
     // ── Ghost-device fix: own-device alarm (docs/ghost-device.md §2.5) ───────
     // A COMPLETE listing of this account's devices at boot and on every
@@ -5773,6 +6069,50 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         })();
         return () => { cancelled = true; };
     }, [channelPinsChangedEvent, token, applyChannelSaveState]);
+
+    // Imported history (Discord import phase 2). A removed import (cancel and
+    // delete, a staff takedown) drops every cached row carrying that import's
+    // server mark in that channel; the rows are already gone server-side.
+    useEffect(() => {
+        if (!channelImportEvent || channelImportEvent.kind !== 'removed') return;
+        const { channel_id: cid, import_id: iid, import_author_id: aid } = channelImportEvent;
+        setChannelMessages(prev => {
+            const thread = prev[cid];
+            if (!thread) return prev;
+            const next = thread.filter((m: StoredChannelMsg) => !(
+                (iid && m.import_mark?.import_id === iid) || (aid && m.import_mark?.import_author_id === aid)
+            ));
+            return next.length === thread.length ? prev : { ...prev, [cid]: next };
+        });
+    }, [channelImportEvent]);
+    // Phase 3: an imported author was claimed or unclaimed. Every cached row of
+    // that author takes the new claimant (or none) on its SERVER mark; the
+    // display follows from utils/importedAuthor.ts. The event is a hint: the
+    // next history fetch carries the same mark.
+    useEffect(() => {
+        if (!importClaimEvent) return;
+        const { author_id: aid, claimed_user_id: uid } = importClaimEvent;
+        // Imported reactors are authors too (utils/importedReactions.ts).
+        noteImportAuthorClaim(aid, uid);
+        setChannelMessages(prev => {
+            let changed = false;
+            const out: typeof prev = { ...prev };
+            for (const [cid, thread] of Object.entries(prev)) {
+                if (!Array.isArray(thread) || !thread.some((m: StoredChannelMsg) => m.import_mark?.import_author_id === aid)) continue;
+                out[cid] = thread.map((m: StoredChannelMsg) => (m.import_mark?.import_author_id === aid
+                    ? { ...m, import_mark: { ...m.import_mark, claimed_user_id: uid } }
+                    : m));
+                changed = true;
+            }
+            return changed ? out : prev;
+        });
+    }, [importClaimEvent]);
+    // Tell the importer one of their imported messages was reported, so they
+    // can review it (and delete it). The reporter is never named.
+    useEffect(() => {
+        if (!importReportedEvent) return;
+        toast.push({ kind: 'info', title: 'An imported message was reported', message: 'Someone reported a message you imported. Staff will review it; you can open the channel and delete it if it should not be there.' });
+    }, [importReportedEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Kicked from call due to being alone for 15 minutes.
     //
@@ -6045,6 +6385,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         return out;
     }, [presenceAuthoritative, presence, friendStatuses]);
 
+    /** "Send to a friend" for custom themes (Settings → Appearance → Share). */
+    const themeShareActions = useMemo<ThemeShareActions>(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FriendsPayload entries are untyped
+        const accepted = (globalFriends?.accepted ?? []) as any[];
+        return {
+            available: true,
+            friends: accepted
+                .filter(f => typeof f?.user_id === 'string' && typeof f?.username === 'string')
+                .map(f => ({ user_id: f.user_id, username: f.username, discriminator: f.discriminator ?? null, avatar_url: f.avatar_url ?? null, status: f.status ?? null })),
+            conversations,
+            friendStatuses,
+            presence: displayPresence,
+            lastActivityAt,
+            sendText: sendThemeTextToFriend,
+        };
+    }, [globalFriends, conversations, friendStatuses, displayPresence, lastActivityAt, sendThemeTextToFriend]);
+
     // Friends page right panel: the in-memory "Recent" activity timeline,
     // observed from presence / listening / pushed events this device already
     // receives (hooks/useFriendActivity.ts). No server feed exists by design.
@@ -6116,11 +6473,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // counts. An @mentions-only conversation/channel shows a grey dot in
         // the app and contributes nothing here but its mentions.
         const serverMode = (sid: string): NotifMode | undefined =>
-            serverNotifPrefs[sid] ?? servers.find(s => s.server_id === sid)?.default_notification_level ?? undefined;
+            effServerNotifPrefs[sid] ?? servers.find(s => s.server_id === sid)?.default_notification_level ?? undefined;
         const count = trayBadgeCount({
             unreadCounts, mentionCounts, channelUnreadCounts, channelMentionCounts,
-            conversationMode: id => notifPrefs[id] ?? 'all',
-            channelMode: id => effectiveChannelMode(id, channelNotifPrefs, cid => channelToServerId[cid], serverMode),
+            conversationMode: id => effNotifPrefs[id] ?? 'all',
+            channelMode: id => effectiveChannelMode(id, effChannelNotifPrefs, cid => channelToServerId[cid], serverMode),
             showBadgeCount: p.show_badge_count,
             onlyMentions: p.badge_only_mentions,
             includesMuted: p.badge_includes_muted,
@@ -6144,7 +6501,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             screenLockAvailable: !!(screenLock.settings.enabled && screenLock.settings.verifier),
         });
     }, [unreadCounts, mentionCounts, channelUnreadCounts, channelMentionCounts,
-        notifGlobalPrefs, notifPrefs, channelNotifPrefs, serverNotifPrefs, servers, channelToServerId,
+        notifGlobalPrefs, effNotifPrefs, effChannelNotifPrefs, effServerNotifPrefs, servers, channelToServerId,
         myStatus, activeCall, myCurrentGame,
         screenLock.settings.enabled, screenLock.settings.verifier]);
 
@@ -6836,7 +7193,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // other cue. The confetti below is.
         recordEggFound('first-friend');
         playSound('celebration', notifGlobalPrefsRef.current);
-        if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+        if (celebrationReducedNow()) return;
         setFirstFriendCelebration(true);
     }, [globalFriends, userId]);
     // Stable, so the celebration's skip listeners (Escape / a click) are bound once.
@@ -6861,6 +7218,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // still authenticates with the current one.
     const friendsTokenRef = useRef(token);
     useEffect(() => { friendsTokenRef.current = token; });
+    const friendsUserIdRef = useRef(userId);
+    useEffect(() => { friendsUserIdRef.current = userId; });
     const friendsSyncRef = useRef<ReturnType<typeof createFriendsSync> | null>(null);
     if (!friendsSyncRef.current) {
         friendsSyncRef.current = createFriendsSync({
@@ -6869,10 +7228,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // rendering app-wide. It used to be `.catch(() => {})` — one lost
             // race at startup and avatars stayed blank all session with nothing
             // logged to say why.
-            load: async () => (await fetchWithRetry(
+            load: async () => (await takeBootFetch('friends', friendsTokenRef.current, () => fetchWithRetry(
                 () => axios.get(`${API_BASE}/friends`, { headers: { Authorization: `Bearer ${friendsTokenRef.current}` } }),
                 { onRetry: (_e, n) => console.warn(`[hydrate] friends retry ${n}`) },
-            )).data,
+            ))).data,
             // Only a valid, newest-request-wins payload ever lands here. A failed
             // or malformed refresh leaves the last good list in place and the sync
             // keeps retrying on a backoff until one succeeds — the "half loaded"
@@ -6880,6 +7239,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             onData: (payload) => {
                 lastFriendsPayloadRef.current = payload;
                 setGlobalFriends(payload);
+                // Next cold start opens with this list (utils/bootListCache.ts).
+                cacheFriends(friendsUserIdRef.current, payload);
             },
             onStatus: setFriendsLoadStatus,
             onError: (err) => console.error('Failed to fetch friends:', err),
@@ -7805,10 +8166,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // Retried: a single failure here used to leave the sidebar empty
             // until the user refreshed, and losing the cold-start race with the
             // API coming up is the common way that happened.
-            const res = await fetchWithRetry(() => axios.get(`${API_BASE}/conversations`, {
+            // The first call takes the request started at session restore (utils/bootFetch.ts).
+            const res = await takeBootFetch('conversations', token, () => fetchWithRetry(() => axios.get(`${API_BASE}/conversations`, {
                 headers: { Authorization: `Bearer ${token}` }
-            }), { onRetry: (_e, n) => console.warn(`[hydrate] conversations retry ${n}`) });
+            }), { onRetry: (_e, n) => console.warn(`[hydrate] conversations retry ${n}`) }));
             setConversations(labelSelfConversations(res.data, authUserId));
+            cacheConversations(authUserId, res.data);
             
             // Auto-sync missing avatar keys to any new DMs (only after key bundle is on server)
             if (bundleReady) broadcastCurrentAvatar(res.data);
@@ -8589,15 +8952,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 });
                 if (disposition === 'drop') return null;
             }
+            // The import mark is the server's, read off the ROW, never the content.
+            // `imported_from` survives only when it matches it (plan B6.2 rules 1-3).
+            const importMark = importMarkOf(m);
             return {
                 id: m.id,
                 // A card style counts only on a row the server checked (STYLE_MESSAGES).
-                content: problem ? unshowablePlaceholderContent() : gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: m.styled }),
+                content: problem ? unshowablePlaceholderContent() : gateImportedFrom(gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: m.styled }), importMark),
                 sender_device_id: m.sender_device_id,
                 sender_user_id: m.sender_user_id ?? null,
                 timestamp: m.created_at,
                 conversation_id: channelId,
                 ...(rowFranking && !problem ? { franking: rowFranking } : {}),
+                ...(importMark ? { import_mark: importMark } : {}),
             };
         } catch (err) {
             // G4: replayed / mis-bound / malformed — drop the row outright
@@ -8785,16 +9152,26 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     }, []);
 
     const getChannelRows = useCallback(async (channelId: string, params: Record<string, string | number>): Promise<RawChannelRow[]> => {
-        const res = await axios.get(apiUrl`/channels/${channelId}/messages`, {
-            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
-            // include_system=1: also return the persisted member joined / left /
-            // kicked / banned rows. Every history read passes through here, so
-            // the joiner, an offline member and a reload all get them. An API
-            // that predates them ignores the flag.
-            params: { include_system: 1, ...params },
-        });
+        // Age-restricted and unconfirmed: nothing is requested at all.
+        if (channelAgeGatedNow(channelId)) throw Object.assign(new Error('Channel is age-restricted'), { ageGated: true });
+        let res;
+        try {
+            res = await axios.get(apiUrl`/channels/${channelId}/messages`, {
+                headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
+                // include_system=1: also return the persisted member joined / left /
+                // kicked / banned rows. Every history read passes through here, so
+                // the joiner, an offline member and a reload all get them. An API
+                // that predates them ignores the flag.
+                params: { include_system: 1, ...params },
+            });
+        } catch (e) {
+            // The server says this account has not confirmed 18+ (a stale or
+            // cached channel list): show the gate for that channel.
+            if (isAgeGateError(e)) markChannelAgeGated(channelId);
+            throw e;
+        }
         return Array.isArray(res.data) ? res.data : [];
-    }, [token, deviceId]);
+    }, [token, deviceId, channelAgeGatedNow, markChannelAgeGated]);
 
     /** One `around=<known row>&limit=1` request per session: the new API
      *  answers exactly that row (or 404 if it is gone); an old one answers
@@ -9140,6 +9517,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             console.error('[Dashboard] Failed to load channel history:', err);
         }
     }), [token, getChannelRows, ensureChannelSaves, ingestChannelRows, healChannelPlaceholders]);
+
+    // Imported history arriving (Discord import phase 2): the server sends one
+    // throttled `channel:import_progress` instead of a row-by-row fan-out, and
+    // the open channel re-reads its newest page through the normal history call.
+    useEffect(() => {
+        if (!channelImportEvent || channelImportEvent.kind !== 'progress') return;
+        const open = activeChannelRef.current;
+        if (!open || open.channel_id !== channelImportEvent.channel_id) return;
+        void refreshChannelHistory(open.server_id, open.channel_id);
+    }, [channelImportEvent, refreshChannelHistory]);
     useEffect(() => { refreshChannelHistoryRef.current = refreshChannelHistory; }, [refreshChannelHistory]);
 
     // A key landed for the channel on screen: besides the newest-page re-read
@@ -9373,6 +9760,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         setActiveChannel(channel);
         setActiveChat(null); // Clear DM/group selection
 
+        // Age-restricted and not confirmed by this account: show the gate and do
+        // NOTHING else - no read cursor, no key work, no history fetch. Confirming
+        // re-enters this function with the channel confirmed.
+        if (channel.kind === 'text' && (isChannelAgeGated(channel) || channelAgeGatedNow(channel.channel_id))) return;
+
         // First visit to this channel this session — hold ChatPane's spinner
         // until the catch-up fetch below settles instead of letting it render
         // messages.length === 0 as "no history" for the instant before the
@@ -9479,7 +9871,28 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 applyChannelSaveState(channel.channel_id, await fetchChannelSaveState(API_BASE, channel.channel_id, token));
             } catch { /* non-fatal */ }
         }
-    }, [token, userId, refreshChannelHistory, ensureChannelKeyBootstrap, applyChannelSaveState]);
+    }, [token, userId, refreshChannelHistory, ensureChannelKeyBootstrap, applyChannelSaveState, channelAgeGatedNow]);
+
+    /** "I'm 18 or older, continue" on the age gate. The confirmation is one per
+     *  ACCOUNT, so every age-restricted channel in every loaded server opens. */
+    const confirmAgeGate = useCallback(async (channel: ChannelInfo) => {
+        try {
+            await axios.post(apiUrl`/age-gate/acknowledge`, {}, { headers: { Authorization: `Bearer ${token}` } });
+        } catch (e) {
+            const msg = (e as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+            throw new Error(typeof msg === 'string' && msg ? msg : "Couldn't save that. Check your connection and try again.");
+        }
+        const confirm = (list: ChannelInfo[]) => list.some(c => c.age_restricted && c.age_gate_confirmed !== true)
+            ? list.map(c => (c.age_restricted ? { ...c, age_gate_confirmed: true } : c))
+            : list;
+        const next: typeof serverChannelsRef.current = { ...serverChannelsRef.current };
+        for (const sid of Object.keys(next)) {
+            next[sid] = confirm(next[sid] as ChannelInfo[]);
+            applyChannelsLocal(sid, confirm);
+        }
+        serverChannelsRef.current = next;   // the open below reads it before the next render
+        await handleSelectChannel({ ...channel, age_gate_confirmed: true });
+    }, [token, applyChannelsLocal, handleSelectChannel]);
 
     // ── #channel link clicked in a message (utils/channelRefs.ts) ───────────
     // Only ever resolves against the OPEN server's channel list (already
@@ -11624,6 +12037,40 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [channelKeyRotationEvents]);
 
+    // Discord import phase 2: the history import encrypts with the new server's
+    // channel keys, so it mints them here first (the server was just created;
+    // nothing else holds a key yet).
+    const importHistoryDeps = useMemo(() => (userId && deviceId ? {
+        userId, deviceId, maxFileBytes: importMaxUploadBytes,
+        prepareChannelKeys: async (serverId: string, channelIds: string[]) => {
+            await loadChannels(serverId);
+            for (const cid of channelIds) await bootstrapAndDistributeChannelKey(serverId, cid);
+        },
+        // "Copy messages from Discord" into EXISTING channels: never rotate a live channel's key here. Mint
+        // only a channel nobody ever keyed (exactly the new-channel case); a channel this device holds no
+        // current key for is reported (it fails on its own, retryable) and a key request goes out.
+        existingChannelKeys: async (serverId: string, channelIds: string[]) => {
+            const chans = (await loadChannels(serverId)) ?? serverChannelsRef.current[serverId] ?? [];
+            const missing: string[] = [];
+            const latestLocal = async (cid: string) => { try { return await window.electronAPI!.getLatestChannelEpoch(cid); } catch { return null; } };
+            for (const cid of channelIds) {
+                const serverLatest = chans.find(c => c.channel_id === cid)?.latest_epoch ?? null;
+                let local = await latestLocal(cid);
+                if (local === null && serverLatest === null) {
+                    await bootstrapAndDistributeChannelKey(serverId, cid);
+                    local = await latestLocal(cid);
+                }
+                if (local === null || (serverLatest !== null && local < serverLatest)) missing.push(cid);
+            }
+            if (missing.length) void requestMissingChannelKeys(serverId);
+            return missing;
+        },
+    } : undefined), [userId, deviceId, importMaxUploadBytes, loadChannels, bootstrapAndDistributeChannelKey, requestMissingChannelKeys]);
+    /** After a crash: end this account's import session the marker names (keeps what it copied). */
+    const endInterruptedImport = useMemo(() => (token && importHistoryDeps
+        ? (serverId: string) => createDiscordHistoryHost({ token, ...importHistoryDeps }).endActive!(serverId)
+        : undefined), [token, importHistoryDeps]);
+
     // ── Periodic channel-key rotation ─────────────────────────────────────────
     // A channel whose current epoch is past its rotates_at (7 days after it was
     // handed to us) goes through the same rotation path as a lost-access
@@ -11931,6 +12378,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 other_user_id: conv.other_user_id,
                 avatar_url: conv.avatar_url,
             });
+            const jumpTo = pendingReactionJumpRef.current.get(convId);
+            if (jumpTo) {
+                pendingReactionJumpRef.current.delete(convId);
+                window.setTimeout(() => jumpToMessageRef.current?.(jumpTo), 400);
+            }
             return;
         }
         // Otherwise look for a channel with this id across all loaded servers.
@@ -11947,6 +12399,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
         }
     }, [handleStartChat, handleSelectChannel, loadChannels, requestMissingChannelKeys]);
+
+    // "Review them" → Show (Discord import phase 3): open the channel, then
+    // jump to the message once its page is in (jumpToMessage loads the page
+    // around it when needed).
+    const openFromNotificationRef = useRef(openFromNotification);
+    openFromNotificationRef.current = openFromNotification;
+    useEffect(() => {
+        const onOpen = (e: Event) => {
+            const d = (e as CustomEvent<{ serverId?: unknown; channelId?: unknown; messageId?: unknown }>).detail;
+            if (!d || typeof d.channelId !== 'string' || typeof d.messageId !== 'string') return;
+            const messageId = d.messageId;
+            openFromNotificationRef.current(d.channelId);
+            window.setTimeout(() => jumpToMessageRef.current?.(messageId), 600);
+        };
+        window.addEventListener(OPEN_IMPORTED_MESSAGE_EVENT, onOpen);
+        return () => window.removeEventListener(OPEN_IMPORTED_MESSAGE_EVENT, onOpen);
+    }, []);
 
     // PERF: bound ONCE. The handlers change identity on almost every dashboard
     // render (openFromNotification alone depends on four callbacks), so this
@@ -13310,6 +13779,25 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         return () => clearTimeout(t);
     }, [activeCall?.isVoiceChannel, activeHuddleChannelId, activeHuddleCallId, activeVoiceChannelId, huddleDisplay, voiceParticipants, userId, serverMemberNicknames, voiceUserNames, friendNameMap]);
 
+    // Server presence for the call we are in, for the "alone in call" auto-leave (utils/aloneLeave.ts): it re-reads this
+    // (and the LiveKit room) before counting down, because the participants hook can freeze after a reconnect. Only
+    // channel calls have presence; a DM / group call returns null (no source). The probe is read at decision time
+    // through a ref-free closure over the latest render, so it is never stale.
+    useEffect(() => {
+        if (!activeCall?.isVoiceChannel) { setAlonePresenceProbe(null); return; }
+        setAlonePresenceProbe(() => {
+            let ids: readonly string[] | undefined;
+            if (activeHuddleChannelId && activeHuddleCallId) {
+                ids = (huddleDisplay.calls[activeHuddleChannelId] ?? []).find(c => c.call_id === activeHuddleCallId)?.participants;
+            } else if (activeVoiceChannelId) {
+                ids = voiceParticipants[activeVoiceChannelId];
+            }
+            if (!ids) return null;
+            return ids.filter(id => id !== userId).length;
+        });
+        return () => setAlonePresenceProbe(null);
+    }, [activeCall?.isVoiceChannel, activeHuddleChannelId, activeHuddleCallId, activeVoiceChannelId, huddleDisplay, voiceParticipants, userId]);
+
     // A moved-in guest's call is in a channel they cannot see, so nothing above
     // ever gives them its roster: the floating card would list only themselves.
     // See utils/guestCallRoster.
@@ -13487,7 +13975,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 className="absolute inset-0 z-50 flex flex-col items-center justify-center p-6 text-center fade-pop-enter"
                                 style={{
                                     background: activeCall
-                                        ? 'radial-gradient(120% 120% at 50% 15%, rgba(19,26,48,0.97) 0%, rgba(11,15,30,0.99) 65%)'
+                                        ? 'radial-gradient(120% 120% at 50% 15%, rgb(var(--cl-deep-rgb) / 0.97) 0%, rgb(var(--cl-abyss-rgb) / 0.99) 65%)'
                                         : 'radial-gradient(120% 120% at 50% 15%, var(--cl-deep) 0%, var(--cl-abyss) 65%)',
                                     backdropFilter: activeCall ? 'blur(12px)' : undefined,
                                 }}
@@ -13498,7 +13986,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                     <div className="cl-incall-ring" />
                                     <div className="cl-incall-ring" />
                                     <div className="cl-incall-ring" />
-                                    <div className="cl-incall-avatar w-full h-full relative z-10" style={{ boxShadow: '0 10px 40px rgba(0,0,0,0.55)', borderRadius: '50%' }}>
+                                    <div className="cl-incall-avatar w-full h-full relative z-10" style={{ boxShadow: '0 10px 40px rgb(var(--cl-shade-rgb) / 0.55)', borderRadius: '50%' }}>
                                         <EncryptedAvatar
                                             attachmentId={globalIncomingCall.callerAvatarId}
                                             userId={globalIncomingCall.callerUserId}
@@ -13534,7 +14022,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 <div className="cl-incall-meta mb-10">
                                     <span
                                         className="cl-incall-badge"
-                                        style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--cl-lume)' }}
+                                        style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--cl-lume-text)' }}
                                     >
                                         <PhoneIncoming size={15} />
                                         {globalIncomingCall.isGroup ? 'Incoming group call' : 'Incoming call'}
@@ -13552,7 +14040,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                         <button
                                             type="button"
                                             className="cl-incall-btn cl-incall-btn--decline"
-                                            onClick={() => setGlobalIncomingCall(null)}
+                                            onClick={declineGlobalCall}
                                             aria-label="Decline call"
                                         >
                                             <PhoneOff size={24} />
@@ -13999,7 +14487,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                         onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--cl-lume)')}
                                                         onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--cl-border)')}
                                                     >
-                                                        <span style={{ color: 'var(--cl-lume)', display: 'flex' }}>{t.icon}</span>
+                                                        <span style={{ color: 'var(--cl-lume-text)', display: 'flex' }}>{t.icon}</span>
                                                         <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--cl-text)', fontFamily: 'var(--cl-font-body)' }}>{t.n}</span>
                                                         <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--cl-faint)' }}>{t.label}</span>
                                                     </button>
@@ -14043,14 +14531,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                             from --cl-ok (#4ADE80), the actual "online/ok" green used
                                             everywhere else (status dots, the Answer button below) — so
                                             this card was quietly off-brand every time it appeared. */}
-                                        <div style={{ width: '100%', borderRadius: 14, overflow: 'hidden', background: 'linear-gradient(135deg, rgba(74,222,128,0.10), rgba(74,222,128,0.04))', border: '1px solid rgba(74,222,128,0.22)' }}>
+                                        <div style={{ width: '100%', borderRadius: 14, overflow: 'hidden', background: 'linear-gradient(135deg, rgb(var(--cl-ok-rgb) / 0.10), rgb(var(--cl-ok-rgb) / 0.04))', border: '1px solid rgb(var(--cl-ok-rgb) / 0.22)' }}>
                                             <div className="flex items-center gap-3 px-3 pt-3 pb-2">
-                                                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(74,222,128,0.18)' }}>
-                                                    <PhoneCall className="w-4 h-4" style={{ color: 'var(--cl-ok)' }} />
+                                                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgb(var(--cl-ok-rgb) / 0.18)' }}>
+                                                    <PhoneCall className="w-4 h-4" style={{ color: 'var(--cl-ok-text)' }} />
                                                 </div>
                                                 <div className="flex-1 min-w-0">
                                                     <div className="text-[13px] font-semibold leading-tight" style={{ color: 'var(--cl-text)' }}>Active Call</div>
-                                                    <div className="text-[11px] leading-tight mt-0.5" style={{ color: 'var(--cl-ok)', opacity: 0.8 }}>{activeChatCallStatus?.participants || 0} in call</div>
+                                                    <div className="text-[11px] leading-tight mt-0.5" style={{ color: 'var(--cl-ok-text)', opacity: 0.8 }}>{activeChatCallStatus?.participants || 0} in call</div>
                                                 </div>
                                                 <div className="flex items-center shrink-0">
                                                     {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
@@ -14129,7 +14617,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 onClick={togglePinnedSidebar}
                                                 className="text-left"
                                             >
-                                                <div className="flex items-center justify-center shrink-0" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume)' }}>
+                                                <div className="flex items-center justify-center shrink-0" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--cl-lume-tint)', color: 'var(--cl-lume-text)' }}>
                                                     <Pin className="w-4 h-4" />
                                                 </div>
                                                 <div className="flex-1 min-w-0 text-left">
@@ -14217,7 +14705,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                         return (
                                                         <HoverPlayRow
                                                             key={m.user_id}
-                                                            className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-white/5 transition-colors relative group w-full cursor-pointer"
+                                                            className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-white/5 hover:[--status-backing:color-mix(in_srgb,var(--cl-deep),rgb(var(--cl-bright-rgb))_5%)] transition-colors relative group w-full cursor-pointer"
                                                             onClick={(e) => {
                                                                 // Let clicks on buttons / menus fall through to them.
                                                                 if ((e.target as HTMLElement).closest('button, a, input')) return;
@@ -14270,7 +14758,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                             <StatusIcon status={_status} currentGame={_game} size={13} />
                                                                         </span>
                                                                     ) : (
-                                                                        <span className="absolute bottom-0 right-[-1px] border-2 border-cl-deep rounded-full flex items-center justify-center">
+                                                                        <span className="absolute bottom-0 right-[-1px] border-2 border-[color:var(--status-backing,var(--cl-deep))] rounded-full flex items-center justify-center">
                                                                             <StatusIcon status={_status} currentGame={null} onMobile={_onMobile} size={9} />
                                                                         </span>
                                                                     );
@@ -14377,7 +14865,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         ) : (
                             <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
                                 <div className="flex items-center justify-center mb-4" style={{ width: 56, height: 56, borderRadius: 16, background: 'var(--cl-lume-tint)', border: 'var(--cl-hairline)' }}>
-                                    <Info className="w-6 h-6" style={{ color: 'var(--cl-lume)' }} />
+                                    <Info className="w-6 h-6" style={{ color: 'var(--cl-lume-text)' }} />
                                 </div>
                                 <p style={{ fontSize: 13, color: 'var(--cl-faint)', fontFamily: 'var(--cl-font-body)' }}>Details show up here once you open a chat.</p>
                             </div>
@@ -14523,7 +15011,33 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         void openDMWithUser(authUserId, selfConversationTitle(user?.username ?? ''), user?.avatar_url ?? undefined);
     }, [authUserId, openDMWithUser, user?.username, user?.avatar_url]);
 
+    // "Import from Discord": open the new server (the wizard's "Open server", or the
+    // background import's report via the title-bar pill / "Import finished" toast).
+    // Same post-create path as a template import: jump in, load channels, mint the
+    // (keyless) channels in the background.
+    const openImportedServer = async (serverId: string, serverName: string) => {
+        try {
+            setActiveTab('servers');
+            setActiveServerView({ serverId, serverName });
+            const chans = await loadChannels(serverId);
+            setPendingChannelSelect(serverId);
+            void (async () => {
+                try {
+                    for (const channelId of computeUnmintedChannels(chans ?? [], {})) {
+                        await bootstrapAndDistributeChannelKey(serverId, channelId);
+                    }
+                    void requestMissingChannelKeys(serverId);
+                } catch (e) {
+                    console.warn('[ImportDiscord] background key mint failed (server itself was created fine):', e);
+                }
+            })();
+        } catch (e) {
+            console.warn('[ImportDiscord] opening the new server failed (it was created fine):', e);
+        }
+    };
+
     return (
+        <ChannelMuteProvider value={channelMute}>
         <CallProvider>
         <CallMediaReporterBridge
             userId={userId}
@@ -14538,7 +15052,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         <CallServerCtx.Provider value={callServerCtxValue}>
         <ReportOpenContext.Provider value={openReportAt}>
         <GiftActionsProvider value={giftActions}>
+        <ThemeShareActionsProvider value={themeShareActions}>
         <FriendshipContext.Provider value={isFriendOrSelf}>
+        {/* cipherline://theme#… opened from a browser: the import preview, nothing applied until Save. */}
+        <ThemeDeepLinkHost />
+        {/* A live theme preview (theme/engine.ts startThemePreview): bottom-left "Previewing <name>" bar. */}
+        <ThemePreviewBar />
         <div ref={containerRef} data-layout="drift" className="w-screen h-screen flex flex-col bg-cl-abyss text-white overflow-hidden font-sans relative">
             {/* Screen Lock — full-viewport gate (see useScreenLock.ts). Highest
                 z-index in the app so it covers every modal, portal, and call
@@ -14558,20 +15077,28 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 callActive={callPaneActive}
             />
             {/* ── Titlebar ── */}
-            <div className="drag-region h-[34px] w-full shrink-0 flex items-center px-3 bg-cl-abyss">
+            {/* paddingLeft: a Linux desktop whose button layout puts the window
+                buttons on the LEFT (e.g. GNOME "close,minimize,maximize:") gets the
+                native overlay there; env(titlebar-area-x) is its width, so the
+                wordmark starts after it instead of under it. 0 everywhere else. */}
+            <div className="drag-region h-[34px] w-full shrink-0 flex items-center px-3 bg-cl-abyss" style={{ paddingLeft: TITLE_BAR_PADDING_LEFT }}>
                 {/* Text wordmark — left on Windows/Linux, right on macOS (traffic
                     lights are on the left there). Part of the drag region. */}
                 <TitleBarWordmark />
-                {/* WindowControls renders null on Mac/Windows (native titleBarOverlay
-                    draws those buttons instead — see electron/main.ts). Only wrap it
-                    in a no-drag region when it'll actually render something: an empty
+                {/* A Discord import running in the background: the centred progress
+                    pill, its progress / report modal and the "Import finished" toast. */}
+                <DiscordImportHost onOpenServer={openImportedServer} endInterruptedSession={endInterruptedImport} />
+                {/* Native caption buttons (Windows/Linux overlay, macOS traffic
+                    lights) draw over this bar; WindowControls is only the Linux
+                    fallback for a window without the overlay. Only wrap it in a
+                    no-drag region when it'll actually render something: an empty
                     -webkit-app-region:no-drag div sitting inside a drag region for no
                     reason creates a drag/no-drag boundary right at the corner where
-                    Windows' native overlay buttons sit, which can render as a stray
+                    the native overlay buttons sit, which can render as a stray
                     static seam there. It rises above App.tsx's full-width drag strip
                     (fixed, z-index 9999) like the wordmark does: below it, every click
-                    landed on the strip and none of these buttons worked. */}
-                {!isMac && !isWindows && !!window.electronAPI && (
+                    landed on the strip and none of these buttons worked (1.0.23). */}
+                {drawsOwnWindowControls(currentWindowControlsEnv()) && (
                     <div className="ml-auto no-drag relative z-[10000]">
                         <WindowControls />
                     </div>
@@ -14718,7 +15245,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             const srv = serverById.get(item.id);
                             if (!srv) return null;
                             const isActive = activeTab === 'servers' && activeServerView?.serverId === srv.server_id;
-                            const srvMode: NotifMode = serverNotifPrefs[srv.server_id] ?? (srv.default_notification_level ?? 'all');
+                            const srvMode: NotifMode = effServerNotifPrefs[srv.server_id] ?? (srv.default_notification_level ?? 'all');
                             const isMuted = srvMode === 'none';
 
                             // Count-driven (utils/unreadBadges.ts) — was: sum
@@ -14800,11 +15327,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 keyB64={srv.icon_key_b64}
                                                 nonceB64={srv.icon_nonce_b64}
                                                 token={token}
-                                                className={`w-10 h-10 text-sm rounded-[10px] object-cover ${isActive ? '' : 'ring-1 ring-white/[0.08]'}`}
+                                                className={`w-10 h-10 text-sm rounded-[10px] object-cover ${isActive ? '' : 'ring-1 ring-white/[0.08] cl-rail-tile-ring'}`}
                                                 animate={isActive}
                                             />
                                             {!isActive && (
-                                                <span aria-hidden style={{ position: 'absolute', inset: 0, borderRadius: 12, boxShadow: 'inset 0 1px 2px rgba(0,0,0,.5)', pointerEvents: 'none', opacity: 0.5 }} />
+                                                <span aria-hidden className="cl-rail-tile-sink" style={{ position: 'absolute', inset: 0, borderRadius: 12, boxShadow: 'inset 0 1px 2px rgb(var(--cl-shade-rgb) / .5)', pointerEvents: 'none', opacity: 0.5 }} />
                                             )}
                                         </button>
                                     {/* Badges live OUTSIDE the button so the button's overflow-hidden
@@ -15051,7 +15578,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             </nav>
 
             {/* Main Content Area */}
-            <div data-banner-column="" ref={contentColumnRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%', overflow: 'hidden' }}>
+            <div data-banner-column="" ref={contentColumnRef} className="app-contentcol" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%', overflow: 'hidden' }}>
 
                 {/* Top-of-app notices. Every banner below renders through ClBanner and
                     registers with this stack, which orders them by priority (danger
@@ -15156,8 +15683,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     />
                 )}
 
-                {/* Content panels row */}
-                <div style={{ flex: 1, display: 'flex', minWidth: 0, overflow: 'hidden' }}>
+                {/* Content panels row. app-contentrow / app-contentcol /
+                    app-callgroup / app-pane3-col / app-pane3-row: layout-drift.css
+                    turns these clips into overflow:clip with a margin, so they
+                    stop cutting the panes' shadows off along the panes' own
+                    edges (the square corners). */}
+                <div className="app-contentrow" style={{ flex: 1, display: 'flex', minWidth: 0, overflow: 'hidden' }}>
 
                 {activeTab === 'friends' ? (
                     <>
@@ -15308,7 +15839,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                         title={activeTab === 'dms' ? 'New Direct Message' : 'Create Group Chat'}
                                         onClick={() => activeTab === 'dms' ? setShowStartDMModal(true) : setShowCreateGroupModal(true)}
                                         className="shrink-0 flex items-center justify-center transition-colors"
-                                        style={{ width: 38, height: 38, background: 'var(--cl-surface)', border: '1.5px solid var(--cl-border)', borderRadius: 12, color: 'var(--cl-lume)', cursor: 'pointer' }}
+                                        style={{ width: 38, height: 38, background: 'var(--cl-surface)', border: '1.5px solid var(--cl-border)', borderRadius: 12, color: 'var(--cl-lume-text)', cursor: 'pointer' }}
                                     >
                                         <Plus size={16} strokeWidth={2.4} />
                                     </button>
@@ -15359,7 +15890,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 tabIndex={0}
                                                 onClick={openSelfChat}
                                                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSelfChat(); } }}
-                                                className="group relative flex items-center cursor-pointer transition-colors hover:bg-cl-surface"
+                                                className="group relative flex items-center cursor-pointer transition-colors hover:bg-cl-surface hover:[--status-backing:var(--cl-surface)]"
                                                 style={{ gap: 11, borderRadius: 12, padding: '9px 10px' }}
                                             >
                                                 <DmAvatarBadge
@@ -15462,7 +15993,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                             : null;
                                                         const buildItems = (currentMode: NotifMode): import('./primitives/ContextMenu').ContextMenuItem[] => {
                                                             const setAndRefresh = (mode: NotifMode) => {
-                                                                setConvNotifMode(convId, mode);
+                                                                pickConvNotifMode(convId, mode);
                                                                 sidebarMenu.updateItems(buildItems(mode));
                                                             };
                                                             return [
@@ -15523,11 +16054,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                             checked: currentMode === 'mentions',
                                                                             onSelect: () => setAndRefresh('mentions'),
                                                                         },
-                                                                        {
-                                                                            icon: <BellOff />, label: 'Mute',
-                                                                            checked: currentMode === 'none',
-                                                                            onSelect: () => setAndRefresh('none'),
-                                                                        },
+                                                                        // Timed mute, same durations and wording as channels; when muted this
+                                                                        // is "Unmute <Chat>" + "Muted until 3:40 PM". The same record syncs
+                                                                        // to the phones.
+                                                                        ...buildMuteItems(channelMute, convId, conv.type === 'group' ? 'Group' : 'Conversation'),
                                                                     ],
                                                                 }]),
                                                                 { divider: true as const },
@@ -15557,7 +16087,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                         sidebarMenu.open(e, buildItems(notifMode(convId)), conv.title || 'Chat');
                                                     }}
                                                     className={`group relative flex items-center cursor-pointer transition-colors ${
-                                                        activeChat?.id === conv.conversation_id ? 'bg-cl-surface' : 'hover:bg-cl-surface'
+                                                        activeChat?.id === conv.conversation_id ? 'bg-cl-surface cl-row-active [--status-backing:var(--cl-surface)]' : 'hover:bg-cl-surface hover:[--status-backing:var(--cl-surface)]'
                                                     }`}
                                                     style={{ gap: 11, borderRadius: 12, padding: '9px 10px' }}
                                                 >
@@ -15619,6 +16149,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                 <div className="flex-1 min-w-0 pr-1" style={{ lineHeight: 1.25 }}>
                                                                     <h4 className="flex items-center gap-1 text-[14px]" style={{ fontFamily: 'var(--cl-font-body)', fontWeight: 800, color: activeChat?.id === conv.conversation_id ? 'var(--cl-text)' : 'var(--cl-muted)' }}>
                                                                         <span className="truncate min-w-0">{conv.title}</span>
+                                                                        {cMode === 'none' && !conv.is_self && <MutedGlyph />}
                                                                         {conv.type === 'dm' && conv.other_user_id && !conv.is_self && (
                                                                             <StatusLine
                                                                                 entry={friendStatuses[conv.other_user_id]}
@@ -15636,7 +16167,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                                 <AlertTriangle
                                                                                     size={11}
                                                                                     strokeWidth={2.5}
-                                                                                    className="text-cl-flash"
+                                                                                    className="text-cl-flash-text"
                                                                                     aria-label="Unverified device"
                                                                                 />
                                                                             </span>
@@ -15644,7 +16175,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                     </h4>
                                                                     <p className="text-[12px] truncate" style={{ fontWeight: 600, color: (hasUnread && cMode !== 'none') || hasMention ? 'var(--cl-muted)' : 'var(--cl-faint)' }}>
                                                                         {typingUsers[conv.conversation_id]?.size > 0 ? (
-                                                                            <span className="text-cl-lume italic animate-pulse font-medium">Typing...</span>
+                                                                            <span className="text-cl-lume-text italic animate-pulse font-medium">Typing...</span>
                                                                         ) : (
                                                                             <ConversationPreviewLine
                                                                                 userId={userId}
@@ -15697,7 +16228,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 <div className="flex flex-col items-center justify-center h-full px-4 text-center" style={{ opacity: 0.5 }}>
                                                     <div className="w-14 h-14 rounded-xl flex items-center justify-center mb-3"
                                                         style={{ background: 'var(--cl-lume-tint)', border: 'var(--cl-hairline)' }}>
-                                                        <Server className="w-6 h-6" style={{ color: 'var(--cl-lume)' }} />
+                                                        <Server className="w-6 h-6" style={{ color: 'var(--cl-lume-text)' }} />
                                                     </div>
                                                     <h3 className="text-sm font-medium" style={{ fontFamily: 'var(--cl-font-display)', color: 'var(--cl-text)' }}>select a server</h3>
                                                     <p className="text-xs mt-1" style={{ color: 'var(--cl-faint)' }}>your communities, encrypted.</p>
@@ -15730,7 +16261,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 // Notification props
                                                 unreadCounts={channelUnreadCounts}
                                                 mentionCounts={channelMentionCounts}
-                                                serverNotifMode={serverNotifPrefs[srv.server_id] ?? (srv.default_notification_level ?? 'all')}
+                                                serverNotifMode={effServerNotifPrefs[srv.server_id] ?? (srv.default_notification_level ?? 'all')}
                                                 onMarkChannelRead={(cid) => markChannelsReadNow([cid])}
                                                 // After any inline channel/category mutation lands, reload both
                                                 // the channel list and the category list so the sidebar reflects
@@ -15805,9 +16336,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         {/* Right section: Pane 3 — always row 2, column 3. The
                             focused pane above it is a grid sibling now (see the
                             portal target at the top of this group), not a child. */}
-                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden', gridColumn: 3, gridRow: 2 }}>
+                        <div className="app-pane3-col" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden', gridColumn: 3, gridRow: 2 }}>
                             {/* Inner row: Pane 3 (Divider 2 + Pane 4 are now stable siblings outside) */}
-                            <div style={{ flex: 1, display: 'flex', minWidth: 0, overflow: 'hidden' }}>
+                            <div className="app-pane3-row" style={{ flex: 1, display: 'flex', minWidth: 0, overflow: 'hidden' }}>
                                 {/* Pane 3: Main Chat View */}
                                 <div className="app-pane3" style={{ flex: 1, minWidth: 280, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderTopRightRadius: '1rem' }}>
                                     <main className="app-pane3-sheet w-full h-full bg-cl-abyss flex flex-col relative" style={{ overflow: 'hidden', flex: 1, minHeight: 0 }}>
@@ -15840,7 +16371,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 friendRemovedEvent={friendRemovedEvent}
                                                 onCloseChatRequest={() => { setDeleteDataChecked(false); setCloseDialogState({ id: activeChat.id, title: activeChat.title || 'Chat', isGroup: activeChat.type === 'group' }); }}
                                                 notifPref={notifMode(activeChat.id)}
-                                                onSetNotifMode={(mode) => setConvNotifMode(activeChat.id, mode)}
+                                                onSetNotifMode={(mode) => pickConvNotifMode(activeChat.id, mode)}
                                                 retention={retention}
                                                 friendStatuses={friendStatuses}
                                                 pinnedMsgIds={pinnedMessagesState[activeChat.id] || []}
@@ -15880,6 +16411,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 senderWarnings={senderWarnings}
                                                 onKeyChangeResolved={clearSenderWarning}
                                                 onReport={(id, username, snippet, message) => setReportTarget({ id, username, snippet, message })}
+                                            />
+                                        ) : activeChannel && (isChannelAgeGated(activeChannel) || channelAgeGatedNow(activeChannel.channel_id)) ? (
+                                            /* Age-restricted, not confirmed by this account: the gate
+                                               replaces the whole pane. Nothing of the channel is fetched. */
+                                            <AgeGatePane
+                                                key={activeChannel.channel_id}
+                                                channelName={activeChannel.name}
+                                                onConfirm={() => confirmAgeGate(activeChannel)}
+                                                onBack={() => {
+                                                    const sibling = (serverChannels[activeChannel.server_id] ?? []).find(c => c.kind === 'text' && c.channel_id !== activeChannel.channel_id && !isChannelAgeGated(c));
+                                                    if (sibling) void handleSelectChannel(sibling as ChannelInfo);
+                                                    else setActiveChannel(null);
+                                                }}
                                             />
                                         ) : activeChannel ? (
                                             /* Server text channel — Sender Keys send path.
@@ -16210,6 +16754,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 />
             )}
 
+            {/* Discord import phase 3: "your imported messages now show as you" / "you can claim". */}
+            <DiscordClaimNotices
+                token={token}
+                userId={userId}
+                changedTick={discordClaimsEvent?.ts ?? 0}
+                channelName={(sid, cid) => {
+                    const c = (serverChannelsRef.current[sid] as ChannelInfo[] | undefined)?.find(x => x.channel_id === cid);
+                    return c ? `#${c.name}` : null;
+                }}
+            />
+
             {/* Shared media/files/links browser — opened from the context panel tiles. */}
             {activeChat && (
                 <SharedContentModal
@@ -16331,6 +16886,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     }}
                 />
             )}
+            {copyDiscordTarget && (
+                <CopyFromDiscordModal
+                    serverId={copyDiscordTarget.serverId}
+                    serverName={copyDiscordTarget.serverName}
+                    token={token}
+                    historyDeps={importHistoryDeps}
+                    loadTextChannels={async (sid) => ((await loadChannels(sid)) ?? serverChannelsRef.current[sid] ?? [])
+                        .filter(c => c.kind === 'text')
+                        .map(c => ({ channel_id: c.channel_id, name: c.name }))}
+                    onClose={() => setCopyDiscordTarget(null)}
+                    onOpenServer={openImportedServer}
+                />
+            )}
             {showCreateServerModal && (
                 <CreateServerModal
                     token={token}
@@ -16428,6 +16996,22 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             console.warn('[ImportTemplate] post-creation setup failed (server itself was created fine):', e);
                         }
                     }}
+                    onPreviewGuild={previewDiscordGuild}
+                    onImportGuild={(req) => {
+                        // "Import from Discord": the API built the new server in one
+                        // transaction. Counted like any created server; the wizard
+                        // goes on to icon-less extras (emojis, role icons) and only
+                        // then asks to open it (onOpenImportedServer below).
+                        // makeImportGuildHandler posts the wizard's request VERBATIM
+                        // (members, bans, nicknames, join days) and hands back EVERY
+                        // field of the answer (member_grants, role_refs, channel_refs,
+                        // channel_settings): this closure used to rebuild the answer
+                        // by hand and dropped member_grants (importGuildHandler.test.ts).
+                        const ownedBefore = serversLoading || serversError ? null : servers.filter(sv => sv.owner_user_id === userId).length;
+                        return makeImportGuildHandler(importDiscordGuild, () => noteServerCreated(ownedBefore))(req);
+                    }}
+                    historyDeps={importHistoryDeps}
+                    onOpenImportedServer={openImportedServer}
                 />
             )}
 
@@ -16690,9 +17274,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             // LiveKit-disconnect and connection-failure paths call this
                             // with no arguments, so a dropped connection never reads as
                             // the creator choosing to leave.
-                            onDisconnect={(wasLastPerson?: boolean, deliberate?: boolean) => {
+                            onDisconnect={(wasLastPerson?: boolean, deliberate?: boolean, displaced?: boolean) => {
                                 if (!shouldActOnPaneDisconnect(call.id, activeCallRef.current?.id)) return;
-                                void handleDisconnectCall(wasLastPerson, deliberate === true);
+                                void handleDisconnectCall(wasLastPerson, deliberate === true, displaced === true);
                             }}
                             failureTitle={failureTitleFor(call.id, call.voiceChannelName)}
                             onInactivityWarning={(active) => {
@@ -16785,7 +17369,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         run off-screen. */}
                     {railTooltip.call && (
                         <div className="mt-1.5 pt-1.5 border-t border-white/[0.08]">
-                            <div className="flex items-center gap-1.5 text-[10px] text-cl-lume">
+                            <div className="flex items-center gap-1.5 text-[10px] text-cl-lume-text">
                                 <Volume2 size={11} strokeWidth={2.5} aria-hidden />
                                 <span>{railTooltip.call.total} in call</span>
                             </div>
@@ -17032,12 +17616,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             )}
         </div >
         </FriendshipContext.Provider>
+        </ThemeShareActionsProvider>
         </GiftActionsProvider>
         </ReportOpenContext.Provider>
         </CallServerCtx.Provider>
         </RolePickerContext.Provider>
         </ProfileOpenContext.Provider>
         </CallProvider>
+        </ChannelMuteProvider>
     );
 };
 

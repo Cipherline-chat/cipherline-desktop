@@ -1,0 +1,50 @@
+/* Gradient role colours (utils/roleStyle.ts → roleNameStyle).
+ *
+ * The element also carries an inline `color` = the readable primary stop, so
+ * every fallback below lands on a real, theme-checked colour, never on the
+ * transparent fill. Stops are user data (role colours) passed as custom
+ * properties; nothing here hard-codes a colour. */
+.cl-role-gradient {
+    background-image: linear-gradient(90deg, var(--cl-role-a), var(--cl-role-b));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* High contrast themes: solid primary (roleNameStyle already does this on
+ * render; this covers a theme switch before the next render). */
+:root[data-contrast="high"] .cl-role-gradient {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+}
+
+/* Windows High Contrast: the system replaces colours and drops backgrounds,
+ * which would leave transparent text — fall back to the system text colour. */
+@media (forced-colors: active) {
+    .cl-role-gradient {
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
+    }
+}
+
+/* Role icon next to a name: never shrinks the name's truncation budget to
+ * zero, sits on the text's optical centre. */
+.cl-role-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    line-height: 1;
+    vertical-align: middle;
+    user-select: none;
+}
+.cl-role-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+.cl-role-icon--pending {
+    border-radius: 4px;
+    background: rgb(var(--cl-bright-rgb) / 0.08);
+}

@@ -73,9 +73,9 @@ export type { LoadingStage } from './loadingWait';
 export type LoadingPhase = 'loading' | 'surfacing';
 
 /** The exit into the app. Must match lo-out in app-loading.css (and the worker's dolly). */
-export const SURFACE_MS = 560;
+export const SURFACE_MS = 220;
 /** Reduced motion: a plain fade, no movement (see app-loading.css). */
-export const REDUCED_MS = 200;
+export const REDUCED_MS = 120;
 /**
  * After this long on screen (counted across the App → HydrationGate handoff,
  * see beginWait) a calm "taking longer than usual" line fades in.

@@ -73,7 +73,20 @@ describe('StoreLoadFailureHost', () => {
         mountHost();
         const toast = h.push.mock.calls[0][0];
         expect(toast.durationMs).toBe(0);
-        expect(toast.action.label).toBe('Reload');
+        expect(toast.action.label).toBe('Restart');
+    });
+
+    it('its action restarts the app (a page reload keeps the broken IndexedDB backend)', async () => {
+        const relaunchApp = vi.fn(async () => {});
+        (window as unknown as { electronAPI?: unknown }).electronAPI = { relaunchApp };
+        try {
+            h.failed = true;
+            mountHost();
+            await act(async () => { h.push.mock.calls[0][0].action.onClick(); });
+            expect(relaunchApp).toHaveBeenCalledTimes(1);
+        } finally {
+            (window as unknown as { electronAPI?: unknown }).electronAPI = undefined;
+        }
     });
 
     it('is mounted in the signed-in app', () => {
@@ -90,6 +103,49 @@ describe('StorageReadFailedScreen', () => {
         expect(button).toBeTruthy();
         act(() => { button!.click(); });
         expect(onContinue).toHaveBeenCalledTimes(1);
+    });
+
+    it('"Try again" RESTARTS the app (relaunch), not a page reload', async () => {
+        const relaunchApp = vi.fn(async () => {});
+        (window as unknown as { electronAPI?: unknown }).electronAPI = { relaunchApp, platform: 'windows' };
+        try {
+            act(() => { root.render(React.createElement(StorageReadFailedScreen, { onContinue: () => {} })); });
+            const button = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Restart and try again'));
+            expect(button).toBeTruthy();
+            await act(async () => { button!.click(); });
+            expect(relaunchApp).toHaveBeenCalledTimes(1);
+            // Pressing again while restarting does not queue a second relaunch.
+            await act(async () => { button!.click(); });
+            expect(relaunchApp).toHaveBeenCalledTimes(1);
+        } finally {
+            (window as unknown as { electronAPI?: unknown }).electronAPI = undefined;
+        }
+    });
+
+    it.each([
+        ['windows', /tray icon/, /OneDrive/, /%APPDATA%\\Cipherline/],
+        ['mac', /⌘Q/, /sync app/, /Library\/Application Support\/Cipherline/],
+        ['linux', /tray icon/, /sync or backup tool/, /\.config\/Cipherline/],
+    ] as const)('shows %s guidance: quit fully, disk space, allow the data folder, never delete or reinstall', (platform, quit, watcher, folder) => {
+        (window as unknown as { electronAPI?: unknown }).electronAPI = { platform };
+        try {
+            act(() => { root.render(React.createElement(StorageReadFailedScreen, { onContinue: () => {} })); });
+            const text = host.textContent ?? '';
+            expect(text).toMatch(quit);
+            expect(text).toMatch(/free space/);
+            expect(text).toMatch(watcher);
+            expect(text).toMatch(folder);
+            expect(text).toMatch(/Don’t delete the app’s data or reinstall/);
+        } finally {
+            (window as unknown as { electronAPI?: unknown }).electronAPI = undefined;
+        }
+    });
+
+    it('main.tsx shows "Opening your data…" only while the store retries, on the same root', () => {
+        const main = fs.readFileSync(path.join(__dirname, '../main.tsx'), 'utf8');
+        expect(main).toMatch(/secureLocalStore\.onLoadRetry\(\(\) => \{\s*getRoot\(\)\.render\([\s\S]{0,80}<StorageOpeningScreen \/>/);
+        expect(main).toMatch(/\.finally\(offLoadRetry\)/);
+        expect(main).toMatch(/const root = getRoot\(\);/);
     });
 
     it('offers no reset: nothing here is known to be damaged', () => {

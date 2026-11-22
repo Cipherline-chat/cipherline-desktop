@@ -4,13 +4,14 @@
  *
  * The app keeps working in that state, but with less than it looks like it has
  * (secureLocalStore's `unreadAccount` explains what is held back and why), so
- * this stays up until it is acted on or dismissed instead of timing out. A reload
+ * this stays up until it is acted on or dismissed instead of timing out. A restart
  * is the recovery rather than loading the data in place: it rebuilds every reader
  * from disk, where a late load would leave components holding their empty state.
  */
 import { useEffect, useRef } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import secureLocalStore from '../utils/secureLocalStore';
+import { restartApp } from '../utils/restartApp';
 
 export function StoreLoadFailureHost() {
     const { push } = useToast();
@@ -28,7 +29,9 @@ export function StoreLoadFailureHost() {
             title: 'Couldn’t load your data on this device',
             message: 'Nothing was deleted. Until it loads, your history stays hidden, new direct messages wait on the server, and changes on this device aren’t saved.',
             durationMs: 0,
-            action: { label: 'Reload', onClick: () => window.location.reload() },
+            // A restart, not a page reload: Chromium keeps a failed IndexedDB
+            // backend for the life of the process (utils/restartApp.ts).
+            action: { label: 'Restart', onClick: () => { void restartApp(); } },
         });
     }), []);
 

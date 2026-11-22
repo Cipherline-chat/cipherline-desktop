@@ -137,6 +137,20 @@
 .k2-alert .k2-fore { animation-duration: 1.3s; }
 .k2-alert .k2-foot { animation-duration: 1.45s; }
 
+/* The @mention badge (Keys.tsx showMentionBadge). Light-scheme themes only
+   (Light, High contrast light, a light-base custom theme): in the dark themes
+   the alert is his amber body (--cl-keys-alert), in the light ones he stays
+   teal / the accent (owner, 2026-11-20) and the cue is a coral badge at his
+   shoulder. It is static by default; it pops in and gives three attention
+   wiggles only when motion is allowed. */
+.k2-badge { display: none; transform-box: fill-box; transform-origin: center; }
+:root[data-scheme="light"] .k2-badge {
+  display: inline;
+  animation: k2BadgePop .45s var(--cl-spring) both, k2BadgeNudge 1.1s ease-in-out .6s 3;
+}
+@keyframes k2BadgePop { from { opacity: 0; transform: scale(.3); } to { opacity: 1; transform: scale(1); } }
+@keyframes k2BadgeNudge { 0%,100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-14deg) scale(1.12); } 60% { transform: rotate(12deg) scale(1.12); } }
+
 /* Asleep: limbs settle to stillness (he's napping, not treading water). */
 .k2-asleep .k2-leg, .k2-asleep .k2-fore, .k2-asleep .k2-foot { animation-play-state: paused; }
 
@@ -203,7 +217,7 @@
   .k2-perk .k2-leg-2, .k2-perk .k2-fore-2, .k2-perk .k2-tilt,
   .k2-flail .k2-leg, .k2-flail .k2-fore, .k2-flail .k2-foot,
   .k2-leg, .k2-fore, .k2-foot,
-  .k2-wave .k2-tilt, .k2-zzz text, .k2-speech { animation: none !important; }
+  .k2-wave .k2-tilt, .k2-zzz text, .k2-speech, .k2-badge { animation: none !important; }
   .k2-ink circle { opacity: 0; }
 }
 
@@ -233,3 +247,6 @@
 :root[data-cl-occluded="on"] .k2-fore:not(.sd-root *),
 :root[data-cl-occluded="on"] .k2-foot:not(.sd-root *),
 :root[data-cl-occluded="on"] .k2-zzz text:not(.sd-root *) { animation: none; }
+
+/* "Celebrations and effects" off: the badge stays, still. */
+:root[data-effects="off"] .k2-badge { animation: none !important; }

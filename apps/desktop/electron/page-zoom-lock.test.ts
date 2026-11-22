@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
     isZoomShortcut, resetZoomToIntended, lockPageZoom, intendedZoomFactor, APP_ZOOM_FACTOR,
+    zoomShortcutAction, setIntendedZoomFactor,
     type ZoomKeyInput, type ZoomLockableContents,
 } from './page-zoom-lock';
 
@@ -69,10 +70,44 @@ function fakeContents(initial: number) {
     };
 }
 
+describe('zoomShortcutAction', () => {
+    it.each([
+        ['Ctrl+=', key('=', { control: true }), 'in'],
+        ['Ctrl++', key('+', { control: true, shift: true }), 'in'],
+        ['Cmd+=', key('=', { meta: true }), 'in'],
+        ['Ctrl+NumpadAdd', key('+', { control: true, code: 'NumpadAdd' }), 'in'],
+        ['Ctrl+Add', key('Add', { control: true }), 'in'],
+        ['Ctrl+-', key('-', { control: true }), 'out'],
+        ['Ctrl+_', key('_', { control: true, shift: true }), 'out'],
+        ['Ctrl+NumpadSubtract', key('-', { control: true, code: 'NumpadSubtract' }), 'out'],
+        ['Ctrl+Subtract', key('Subtract', { control: true }), 'out'],
+        ['Ctrl+0', key('0', { control: true }), 'reset'],
+        ['Cmd+0', key('0', { meta: true }), 'reset'],
+    ])('%s -> %s', (_n, input, want) => {
+        expect(zoomShortcutAction(input)).toBe(want);
+    });
+    it('null for everything isZoomShortcut rejects', () => {
+        expect(zoomShortcutAction(key('-'))).toBeNull();
+        expect(zoomShortcutAction(key('=', { control: true, alt: true }))).toBeNull();
+        expect(zoomShortcutAction(key('0', { control: true, shift: true }))).toBeNull();
+        expect(zoomShortcutAction({ ...key('=', { control: true }), type: 'keyUp' })).toBeNull();
+    });
+});
+
 describe('intended factor', () => {
-    it('is 1.0 (no in-app UI scale exists)', () => {
+    it('defaults to 1.0', () => {
         expect(APP_ZOOM_FACTOR).toBe(1);
         expect(intendedZoomFactor()).toBe(1);
+    });
+    it('setIntendedZoomFactor accepts sane factors and refuses junk', () => {
+        try {
+            expect(setIntendedZoomFactor(1.25)).toBe(true);
+            expect(intendedZoomFactor()).toBe(1.25);
+            for (const bad of [0, 0.2, 5, NaN, Infinity, -1]) {
+                expect(setIntendedZoomFactor(bad)).toBe(false);
+                expect(intendedZoomFactor()).toBe(1.25);
+            }
+        } finally { setIntendedZoomFactor(1); }
     });
 });
 
@@ -148,6 +183,54 @@ describe('lockPageZoom', () => {
         expect(run(key('0', { meta: true }))).toBe(1);
         expect(run(key('-'))).toBe(0);
         expect(run(key('I', { control: true, shift: true }))).toBe(0);
+    });
+    it('a fixed window stays at 1 even when the UI scale is set', () => {
+        try {
+            setIntendedZoomFactor(1.5);
+            const f = fakeContents(1.5);
+            lockPageZoom(f.wc);
+            expect(f.wc.getZoomFactor()).toBe(1);
+            f.setFactor(1.5); f.emit('did-finish-load');
+            expect(f.wc.getZoomFactor()).toBe(1);
+        } finally { setIntendedZoomFactor(1); }
+    });
+    it('a scalable window follows the intended factor on every reset path', async () => {
+        try {
+            setIntendedZoomFactor(1.25);
+            const f = fakeContents(1);
+            lockPageZoom(f.wc, { scalable: true });
+            expect(f.wc.getZoomFactor()).toBe(1.25);
+            f.setFactor(1); f.emit('dom-ready');
+            expect(f.wc.getZoomFactor()).toBe(1.25);
+            f.setFactor(2); f.emit('zoom-changed', {}, 'in');
+            expect(f.wc.getZoomFactor()).toBe(1.25);
+            setIntendedZoomFactor(1.5);
+            f.emit('did-finish-load');
+            expect(f.wc.getZoomFactor()).toBe(1.5);
+        } finally { setIntendedZoomFactor(1); }
+    });
+    it('scalable: accelerators are still swallowed AND handed to onShortcut once per press', () => {
+        const f = fakeContents(1);
+        const onShortcut = vi.fn();
+        lockPageZoom(f.wc, { scalable: true, onShortcut });
+        const press = (input: ZoomKeyInput & { isAutoRepeat?: boolean }) => {
+            const ev = { preventDefault: vi.fn() };
+            f.emit('before-input-event', ev, input);
+            return ev.preventDefault.mock.calls.length;
+        };
+        expect(press(key('=', { control: true }))).toBe(1);
+        expect(press(key('-', { meta: true }))).toBe(1);
+        expect(press(key('0', { control: true }))).toBe(1);
+        expect(press({ ...key('=', { control: true }), isAutoRepeat: true })).toBe(1);
+        expect(press(key('='))).toBe(0);
+        expect(onShortcut.mock.calls.map(c => c[0])).toEqual(['in', 'out', 'reset']);
+    });
+    it('fixed windows never call onShortcut (positive control for the scalable case)', () => {
+        const f = fakeContents(1);
+        const onShortcut = vi.fn();
+        lockPageZoom(f.wc, { onShortcut });
+        f.emit('before-input-event', { preventDefault: vi.fn() }, key('=', { control: true }));
+        expect(onShortcut).not.toHaveBeenCalled();
     });
     it('negative control: WITHOUT lockPageZoom nothing resets or blocks', () => {
         const f = fakeContents(0.6);

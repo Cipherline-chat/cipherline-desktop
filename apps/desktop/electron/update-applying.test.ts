@@ -28,20 +28,20 @@ function rig(over: Partial<ApplyingUpdateDeps> = {}) {
 }
 
 describe('ApplyingUpdatePopup decision logic', () => {
-    it('shows the popup for a downloaded version and holds the install by APPLYING_UPDATE_MS (positive control)', () => {
+    it('shows the popup for a downloaded version and starts the install at once (no hold)', () => {
         const r = rig();
         let installs = 0;
         expect(r.popup.show('1.0.25')).toBe(true);
         r.popup.install(() => { installs++; });
         expect(r.opened).toEqual(['1.0.25']);
         expect(r.timers).toHaveLength(1);
-        expect(r.timers[0].ms).toBe(APPLYING_UPDATE_MS);
+        expect(r.timers[0].ms).toBe(0);
         expect(installs).toBe(0);
         r.timers[0].fn();
         expect(installs).toBe(1);
     });
 
-    it('the hold never exceeds 2 s and the bar finishes inside it', () => {
+    it('the card animation is short and the bar finishes inside it', () => {
         expect(APPLYING_UPDATE_MS).toBeLessThanOrEqual(2000);
         expect(APPLYING_BAR_MS).toBeLessThan(APPLYING_UPDATE_MS);
     });
@@ -201,11 +201,12 @@ describe('applyingUpdateWindowPlan', () => {
 describe('splash-style.ts extraction left the installer page byte-identical', () => {
     // sha256 of installerSplashHtml() output, recorded on origin/staging e2f82b16 BEFORE the styles
     // moved into splash-style.ts. If you change the installer on purpose, re-record these.
+    // Re-recorded 2026-11-20 for D3 (--cl-faint #5E6B8F -> #8591B5: the splash's dim text), nothing else.
     it.each([
-        ['0.1.1', false, '6b4ba9628b3f5abd9ab18b7638643d33c284af697c0a439a566050173a975f4a'],
-        ['0.1.1', true, 'e48f6e7a2864e8259a4060d191919f3d5ef4d10f25482ebbb130126e1fe39e7d'],
-        ['0.1.1-staging.232', true, '224c11af51f556d22f0633a85731bc939c3c9196a229cfcc8cb4db23a4383242'],
-        ['1.0<x>', false, '0e5d110b3da91b9668b7a3658bcc330875617a9df074d1a710dc836ad0f4901d'],
+        ['0.1.1', false, '34e3a2f84fd2e48bff71457b329749198ea00acc42a3263823c2a2644b8cb4b2'],
+        ['0.1.1', true, '6e6db92be46d374d33d9901526a98762fec22787f815cfcb40c03eba003051ab'],
+        ['0.1.1-staging.232', true, 'bb8cd88ea08513f94e2bd0109f3244f1bf11cda32450c61d2d103021639f3059'],
+        ['1.0<x>', false, '3567f401afe74cd271134f255e3c5a59195e9e1b1ec44c5bcf88be5c2372be60'],
     ])('%s isUpdate=%s', (v, isUpdate, sha) => {
         expect(createHash('sha256').update(installerSplashHtml(v, isUpdate)).digest('hex')).toBe(sha);
     });

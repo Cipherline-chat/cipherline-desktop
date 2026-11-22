@@ -14,7 +14,7 @@ export const CancelServerStorageNotice: React.FC<{ overCount: number }> = ({ ove
         <p
             data-cancel-storage-notice
             className="text-[12.5px] leading-relaxed flex items-start gap-2"
-            style={{ color: 'var(--cl-glow)', margin: '0 0 12px' }}
+            style={{ color: 'var(--cl-glow-text)', margin: '0 0 12px' }}
         >
             <HardDrive size={13} className="shrink-0" style={{ marginTop: 3 }} />
             <span>{text}</span>

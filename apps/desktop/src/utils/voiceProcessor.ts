@@ -92,6 +92,13 @@ import { registerCtxForUnlock } from './audioUnlock';
 import { workletModuleUrl, forgetWorkletModuleUrl } from './workletModuleUrl';
 import { planVoiceChain, type VoiceChainAvailability, type VoiceChainPlan } from './voiceChain';
 import { NsLoadGuard, UnderrunWindow, readPlaybackStats, NS_LOAD_TICK_MS, type NsEngineRunning } from './nsLoadGuard';
+import { micSliderToGain, micSliderToDb } from './micGainLaw';
+import { engineSettingsFor } from './clAudioSettings';
+import { wantsNativeStrong, nativeEngineAvailable, openNativePort, onNativeEngineExit, closeNativeEngine } from './clAudioNative';
+import { CL_NATIVE_JITTER_FRAMES, CL_STRONG_ENGINE_DELAY_SAMPLES } from './clAudioLatency';
+import { loadClAudioWorkletSource, loadClAudioWasmBytes } from './clAudioSources';
+import { CL_AUDIO_PROCESSOR_NAME } from './clAudioWorkletNames';
+import { loadMicDeviceGain, saveMicDeviceGain } from './micDeviceGain';
 
 // ── Compressor node: always transparent ───────────────────────────────────────
 // The levelling compressor moved into agcKernel.js (see its DEFAULT_COMP_*
@@ -105,16 +112,6 @@ import { NsLoadGuard, UnderrunWindow, readPlaybackStats, NS_LOAD_TICK_MS, type N
 //
 // (Makeup GainNode after it: unity, same reason.)
 const COMPRESSOR_MAKEUP_GAIN = 1.0;
-
-// Settings mic-volume slider is 0..200 (% of unity). Convert to a linear
-// gain multiplier with a perceptual power curve so the slider feels uniform.
-// At slider=100 we still hit gain=1.0 exactly (no surprise change for users
-// who never touched the slider). exponent 1.25 is gentler than the per-user
-// playback curve (1.5) because outgoing voice goes through the compressor,
-// which already nonlinearizes things.
-const MIC_GAIN_EXPONENT = 1.25;
-const micSliderToGain = (slider: number): number =>
-    Math.pow(Math.max(0, slider) / 100, MIC_GAIN_EXPONENT);
 
 // ── Compressor node values (transparent: ratio 1 = no reduction, no make-up) ──
 const COMPRESSOR_BYPASS = { threshold: 0, knee: 0, ratio: 1, attack: 0.003, release: 0.25 };
@@ -396,6 +393,11 @@ export interface MicLevelSecond {
      *  mean-squares over the voiced ones, peak |output|, voiced quanta held down >= 1 dB by the
      *  compressor or limiter, output samples the mic-volume stage drives to full scale. */
     blocks: number; voiced: number; inMs: number; outMs: number; peak: number; held: number; clip: number;
+    /** New engine only: quanta inside a pause, summed input / output mean-squares over them, the loudest of them on
+     *  the wire (mean-square) and how many were louder than -50 dBFS on the wire (clAudioWorklet.js). */
+    pauseN?: number; pauseInMs?: number; pauseOutMs?: number; pauseMaxMs?: number; pauseLoud?: number;
+    /** New engine only: the noise profile actually running (0 off, 1 light, 2 strong, 3 strong standard model). */
+    engineNoise?: number;
     /** The mic-volume stage, dB (it follows the AGC). */
     micGainDb: number;
     /** Share of the second the voice gate was open (0..1); null before its first report. */
@@ -411,6 +413,15 @@ export interface MicLevelSecond {
      *  landed while voice was heard; null when none did. */
     rawMs: number | null;
     nsMs: number | null;
+    /** 'v2' when the new audio engine produced this second (absent = the legacy chain). Then gainDb is the engine's
+     *  learned device gain, speechDb its speech-gated input level, held is 0 (the engine has no separate hold counter),
+     *  and the fields below carry its own counters for the second. Numbers only. */
+    engine?: 'v2';
+    engineFrames?: number; engineBad?: number; engineResets?: number; engineIdle?: number; engineUnder?: number; mutedAtDevice?: boolean;
+    /** native Strong ran this second (utils/clAudioNative.ts): frames needed from the utility process, frames missing, watchdog frames,
+     *  hand-off ms percentiles of the second. Numbers only. */
+    engineNative?: boolean; nativeFrames?: number; nativeUnder?: number; nativeWatchdog?: number;
+    nativeP50?: number; nativeP95?: number; nativeP99?: number; nativeMax?: number;
 }
 
 export interface VoiceProcessorCallbacks {
@@ -452,6 +463,12 @@ export interface VoiceProcessorCallbacks {
     /** Once per call: the audio render thread kept missing its deadlines with
      *  Strong (RNNoise) running, so Light (Speex) took over — nsLoadGuard.ts. */
     onNsLoadFallback?: (info: { underrunMs: number; underrunEvents: number }) => void;
+    /** The new audio engine ('v2') failed at runtime (a wasm trap, a bad module): its worklet passes audio through
+     *  unprocessed and the legacy chain is rebuilt for the rest of the call (voiceProcessorManager.ts). */
+    onEngineFallback?: (info: { error: string }) => void;
+    /** Native Strong stopped for the rest of this call (too many missing frames, the utility process died, ...): the Light engine, which
+     *  ran time-aligned underneath, is what is heard from here on, with no gap. Once per call. `reason` is a short enum-like string. */
+    onNativeFallback?: (info: { reason: string }) => void;
     /** Every 10 s that had any render underrun: totals + the engine that was running. */
     onAudioRender?: (w: { underrunMs: number; underrunEvents: number; windowS: number; ns: NsEngineRunning }) => void;
 }
@@ -473,6 +490,21 @@ export class CipherlineVoiceProcessor {
      *  RNNOISE_SAMPLE_RATE. */
     private _nsSupported = true;
     private source?: MediaStreamAudioSourceNode;
+    /** The new audio engine's single worklet stage (only while audioEngine is 'v2' and it came up). */
+    private clNode?: AudioWorkletNode;
+    /** Which chain the CURRENT graph is: decided in init() from the settings, rebuilt through the manager when it changes. */
+    private _engineBuilt: 'legacy' | 'v2' = 'legacy';
+    /** The new engine failed at runtime on this processor: legacy for the rest of the call, until the user picks again. */
+    private _v2Failed = false;
+    private _captureDeviceId?: string;
+    private _clStats?: { deviceGainDb: number; inputLevelDbfs: number };
+    private _clGainTimer?: ReturnType<typeof setInterval>;
+    /** native Strong is attached to this processor's worklet (the page opened the utility-process port) */
+    private _natBuilt = false;
+    private _natAvail: boolean | null = null;
+    private _natFailed = false;
+    private _natUnsub?: () => void;
+    private _natGen = 0;
     private rnnoiseWorkletNode?: AudioWorkletNode;
     /** Light noise suppression (Speex). Always built alongside RNNoise so switching
      *  engines is a postMessage, never a graph splice; a plain copy while off. */
@@ -740,6 +772,24 @@ export class CipherlineVoiceProcessor {
             else registeredWorkletProcessors.set(ctx, new Set([processorName]));
         };
 
+        // ── New audio engine ('v2'): ONE worklet replaces NS + gate + mic gain + AGC + limiter ──
+        // Opt-in (settings.audioEngine, default 'legacy'). If it cannot be built the legacy chain below runs instead, so
+        // choosing it can never leave a call without a microphone. A runtime failure is handled by the manager
+        // (onEngineFallback -> re-attach with _v2Failed set).
+        this._engineBuilt = 'legacy';
+        if (this.wantsV2()) {
+            try {
+                await this.initV2(ctx, opts.track, addWorkletModule);
+                return;
+            } catch (err) {
+                console.error('[VoiceProcessor] New audio engine unavailable - using the current chain:', err);
+                this.teardownV2();
+                // Legacy for the rest of this processor's life (until the user picks an engine again): without this the
+                // manager would keep seeing a legacy graph that "wants" v2 and rebuild it on every settings change.
+                this._v2Failed = true;
+            }
+        }
+
         // ── Gate stage ──
         // Runs in the audio rendering thread every 128 samples (~2.67 ms).
         // Detection latency is imperceptible; no JS setInterval jitter. Its
@@ -752,7 +802,9 @@ export class CipherlineVoiceProcessor {
                 numberOfOutputs: 1,
                 outputChannelCount: [1],
             });
-            gate.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate });
+            // No automatic gate any more (the new engine's manual gate lives in the engine): this chain only runs as the
+            // fallback when the engine could not start, and must not add a gate the user has no control for.
+            gate.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate && this._settings.audioEngine !== 'v2' });
             gate.port.postMessage({ type: 'threshold', value: this._settings.voiceGateThreshold });
             gate.port.postMessage({ type: 'hold',      ms: 150 });
             if (this.gateMeterMs > 0) {
@@ -1146,6 +1198,218 @@ export class CipherlineVoiceProcessor {
         return { state, resumed: true };
     }
 
+    // ── New audio engine ('v2') ───────────────────────────────────────────────
+
+    /** The new engine is asked for, has not failed on this processor, and the context is the 48 kHz it needs. */
+    private wantsV2(settings: VoiceSettings = this._settings): boolean {
+        return settings.audioEngine === 'v2' && !this._v2Failed && this._nsSupported;
+    }
+
+    /** Which chain the live graph is ('legacy' before init). Diagnostics / tests. */
+    get engineBuilt(): 'legacy' | 'v2' {
+        return this._engineBuilt;
+    }
+
+    /** True when the live graph is not the chain `settings` ask for (the user switched engine mid-call, or the new
+     *  engine failed): the manager then swaps the processor through stopProcessor/setProcessor on the same sender. */
+    needsEngineRebuild(settings: VoiceSettings = this._settings): boolean {
+        if (!this.ctx) return false;
+        if ((this._engineBuilt === 'v2') !== this.wantsV2(settings)) return true;
+        // Strong picked mid-call while the graph was built without the native hand-off's reserved delay: rebuild once. initV2 settles
+        // _natAvail (true/false) on that rebuild, and a processor where native is unavailable or already failed is never rebuilt for it,
+        // so this cannot loop
+        return this._engineBuilt === 'v2' && this._natAvail !== false && !this._natBuilt && !this._natFailed && wantsNativeStrong(settings);
+    }
+
+    private makeEqFilters(ctx: AudioContext): BiquadFilterNode[] {
+        return EQ_FREQS.map((freq, i) => {
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'peaking';
+            filter.frequency.value = freq;
+            filter.Q.value = EQ_Q;
+            filter.gain.value = this._settings.eqEnabled ? (this._settings.eqBands[i] ?? 0) : 0;
+            return filter;
+        });
+    }
+
+    /**
+     * source -> clAudio worklet -> (EQ biquads) -> analyser -> destination. No gate, mic-volume GainNode, AGC worklet,
+     * NS worklets or compressor: the engine does all of that (utils/clAudioSettings.ts maps the settings). Throws when
+     * any part cannot be built; init() then falls back to the legacy chain.
+     */
+    private async initV2(
+        ctx: AudioContext,
+        track: MediaStreamTrack,
+        addWorkletModule: (source: string, processorName: string) => Promise<void>,
+    ) {
+        const [source, wasm] = await Promise.all([loadClAudioWorkletSource(), loadClAudioWasmBytes()]);
+        await addWorkletModule(source, CL_AUDIO_PROCESSOR_NAME);
+
+        let deviceId: string | undefined;
+        try { deviceId = track.getSettings().deviceId; } catch { /* a stopped track */ }
+        this._captureDeviceId = deviceId || undefined;
+        const initialGainDb = loadMicDeviceGain(this._captureDeviceId);
+        // Native Strong: only when this call's settings ask for Strong under v2 AND the utility-process engine is installed. The worklet
+        // reserves the hand-off's playout delay up front (a later change would glitch), so the decision is made here, before it exists.
+        this._natAvail = wantsNativeStrong(this._settings) && !this._natFailed ? await nativeEngineAvailable() : (this._natAvail ?? null);
+        const native = this._natAvail === true && wantsNativeStrong(this._settings) && !this._natFailed;
+        this._natBuilt = native;
+
+        const node = new AudioWorkletNode(ctx, CL_AUDIO_PROCESSOR_NAME, {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            processorOptions: {
+                wasmBytes: wasm,
+                settings: engineSettingsFor(this._settings),
+                ...(initialGainDb !== null ? { initialDeviceGainDb: initialGainDb } : {}),
+                ...(native ? { native: true, nativeJitterFrames: CL_NATIVE_JITTER_FRAMES, nativeDelaySamples: CL_STRONG_ENGINE_DELAY_SAMPLES } : {}),
+            },
+        });
+        this.clNode = node;
+        node.port.onmessage = ({ data }: MessageEvent) => {
+            if (data?.type === 'stats') this.onEngineStats(data);
+            else if (data?.type === 'level') {
+                // The Settings meter: raw mic level (the quantity the manual gate compares) + whether the gate is open.
+                if (typeof data.dbfs === 'number' && Number.isFinite(data.dbfs)) this._callbacks.onGateLevel?.(data.dbfs, data.open !== false);
+            } else if (data?.type === 'failed') this.onEngineFailed(String(data.error ?? 'unknown'));
+            else if (data?.type === 'nativeFailed') this.onNativeFailed(String(data.reason ?? 'unknown'));
+        };
+        if (native) void this.attachNative(node);
+
+        if (this.gateMeterMs > 0) node.port.postMessage({ type: 'reportLevel', ms: this.gateMeterMs });
+
+        this.source = ctx.createMediaStreamSource(new MediaStream([track]));
+        this.analyser = ctx.createAnalyser();
+        this.analyser.fftSize = 256;
+        this.analyser.smoothingTimeConstant = 0.3;
+        this.eqFilters = this.makeEqFilters(ctx);
+        this.destination = ctx.createMediaStreamDestination();
+
+        let current: AudioNode = this.source;
+        current.connect(node);
+        current = node;
+        for (const filter of this.eqFilters) {
+            current.connect(filter);
+            current = filter;
+        }
+        current.connect(this.analyser);
+        this.analyser.connect(this.destination);
+
+        this.processedTrack = this.destination.stream.getAudioTracks()[0];
+        this._engineBuilt = 'v2';
+        this.startLevelPolling();
+        this.startLoadGuard();
+        // The learned per-microphone gain is remembered so the next call starts settled; saved here every ~10 s and on destroy.
+        this._clGainTimer = setInterval(() => this.persistEngineGain(), CL_GAIN_SAVE_MS);
+        console.log('[VoiceProcessor] Initialized (new audio engine, 48 kHz)');
+    }
+
+    /** Open the utility-process engine and hand its port to the worklet. Any failure: the worklet drops the reserved delay (still at startup). */
+    private async attachNative(node: AudioWorkletNode) {
+        const gen = ++this._natGen;
+        const port = await openNativePort();
+        if (gen !== this._natGen || this.clNode !== node) { port?.close(); return; } // destroyed / rebuilt while waiting
+        if (!port) { node.port.postMessage({ type: 'nativeAbort' }); this._natFailed = true; console.warn('[VoiceProcessor] Native Strong could not be opened; Strong runs as Light'); return; }
+        this._natUnsub = onNativeEngineExit(() => { try { node.port.postMessage({ type: 'nativeExit' }); } catch { /* node gone */ } });
+        node.port.postMessage({ type: 'nativePort', port }, [port]);
+    }
+
+    private detachNative() {
+        this._natGen++;
+        this._natUnsub?.(); this._natUnsub = undefined;
+        if (this._natBuilt) void closeNativeEngine();
+        this._natBuilt = false;
+    }
+
+    private onNativeFailed(reason: string) {
+        if (this._natFailed) return;
+        this._natFailed = true;
+        console.warn('[VoiceProcessor] Native Strong stopped (' + reason + '); the Light engine, running underneath, plays for the rest of this call');
+        this._natUnsub?.(); this._natUnsub = undefined;
+        void closeNativeEngine();
+        this._callbacks.onNativeFallback?.({ reason: reason.replace(/[^a-z0-9 _.:-]/gi, '').slice(0, 40) });
+    }
+
+    /** Undo a half-built v2 graph (init() is about to build the legacy one). */
+    private teardownV2() {
+        this.detachNative();
+        if (this._clGainTimer) { clearInterval(this._clGainTimer); this._clGainTimer = undefined; }
+        if (this.clNode) {
+            this.clNode.port.onmessage = null;
+            try { this.clNode.disconnect(); } catch { /* never connected */ }
+            this.clNode = undefined;
+        }
+        try { this.source?.disconnect(); } catch { /* never connected */ }
+        this.source = undefined;
+        this.eqFilters.forEach(f => { try { f.disconnect(); } catch { /* never connected */ } });
+        this.eqFilters = [];
+        try { this.analyser?.disconnect(); } catch { /* never connected */ }
+        this.analyser = undefined;
+        try { this.destination?.disconnect(); } catch { /* never connected */ }
+        this.destination = undefined;
+        this.processedTrack = undefined;
+        this._engineBuilt = 'legacy';
+    }
+
+    private persistEngineGain() {
+        const st = this._clStats;
+        if (!st || !this._captureDeviceId) return;
+        // -120 = the engine has not heard speech yet: its gain is still the starting value, not something it learned.
+        if (!(st.inputLevelDbfs > -119)) return;
+        saveMicDeviceGain(this._captureDeviceId, st.deviceGainDb);
+    }
+
+    private onEngineFailed(error: string) {
+        if (this._v2Failed) return;
+        this._v2Failed = true;
+        console.warn('[VoiceProcessor] New audio engine failed - audio passes through unprocessed; the current chain takes over for this call:', error);
+        this.persistEngineGain();
+        this._callbacks.onEngineFallback?.({ error });
+    }
+
+    /** Native Strong's part of the once-a-second report (counters of that second are the deltas of the worklet's cumulative ones). */
+    private _natPrev = { frames: 0, under: 0, wd: 0 };
+    private nativeSecond(d: Record<string, unknown>): Partial<MicLevelSecond> {
+        if (d.engineNative !== true) return {};
+        const nat = (d.native && typeof d.native === 'object' ? d.native : {}) as Record<string, unknown>;
+        const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+        const host = (nat.host && typeof nat.host === 'object' ? nat.host : {}) as Record<string, unknown>;
+        const frames = n(nat.frames), under = n(nat.underrun), wd = n(host.watchdogFrames);
+        const out = {
+            engineNative: true,
+            nativeFrames: Math.max(0, frames - this._natPrev.frames), nativeUnder: Math.max(0, under - this._natPrev.under), nativeWatchdog: Math.max(0, wd - this._natPrev.wd),
+            nativeP50: n(nat.rttP50), nativeP95: n(nat.rttP95), nativeP99: n(nat.rttP99), nativeMax: n(nat.rttMax),
+        };
+        this._natPrev = { frames, under, wd };
+        return out;
+    }
+
+    /** The engine worklet's once-a-second report -> the diagnostics fields that already exist. Levels and counters only. */
+    private onEngineStats(d: Record<string, unknown>) {
+        const n = (v: unknown, dflt = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : dflt);
+        const gainDb = n(d.deviceGainDb);
+        const level = n(d.inputLevelDbfs, -120);
+        const voiceActive = n(d.speechProb) >= 0.5;
+        this._clStats = { deviceGainDb: gainDb, inputLevelDbfs: level };
+        this.lastVoiceActive = voiceActive;
+        const speechDb = level > -119 ? level : null;
+        this._callbacks.onAgcStats?.({ gainDb, voiceActive, speechDb });
+        this._callbacks.onMicLevelStats?.({
+            gainDb, voiceActive, speechDb,
+            blocks: n(d.blocks), voiced: n(d.voiced), inMs: n(d.inMs), outMs: n(d.outMs),
+            peak: n(d.peak), held: 0, clip: n(d.clip),
+            pauseN: n(d.pauseN), pauseInMs: n(d.pauseInMs), pauseOutMs: n(d.pauseOutMs), pauseMaxMs: n(d.pauseMaxMs), pauseLoud: n(d.pauseLoud),
+            engineNoise: n(d.effectiveNoise, -1),
+            micGainDb: engineSettingsFor(this._settings).manualGainDb,
+            gateOpenFrac: null, rawMs: null, nsMs: null,
+            engine: 'v2',
+            engineFrames: n(d.frames), engineBad: n(d.badSamples) + n(d.clamped), engineResets: n(d.resets), engineIdle: n(d.idleFrames),
+            engineUnder: n(d.underrun), mutedAtDevice: d.mutedAtDevice === true,
+            ...this.nativeSecond(d),
+        });
+    }
+
     async restart(opts: { track: MediaStreamTrack; audioContext?: AudioContext; kind?: string }) {
         await this.destroy();
         await this.init(opts);
@@ -1154,6 +1418,15 @@ export class CipherlineVoiceProcessor {
     async destroy() {
         this.stopLevelPolling();
         this.stopLoadGuard();
+        this.persistEngineGain();
+        if (this._clGainTimer) { clearInterval(this._clGainTimer); this._clGainTimer = undefined; }
+        this.detachNative();
+        if (this.clNode) {
+            this.clNode.port.onmessage = null;
+            try { this.clNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+            this.clNode = undefined;
+        }
+        this._clStats = undefined;
 
         // Terminate the RNNoise Worker
         if (this.rnnoiseWorker) {
@@ -1225,9 +1498,24 @@ export class CipherlineVoiceProcessor {
     updateSettings(settings: VoiceSettings) {
         const prev = this._settings;
         this._settings = { ...settings };
+        // Picking an engine again is a fresh choice: a runtime failure no longer pins this call to the legacy chain.
+        if (prev.audioEngine !== settings.audioEngine) this._v2Failed = false;
 
         if (!this.ctx) return;
         const t = this.ctx.currentTime;
+
+        // The new engine takes the whole voice-processing state in one message; the engine switch itself (and EQ below)
+        // are handled by the manager's re-attach and the biquads. Gate / mic volume / AGC messages below find no node.
+        if (this._engineBuilt === 'v2' && this.clNode) {
+            this.clNode.port.postMessage({ type: 'setSettings', ...engineSettingsFor(settings) });
+            // Strong switched off / to Light mid-call: stop the native stage (silently); Light is already what plays underneath
+            if (this._natBuilt && !wantsNativeStrong(settings)) {
+                this.clNode.port.postMessage({ type: 'nativeOff' }); this._natUnsub?.(); this._natUnsub = undefined; void closeNativeEngine();
+                // Native is no longer part of this graph. Without this, choosing Strong again later looked "already built",
+                // nothing re-attached, and Strong silently ran as Light for the rest of the call (report 85ff3561, 2026-11-21).
+                this._natBuilt = false;
+            }
+        }
 
         // ── Noise suppression — toggle via postMessage to worklet ──
         // No stream restart, no graph change, no audio gap. If the Worker hasn't
@@ -1302,8 +1590,7 @@ export class CipherlineVoiceProcessor {
 
     /** The mic-volume stage in dB (it sits after the AGC and is not limited by it). */
     private micGainDb(slider: number = this._settings.micVolume): number {
-        const g = micSliderToGain(slider);
-        return g > 0 ? 20 * Math.log10(g) : -120;
+        return micSliderToDb(slider);
     }
 
     private startLevelPolling() {
@@ -1390,3 +1677,6 @@ export class CipherlineVoiceProcessor {
 
 /** Underrun telemetry window, in guard ticks (seconds). */
 const NS_LOAD_REPORT_TICKS = 10;
+
+/** How often the new engine's learned per-microphone gain is saved while a call runs (and once more on destroy). */
+const CL_GAIN_SAVE_MS = 10_000;

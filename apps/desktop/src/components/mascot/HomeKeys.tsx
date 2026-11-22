@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { celebrationReducedNow, MOTION_PREFS_CHANGED_EVENT } from '../../utils/a11y/motionPrefs';
 import { Keys, type KeysFace, type KeysMood, type KeysSignal, type PokeReaction } from './Keys';
 import { isMotionActive, onMotionChange } from '../../utils/idleMotion';
 import {
@@ -149,8 +150,8 @@ const unseen = () =>
     typeof document !== 'undefined' && (document.hidden || !isMotionActive()
         || document.documentElement.getAttribute('data-cl-occluded') === 'on');
 
-const reducedMotion = () =>
-    typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+// Mascot idle: reduced motion OR "Celebrations and effects" off.
+const reducedMotion = () => typeof window !== 'undefined' && celebrationReducedNow();
 
 /** The keyframe's animated properties (not its offset / easing / composite). */
 const propsOf = (k: Keyframe) => Object.keys(k).filter(p => p !== 'offset' && p !== 'easing' && p !== 'composite');
@@ -707,6 +708,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         window.addEventListener('resize', stale, { passive: true });
         window.addEventListener('scroll', stale, { passive: true, capture: true });
         mq?.addEventListener?.('change', sync);
+        window.addEventListener(MOTION_PREFS_CHANGED_EVENT, sync);
         return () => {
             ctl.destroy();
             el.removeEventListener('pointerenter', onEnter);
@@ -716,6 +718,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
             window.removeEventListener('resize', stale);
             window.removeEventListener('scroll', stale, { capture: true });
             mq?.removeEventListener?.('change', sync);
+            window.removeEventListener(MOTION_PREFS_CHANGED_EVENT, sync);
         };
     }, []);
 

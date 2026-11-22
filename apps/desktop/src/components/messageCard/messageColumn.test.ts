@@ -15,9 +15,9 @@ const cp = readFileSync(join(__dirname, '..', 'ChatPane.tsx'), 'utf8');
 describe('message column', () => {
     it('the gutter is ChatPane\'s row: pl-3 (12) + w-10 avatar (40) + gap-3 (12) + pr-2 (8)', () => {
         expect(MESSAGE_ROW_GUTTER_PX).toBe(72);
-        expect(cp).toMatch(/className=\{`group relative flex gap-3 py-0\.5 pr-2 pl-3 /);
-        expect(cp).toMatch(/className="w-10 h-10 shrink-0 mt-0\.5 ring-1 ring-white\/5 shadow-sm"/);
-        expect(cp).toMatch(/<div className="w-10 shrink-0" \/>/);
+        expect(cp).toMatch(/className=\{`cl-msg-row group relative flex gap-3 py-0\.5 pr-2 pl-3 /);
+        expect(cp).toMatch(/className="cl-msg-av w-10 h-10 shrink-0 mt-0\.5 ring-1 ring-white\/5 shadow-sm"/);
+        expect(cp).toMatch(/<div className="cl-msg-gutter w-10 shrink-0"/);
         expect(cp).toMatch(/<div className="relative flex flex-col min-w-0 flex-1">/);
     });
     it('feed content width minus the gutter (the scrollbar is already outside clientWidth)', () => {

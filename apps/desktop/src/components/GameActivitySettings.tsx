@@ -193,7 +193,7 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                 <p className="sd-sub">Processes you’ve tagged as games by hand.</p>
 
                 {addingGame && (
-                    <div className="mb-3 p-3 rounded-lg space-y-2" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                    <div className="mb-3 p-3 rounded-lg space-y-2" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                         <div className="flex items-center gap-2">
                             <div style={{ flex: 1 }}>
                                 <ClSelect<string>
@@ -248,7 +248,7 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                     <div className="space-y-1">
                         {settings.customGames.map(game => (
                             <div key={game.processName} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.03] group">
-                                <Gamepad2 size={14} style={{ color: 'var(--cl-lume)', opacity: .6, flexShrink: 0 }} />
+                                <Gamepad2 size={14} style={{ color: 'var(--cl-lume-text)', opacity: .6, flexShrink: 0 }} />
                                 <div className="flex-1 min-w-0">
                                     <p className="text-sm truncate" style={{ color: 'var(--cl-text)' }}>{game.displayName}</p>
                                     <p className="text-[11px] font-mono truncate" style={{ color: 'var(--cl-faint)' }}>{game.processName}</p>
@@ -289,7 +289,7 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                             </ClButton>
                         </div>
                     <div className="mt-2">
-                        <div className="max-h-60 overflow-y-auto rounded-lg" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                        <div className="max-h-60 overflow-y-auto rounded-lg" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                             {processes.length === 0 ? (
                                 <p className="sd-empty">
                                     {loadingProcesses ? 'Listening for processes…' : 'No processes found.'}
@@ -327,12 +327,12 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                                                 opacity: isCustomGame ? .8 : isIgnored ? .5 : 1,
                                                 textDecoration: isIgnored ? 'line-through' : undefined,
                                                 background: isCustomGame ? 'rgba(37,224,200,.04)' : 'transparent',
-                                                borderBottom: '1px solid rgba(255,255,255,.02)',
+                                                borderBottom: '1px solid rgb(var(--cl-bright-rgb) / .02)',
                                                 transition: 'background .1s',
                                             }}
                                             onMouseEnter={e => {
                                                 if (!isCustomGame && !isIgnored)
-                                                    (e.currentTarget as HTMLDivElement).style.background = 'rgba(255,255,255,.03)';
+                                                    (e.currentTarget as HTMLDivElement).style.background = 'rgb(var(--cl-bright-rgb) / .03)';
                                             }}
                                             onMouseLeave={e => {
                                                 (e.currentTarget as HTMLDivElement).style.background = isCustomGame ? 'rgba(37,224,200,.04)' : 'transparent';
@@ -343,7 +343,7 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                                                 : 'Click to add as game, right-click to ignore'
                                             }
                                         >
-                                            {isCustomGame && <Gamepad2 size={11} style={{ color: 'var(--cl-lume)', opacity: .5, flexShrink: 0 }} />}
+                                            {isCustomGame && <Gamepad2 size={11} style={{ color: 'var(--cl-lume-text)', opacity: .5, flexShrink: 0 }} />}
                                             {isIgnored && <EyeOff size={11} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />}
                                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proc}</span>
                                         </div>

@@ -40,8 +40,8 @@ export const ProfilePreviewCard: React.FC<{
             bannerSrc={seen.banner ? data.bannerSrc ?? null : null}
             bannerFriendsOnly={showLocks && friendsOnly.includes('banner')}
             avatarLabel="Your avatar"
-            avatarBadge={<span className="pcd-dot" style={{ backgroundColor: '#4ADE80' }} title="Online" />}
-            presence={<span className="pcd-status-line"><span className="pcd-status-dot" style={{ backgroundColor: '#4ADE80' }} aria-hidden="true" /><b style={{ color: '#4ADE80' }}>Online</b></span>}
+            avatarBadge={<span className="pcd-dot" style={{ backgroundColor: 'var(--cl-ok)' }} title="Online" />}
+            presence={<span className="pcd-status-line"><span className="pcd-status-dot" style={{ backgroundColor: 'var(--cl-ok)' }} aria-hidden="true" /><b style={{ color: 'var(--cl-ok-text)' }}>Online</b></span>}
             data={previewCardData(data, seen, friendsOnly, asFriend)}
             // What the viewer's buttons will be; inert here (this is a picture of the card).
             actionsInert

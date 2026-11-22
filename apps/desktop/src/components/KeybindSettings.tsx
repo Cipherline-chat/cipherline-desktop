@@ -8,6 +8,8 @@ import {
 import { ClButton, ClToggle } from './cl';
 import { PttKeybind } from './PttKeybind';
 import { PTT_NO_KEY_HINT } from '../utils/pushToTalk';
+import { ELEVATED_GAME_HELP, holdKeyFocusNote, isWindowsPlatform } from '../utils/holdKeys';
+import { useHoldKeySupport } from '../hooks/useHoldKeySupport';
 import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 import { useEscape } from '../hooks/useEscape';
 import { OPEN_SHORTCUTS_EVENT } from '../utils/shortcutsSheet';
@@ -63,6 +65,9 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds, voic
     const [linesCopied, setLinesCopied] = useState(false);
     // Bumped when push to talk is switched on with no key: opens the key field's capture straight away.
     const [pttCapture, setPttCapture] = useState(0);
+    // Whether each hold key can be watched while another app has focus here (main's dry run).
+    const pttFocusNote = holdKeyFocusNote(useHoldKeySupport(voice?.settings.pushToTalk ? voice.settings.pushToTalkKey : null));
+    const ptmFocusNote = holdKeyFocusNote(useHoldKeySupport(voice?.settings.pushToMuteKey ?? null));
     // A key the desktop remembers can only be changed in the desktop's own settings (KDE ignores a later one).
     const desktopKeys = globalShortcutStatus?.portal?.desktopKeys ?? {};
     const elsewhere = new Set(globalShortcutStatus?.portal?.elsewhere ?? []);
@@ -218,7 +223,7 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds, voic
                                 <b>{action.label}</b>
                                 <span>{action.description}</span>
                                 {elsewhere.has(action.id) && desktopKeys[action.id] && (
-                                    <span data-testid="desktop-key-hint" style={{ color: 'var(--cl-glow)' }}>
+                                    <span data-testid="desktop-key-hint" style={{ color: 'var(--cl-glow-text)' }}>
                                         System-wide your desktop uses {desktopKeys[action.id]} for this
                                     </span>
                                 )}
@@ -264,9 +269,12 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds, voic
                             <div className="sd-row" data-testid="ptt-keybind-row">
                                 <div className="sd-rl">
                                     <b>Push to talk</b>
-                                    <span>Hold to transmit; your mic is closed otherwise. Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal). The same setting as Voice &amp; Video.</span>
+                                    <span>Hold to transmit; your mic is closed otherwise. Any key, a numpad key or a mouse button (middle, 4, 5). Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal). The same setting as Voice &amp; Video.{isWindowsPlatform() ? ` ${ELEVATED_GAME_HELP}` : ''}</span>
                                     {voice.settings.pushToTalk && !voice.settings.pushToTalkKey && (
-                                        <span role="status" data-testid="ptt-no-key-hint" style={{ color: 'var(--cl-glow)' }}>{PTT_NO_KEY_HINT}</span>
+                                        <span role="status" data-testid="ptt-no-key-hint" style={{ color: 'var(--cl-glow-text)' }}>{PTT_NO_KEY_HINT}</span>
+                                    )}
+                                    {voice.settings.pushToTalkKey && pttFocusNote && (
+                                        <span role="status" data-testid="ptt-background-hint" style={{ color: 'var(--cl-glow-text)' }}>{pttFocusNote}</span>
                                     )}
                                 </div>
                                 <div className="sd-rc">
@@ -280,6 +288,9 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds, voic
                                 <div className="sd-rl">
                                     <b>Push to mute</b>
                                     <span>Hold to be muted; let go and your mic goes back to how it was (it never unmutes you if you were already muted). Works while another program has focus. Not used while Push to talk is on.</span>
+                                    {ptmFocusNote && (
+                                        <span role="status" data-testid="ptm-background-hint" style={{ color: 'var(--cl-glow-text)' }}>{ptmFocusNote}</span>
+                                    )}
                                 </div>
                                 <div className="sd-rc">
                                     <PttKeybind value={voice.settings.pushToMuteKey} onSet={voice.setPushToMuteKey} what="push to mute" />

@@ -25,7 +25,9 @@ export const BETA_EVENT_KINDS = [
     'call_audio_overload',
     // App
     'app_freeze', 'memory_high', 'startup_slow', 'unhandled_error', 'ws_churn', 'gpu_fallback',
-    'update_failed', 'backup_failed',
+    'update_failed', 'backup_failed', 'store_load_failed',
+    // Discord import (labels + counts only: utils/discordImport/importDiagnostics.ts)
+    'import_channel_failed', 'import_files_skipped',
 ] as const;
 export type BetaEventKind = (typeof BETA_EVENT_KINDS)[number];
 

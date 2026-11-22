@@ -17,7 +17,7 @@
 @keyframes mo-wish-spin { from { transform: rotate(0); } to { transform: rotate(300deg); } }
 .mo-wish-tail {
   position: absolute; right: 10px; top: -5px; width: 460px; height: 10px; border-radius: 5px;
-  background: linear-gradient(90deg, rgba(255, 201, 77, 0), rgba(255, 233, 170, .55) 60%, #FFF6D6);
+  background: linear-gradient(90deg, rgb(var(--cl-glow-rgb) / 0), rgba(255, 233, 170, .55) 60%, #FFF6D6);
   transform-origin: 100% 50%;
   animation: mo-wish-tail 2s ease-out .5s both;
 }
@@ -35,4 +35,4 @@
   top: -4vh; font-size: 26px; padding: 12px 28px;
   animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.1s both;
 }
-.mo-wish-pill b { color: var(--cl-glow, #FFC94D); }
+.mo-wish-pill b { color: var(--cl-glow, var(--cl-glow-text)); }

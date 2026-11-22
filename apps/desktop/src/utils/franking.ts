@@ -27,6 +27,7 @@
  */
 
 import { sha256BlobOffThread } from './attachmentCryptoWorker';
+import { stickerReportText } from './stickers/wire';
 
 export const FRANK_VERSION = 1;
 export const FRANK_MSG_MAGIC = 'CLFRANK1';
@@ -194,7 +195,18 @@ export function frankBody(content: unknown): { kind: FrankKind; body: string } |
     if (!isObj(content)) return null;
     const c = content as AnyContent;
     switch (c.type) {
-        case 'text':
+        case 'text': {
+            // A sticker message commits to its text PLUS the sticker as a
+            // `<:name:id>` token (utils/stickers/wire.ts stickerReportText), so
+            // the reported sticker's identity is covered and its image reaches
+            // the moderator through the custom-emoji evidence path. Still kind
+            // 'text': the API needs no change. A client that predates stickers
+            // commits/recomputes the bare text, so ITS report of a sticker
+            // message is "unverified" (content_changed), never wrongly verified.
+            const sticker = stickerReportText(c);
+            if (sticker) return { kind: 'text', body: sticker };
+            return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: c.text } : null;
+        }
         case 'edit':
             return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: c.text } : null;
         case 'attachment': {

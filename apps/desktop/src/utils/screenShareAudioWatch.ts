@@ -31,6 +31,7 @@
  * Pure — structural types only — so the decisions are testable without LiveKit.
  */
 import { Track } from 'livekit-client';
+import { shareAudioOwnerIdentity } from './shareAudioHelper';
 
 /** Structural slice of a LiveKit RemoteTrackPublication. */
 export interface ShareAudioPublicationLike {
@@ -52,6 +53,37 @@ export interface ShareAudioParticipantLike {
     // `unknown`: LiveKit types the result as the base TrackPublication, which
     // has neither isDesired nor setSubscribed — narrowed below.
     getTrackPublication(source: Track.Source): unknown;
+    /**
+     * Every publication, so a share-audio track a client published under the
+     * WRONG source (see {@link isShareAudioPublication}) is found too. Optional:
+     * the by-source lookup alone still covers every client that follows the
+     * contract.
+     */
+    readonly trackPublications?: ReadonlyMap<string, unknown>;
+}
+
+/**
+ * Name a share-audio track carries when its publisher did not (or could not)
+ * tag it with Track.Source.ScreenShareAudio: desktop publishes 'screen-audio',
+ * LiveKit's own default is 'screen_share_audio'.
+ */
+const SHARE_AUDIO_NAME = /^screen[-_ ]?(share[-_ ]?)?audio$/i;
+
+/**
+ * Whether a publication is a screen share's audio. By SOURCE first (the
+ * contract); additionally an audio track with an UNKNOWN source whose name says
+ * it is share audio. Desktop never plays such a track (its playback chains key
+ * on Microphone / ScreenShareAudio), but it would still be received, so it is
+ * held to the same watch rule instead of arriving for everyone. A track under
+ * Microphone is never matched here: it is the voice.
+ */
+export function isShareAudioPublication(pub: unknown): boolean {
+    if (!pub || typeof pub !== 'object') return false;
+    const p = pub as { source?: Track.Source; kind?: unknown; name?: unknown };
+    if (p.source === Track.Source.ScreenShareAudio) return true;
+    return p.source === Track.Source.Unknown
+        && (p.kind === undefined || p.kind === Track.Kind.Audio)
+        && typeof p.name === 'string' && SHARE_AUDIO_NAME.test(p.name);
 }
 
 /**
@@ -65,7 +97,10 @@ export function wantsShareAudio(
     watched: ReadonlySet<string>,
     localIdentity?: string,
 ): boolean {
-    return identity !== localIdentity && watched.has(identity);
+    // A phone's share-audio helper connection (`<userId>~share-audio`) carries its sharer's share audio:
+    // it follows the SHARER's watch decision (and the sharer being yourself).
+    const owner = shareAudioOwnerIdentity(identity) ?? identity;
+    return owner !== localIdentity && identity !== localIdentity && watched.has(owner);
 }
 
 /**
@@ -113,15 +148,20 @@ export function reconcileShareAudioSubscriptions(
     const result: ShareAudioReconcileResult = { subscribed: [], unsubscribed: [] };
     for (const p of participants) {
         if (p.identity === localIdentity) continue;
-        const pub = asPublication(p.getTrackPublication(Track.Source.ScreenShareAudio));
-        if (!pub) continue;
+        const candidates = new Set<unknown>([p.getTrackPublication(Track.Source.ScreenShareAudio)]);
+        for (const other of p.trackPublications?.values() ?? []) {
+            if (isShareAudioPublication(other)) candidates.add(other);
+        }
         const want = wantsShareAudio(p.identity, watched, localIdentity);
-        if (pub.isDesired === want) continue;
-        try {
-            pub.setSubscribed(want);
-            (want ? result.subscribed : result.unsubscribed).push(p.identity);
-        } catch (e) {
-            console.warn('[ScreenShareAudio] subscription update failed', p.identity, e);
+        for (const c of candidates) {
+            const pub = asPublication(c);
+            if (!pub || pub.isDesired === want) continue;
+            try {
+                pub.setSubscribed(want);
+                (want ? result.subscribed : result.unsubscribed).push(p.identity);
+            } catch (e) {
+                console.warn('[ScreenShareAudio] subscription update failed', p.identity, e);
+            }
         }
     }
     return result;

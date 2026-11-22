@@ -2,7 +2,6 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallba
 import '@livekit/components-styles';
 import {
     LiveKitRoom,
-    useParticipants,
     useLocalParticipant,
     useRoomContext,
 } from '@livekit/components-react';
@@ -35,7 +34,7 @@ import { recordMicLevelSecond, resetMicLevelLog } from '../utils/micLevelLog';
 import { publishGateCutSecond } from '../utils/gateCut';
 import * as audioHealth from '../utils/audioHealth';
 import { setCurrentPipelineDbfs, resetPipelineDbfs } from '../utils/micLevelRegistry';
-import { decideDisconnectHandling } from '../utils/callTransition';
+import { decideDisconnectHandling, isDisplacedByOtherConnection } from '../utils/callTransition';
 import { shouldPublishMicAtConnect } from '../utils/selfCallIntent';
 import { beginActivity, trackActivity } from '../utils/freezeLog';
 import { CallDiagnosticsRecorder } from './diagnostics/CallDiagnosticsRecorder';
@@ -50,6 +49,7 @@ import { RotatingKeyProvider } from '../utils/e2eeKeyRing';
 import { TrackCueController, type CuePublication, type CueParticipant } from '../utils/callTrackCues';
 import { shareHold, attachShareHoldToRoom, type ShareHoldRoom } from '../utils/shareHold';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
+import { useCallParticipants } from '../hooks/useCallParticipants';
 import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
 import { GamingVideoGuard } from './call/GamingVideoGuard';
 import { ShareBoostGuard } from './call/ShareBoostGuard';
@@ -218,7 +218,7 @@ const CallSpeakingReporter = ({
     onParticipantCount: (count: number) => void;
     onParticipantIdentities?: (identities: string[]) => void;
 }) => {
-    const participants = useParticipants();
+    const participants = useCallParticipants();
     const { localParticipant } = useLocalParticipant();
 
     // Stable dependency string avoids excessive re-renders
@@ -257,7 +257,7 @@ interface CallPaneProps {
     e2eeKeyB64: string;
     /** The call-key store's epoch for `e2eeKeyB64` (DM/group calls); undefined otherwise. */
     e2eeKeyEpoch?: number;
-    onDisconnect: (wasLastPerson?: boolean, deliberate?: boolean) => void;
+    onDisconnect: (wasLastPerson?: boolean, deliberate?: boolean, displaced?: boolean) => void;
     /** Forwarded to SidebarConference's onInactivityWarning — see its doc
      *  comment for why Dashboard needs this to avoid a duplicate SoloKickDialog. */
     onInactivityWarning?: (active: boolean) => void;
@@ -330,7 +330,7 @@ interface CallPaneProps {
 }
 
 const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiator?: boolean; noRinging?: boolean; roomConnected: boolean }) => {
-    const participants = useParticipants(ROSTER_ONLY); // only .length is read — see utils/callRosterEvents.ts
+    const participants = useCallParticipants(ROSTER_ONLY); // only .length is read — see utils/callRosterEvents.ts
     const prevCountRef = useRef(participants.length);
     const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
 
@@ -891,6 +891,22 @@ export const CallPane = ({
                     message: 'Your PC is too busy to run Strong noise suppression smoothly, so Light is on for the rest of this call. Pick a mode in Settings to change it.',
                 });
             },
+            onEngineFallback: () => {
+                logCallEvent('mic_engine', { engine: 'legacy', reason: 'fallback' });
+                toast.push({
+                    kind: 'info',
+                    title: 'Switched to basic audio processing',
+                    message: 'The audio engine hit a problem, so a simpler chain is on for the rest of this call. Your voice kept going the whole time.',
+                });
+            },
+            onNativeFallback: ({ reason }) => {
+                logCallEvent('mic_engine', { engine: 'v2', engine_native: false, reason: 'native_fallback', native_reason: reason });
+                toast.push({
+                    kind: 'info',
+                    title: 'Strong has switched to Light',
+                    message: 'This PC could not keep up with Strong, so Light is on for the rest of this call. Your voice kept going the whole time.',
+                });
+            },
             onAudioRender: ({ underrunMs, underrunEvents, windowS, ns }) => {
                 audioHealth.recordRenderUnderrun(underrunMs);
                 logCallEvent('audio_render', { underrun_ms: underrunMs, underrun_events: underrunEvents, window_s: windowS, ns });
@@ -1240,7 +1256,9 @@ export const CallPane = ({
                         toast.push({ kind, title, message });
                     }
                     if (handling.teardown) noteBetaDisconnect(reason); // beta diagnostics: why the call ended (enum)
-                    if (handling.teardown) onDisconnect();
+                    // displaced = the account is still in this call on another
+                    // connection: tear down here, tell the server nothing.
+                    if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));
                 }}
                 onError={(err) => {
                     // A microphone / camera that can't be opened is not a failed

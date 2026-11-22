@@ -23,7 +23,7 @@ export function signalQuality(pingMs: number | null, lossPercent: number | null)
 
     const loss = lossPercent ?? 0;
 
-    if (pingMs < 80  && loss < 1)  return { bars: 4, color: '#4ade80' }; // green-400
+    if (pingMs < 80  && loss < 1)  return { bars: 4, color: 'var(--cl-ok-text)' }; // green-400
     if (pingMs < 150 && loss < 5)  return { bars: 3, color: '#86efac' }; // green-300
     if (pingMs < 250 && loss < 15) return { bars: 2, color: '#facc15' }; // yellow-400
     return                                { bars: 1, color: '#f87171' }; // red-400
@@ -83,7 +83,7 @@ export const CallStatsPill: React.FC<CallStatsPillProps> = ({ stats, className =
 
     return (
         <div
-            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-black/30 backdrop-blur-sm border border-white/[0.06] select-none cursor-default ${className}`}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-pure-black/30 backdrop-blur-sm border border-pure-white/[0.06] select-none cursor-default ${className}`}
             onMouseEnter={handleEnter}
             onMouseLeave={handleLeave}
         >
@@ -103,7 +103,7 @@ export const CallStatsPill: React.FC<CallStatsPillProps> = ({ stats, className =
                     transition: 'max-width 200ms ease, opacity 180ms ease',
                 }}
             >
-                <span className="text-white/20 text-[10px] mx-1 shrink-0">·</span>
+                <span className="text-pure-white/20 text-[10px] mx-1 shrink-0">·</span>
                 <span className={`text-[10px] font-mono font-medium tabular-nums whitespace-nowrap ${lossColor(packetLossPercent)}`}>
                     {packetLossPercent !== null ? `${packetLossPercent}%` : '—'}
                     <span className="text-gray-500 font-normal ml-0.5">loss</span>

@@ -4,6 +4,8 @@ import {
     isNightHour, applyDepth, nightDiveReason,
     type NightDiveDetail,
 } from '../utils/nightDive';
+import { THEME_CHANGE_EVENT, getTheme } from '../theme/engine';
+import type { Theme } from '../theme/themes';
 
 /**
  * Binding of utils/nightDive.ts to `<html data-depth>` and to the
@@ -16,6 +18,22 @@ import {
 let announced: boolean | null = null;
 
 /**
+ * Night by the clock, in Dark only. The night dive deepens the DARK palette
+ * (styles/night-dive.css is navy by definition): Light, Midnight (already
+ * black) and the high-contrast themes stay as they are all night. A custom
+ * theme on a Dark base also stays as it is: its `data-theme` is "dark", but
+ * night-dive.css paints Dark's navy over the rail / panels, which would
+ * replace the user's own colours every night.
+ */
+export function nightDiveAppliesTo(theme: Pick<Theme, 'id' | 'customId'>): boolean {
+    return theme.id === 'dark' && !theme.customId;
+}
+
+function nightNow(): boolean {
+    return isNightHour(new Date()) && nightDiveAppliesTo(getTheme());
+}
+
+/**
  * Evaluate the clock and set/clear the root attribute. Called once from
  * main.tsx before first render, so a client launched after midnight paints its
  * very first frame already deep instead of fading in. Does not announce — the
@@ -23,7 +41,7 @@ let announced: boolean | null = null;
  */
 export function applyNightDiveNow(): boolean {
     try {
-        return applyDepth(document.documentElement, isNightHour(new Date()));
+        return applyDepth(document.documentElement, nightNow());
     } catch { return false; }
 }
 
@@ -37,7 +55,7 @@ export function applyNightDiveNow(): boolean {
 export function useNightDiveRuntime(): void {
     useEffect(() => {
         const tick = () => {
-            const next = applyDepth(document.documentElement, isNightHour(new Date()));
+            const next = applyDepth(document.documentElement, nightNow());
             const reason = nightDiveReason(announced, next);
             if (!reason) return;
             announced = next;
@@ -48,10 +66,12 @@ export function useNightDiveRuntime(): void {
         const id = window.setInterval(tick, NIGHT_RECHECK_MS);
         const onVisible = () => { if (document.visibilityState === 'visible') tick(); };
         window.addEventListener('focus', tick);
+        window.addEventListener(THEME_CHANGE_EVENT, tick);
         document.addEventListener('visibilitychange', onVisible);
         return () => {
             window.clearInterval(id);
             window.removeEventListener('focus', tick);
+            window.removeEventListener(THEME_CHANGE_EVENT, tick);
             document.removeEventListener('visibilitychange', onVisible);
         };
     }, []);

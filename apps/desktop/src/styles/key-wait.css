@@ -57,13 +57,13 @@
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: rgba(167, 179, 212, .07);
+  background: rgb(var(--cl-muted-rgb) / .07);
 }
 .ckw-ghost-col { flex: 1; min-width: 0; padding-top: 2px; }
 .ckw-ghost-name {
   height: 9px;
   border-radius: 5px;
-  background: rgba(167, 179, 212, .11);
+  background: rgb(var(--cl-muted-rgb) / .11);
   margin: 2px 0 8px;
 }
 .ckw-ghost-line {
@@ -82,7 +82,7 @@
   font-size: 12px;
   line-height: 18px;
   letter-spacing: .02em;
-  color: rgba(37, 224, 200, .26);
+  color: rgb(var(--cl-lume-text-rgb) / .26);
   transition: opacity 360ms ease;
   transition-delay: calc(var(--i, 0) * 40ms + var(--j, 0) * 20ms);
 }
@@ -93,7 +93,7 @@
   top: 4px;
   bottom: 4px;
   border-radius: 5px;
-  background: rgba(167, 179, 212, .11);
+  background: rgb(var(--cl-muted-rgb) / .11);
   opacity: 0;
   transition: opacity 360ms ease;
   transition-delay: calc(var(--i, 0) * 40ms + var(--j, 0) * 20ms);
@@ -130,7 +130,7 @@
   position: absolute;
   inset: 6px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(37, 224, 200, .17) 0%, rgba(37, 224, 200, .06) 42%, transparent 68%);
+  background: radial-gradient(circle, rgb(var(--cl-lume-rgb) / .17) 0%, rgb(var(--cl-lume-rgb) / .06) 42%, transparent 68%);
   animation: ckw-breathe 4.8s ease-in-out infinite;
 }
 .ckw-rings {
@@ -142,7 +142,7 @@
   position: absolute;
   inset: 32px;
   border-radius: 50%;
-  border: 1.5px solid rgba(37, 224, 200, .55);
+  border: 1.5px solid rgb(var(--cl-lume-rgb) / .55);
   opacity: 0;
   animation: ckw-ring 3.4s cubic-bezier(.2, .6, .3, 1) infinite;
 }
@@ -154,7 +154,7 @@
   position: absolute;
   inset: 32px;
   border-radius: 50%;
-  border: 2px solid rgba(37, 224, 200, .6);
+  border: 2px solid rgb(var(--cl-lume-rgb) / .6);
   opacity: 0;
   animation: ckw-bloom 1000ms cubic-bezier(.2, .7, .3, 1);
 }
@@ -166,7 +166,7 @@
   width: 52px;
   height: 60px;
   margin: -32px 0 0 -26px;
-  color: var(--cl-lume, #25E0C8);
+  color: var(--cl-lume, var(--cl-lume-text));
   animation: ckw-bob 5.2s ease-in-out infinite;
 }
 .ckw-shackle {
@@ -202,13 +202,13 @@
   font-size: 17px;
   line-height: 1.35;
   letter-spacing: .01em;
-  color: var(--cl-text, #F4F7FF);
+  color: var(--cl-text, var(--cl-text));
 }
 .ckw-detail {
   margin: 6px 0 0;
   font-size: 13px;
   line-height: 1.5;
-  color: var(--cl-muted, #A7B3D4);
+  color: var(--cl-muted, var(--cl-muted));
 }
 .ckw-copy-in > * { animation: ckw-copy-in 380ms cubic-bezier(.2, .8, .2, 1) 90ms backwards; }
 .ckw-copy-in > .ckw-detail { animation-delay: 140ms; }
@@ -256,7 +256,7 @@
   gap: 12px;
   padding: 10px 12px 10px 14px;
   border-radius: 14px;
-  border: 1px solid rgba(37, 224, 200, .22);
+  border: 1px solid rgb(var(--cl-lume-rgb) / .22);
   background: var(--cl-raise, #1A2240);
   font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
   animation: ckw-banner-in 260ms cubic-bezier(.2, .8, .2, 1) backwards;
@@ -268,8 +268,8 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  color: var(--cl-lume, #25E0C8);
-  background: rgba(37, 224, 200, .1);
+  color: var(--cl-lume, var(--cl-lume-text));
+  background: rgb(var(--cl-lume-rgb) / .1);
 }
 .ckw-banner-text { flex: 1; min-width: 0; }
 .ckw-banner-title {
@@ -277,29 +277,29 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 1.3;
-  color: var(--cl-text, #F4F7FF);
+  color: var(--cl-text, var(--cl-text));
 }
 .ckw-banner-detail {
   margin: 2px 0 0;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--cl-muted, #A7B3D4);
+  color: var(--cl-muted, var(--cl-muted));
 }
 .ckw-banner-retry {
   flex: none;
   padding: 6px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(37, 224, 200, .35);
+  border: 1px solid rgb(var(--cl-lume-rgb) / .35);
   background: transparent;
-  color: var(--cl-lume, #25E0C8);
+  color: var(--cl-lume, var(--cl-lume-text));
   font: inherit;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   transition: opacity 160ms ease;
 }
-.ckw-banner-retry:hover:not(:disabled) { background: rgba(37, 224, 200, .1); }
-.ckw-banner-retry:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; }
+.ckw-banner-retry:hover:not(:disabled) { background: rgb(var(--cl-lume-rgb) / .1); }
+.ckw-banner-retry:focus-visible { outline: 2px solid var(--cl-lume, var(--cl-lume)); outline-offset: 2px; }
 .ckw-banner-retry:disabled { opacity: .55; cursor: default; }
 
 /* Reduced motion: a still picture. The lock, halo and rows are drawn at rest;

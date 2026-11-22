@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { useParticipants, useLocalParticipant } from '@livekit/components-react';
+import { useLocalParticipant } from '@livekit/components-react';
+import { useCallParticipants } from '../../hooks/useCallParticipants';
 import { Track, RemoteTrackPublication } from 'livekit-client';
 import { prewarmRemoteQuality } from '../../utils/remoteVideoQuality';
 import { useCallContext } from '../../contexts/CallContext';
@@ -77,7 +78,7 @@ export const FocusedStreamBanner = ({
 }: FocusedStreamBannerProps) => {
     const callCtx = useCallContext();
     const { focusedStream } = callCtx;
-    const participants = useParticipants(ROSTER_ONLY); // see utils/callRosterEvents.ts
+    const participants = useCallParticipants(ROSTER_ONLY); // see utils/callRosterEvents.ts
     const { localParticipant } = useLocalParticipant();
 
     const portalRoot = document.getElementById('call-focus-root');

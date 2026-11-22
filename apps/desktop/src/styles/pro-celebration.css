@@ -49,9 +49,9 @@
   outline: none;
   -webkit-app-region: no-drag;
 }
-/* The desktop app is dark-only today; this is ready for a light theme that
-   sets data-theme="light" on <html>. The card itself stays a dark object. */
-:root[data-theme="light"] .pcel {
+/* Light-scheme themes (the engine sets data-scheme="light" on <html>). The
+   card itself stays a dark object. */
+:root[data-scheme="light"] .pcel {
   --pcel-veil-in: rgba(248, 250, 255, .93);
   --pcel-veil-out: rgba(222, 230, 245, .975);
   --pcel-ink: #0B1430;
@@ -205,7 +205,7 @@
   box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 40px 80px -20px rgba(0, 0, 0, .7), 0 18px 36px -18px rgba(0, 0, 0, .6);
   animation: pcel-card 1.25s .32s cubic-bezier(.16, 1.12, .3, 1) both, pcel-float 7s 2.6s ease-in-out infinite;
 }
-:root[data-theme="light"] .pcel-card {
+:root[data-scheme="light"] .pcel-card {
   box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 40px 70px -24px rgba(11, 20, 48, .45), 0 16px 30px -18px rgba(11, 20, 48, .35);
 }
 /* gradient hairline rim: gold catching the light top-left, lume bottom-right */
@@ -411,7 +411,7 @@
 .pcel-cta:hover { background: var(--cl-lume-hi, #3BEAD6); }
 .pcel-cta:active { transform: scale(.98); }
 .pcel-cta:focus-visible { outline: 2px solid rgba(255, 255, 255, .55); outline-offset: 3px; }
-:root[data-theme="light"] .pcel-cta:focus-visible { outline-color: rgba(11, 20, 48, .45); }
+:root[data-scheme="light"] .pcel-cta:focus-visible { outline-color: rgba(11, 20, 48, .45); }
 
 /* ── leaving ── */
 .pcel[data-phase="closing"] { pointer-events: none; animation: pcel-out .28s cubic-bezier(.4, 0, .6, 1) both; }

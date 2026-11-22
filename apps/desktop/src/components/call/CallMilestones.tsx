@@ -102,7 +102,7 @@ const LongCallCard: React.FC<{ room: Room }> = ({ room }) => {
                 aria-live="polite"
                 className={`${CALL_OFFER_ENTER_CLASS} pointer-events-auto flex items-center gap-3 pl-4 pr-2 py-2.5 bg-cl-deep border border-white/[0.08] ring-1 ring-cl-lume/20 rounded-xl shadow-2xl`}
             >
-                <span className="shrink-0 w-7 h-7 rounded-lg grid place-items-center text-cl-lume bg-cl-lume/10" aria-hidden="true">
+                <span className="shrink-0 w-7 h-7 rounded-lg grid place-items-center text-cl-lume-text bg-cl-lume/10" aria-hidden="true">
                     <Clock size={15} />
                 </span>
                 <p className="flex-1 min-w-0 text-[13px] font-semibold text-white leading-snug m-0">{LONG_CALL_COPY}</p>

@@ -205,6 +205,8 @@ export interface BackupVault {
     gifLedger?: Record<string, number>;
     // My Emojis (personal custom emojis) - see utils/personalEmoji/backup.ts.
     emojiLibrary?: EmojiVaultPart['emojiLibrary'];
+    /** My stickers library state (its images are in emojiIndex / `emoji:<id>` records - one shared store). */
+    stickerLibrary?: EmojiVaultPart['stickerLibrary'];
     emojiIndex?: EmojiVaultPart['emojiIndex'];
     emojiKeys?: EmojiVaultPart['emojiKeys'];
     /** Sealed image files, inline. Legacy all-in-one vault only; the record-based
@@ -660,7 +662,13 @@ export async function buildLocalVault(
     return vault;
 }
 
-export async function importLocalHistory(userId: string, blob: Blob): Promise<void> {
+export interface ImportLocalHistoryOpts {
+    /** The record-based backup's `emoji:<id>` files (backupRecords.ts): handed to
+     *  restoreEmojiVaultPart so each image file lands BEFORE the index that lists it. */
+    emojiSealedFile?: (id: string) => Promise<Uint8Array | null>;
+}
+
+export async function importLocalHistory(userId: string, blob: Blob, opts: ImportLocalHistoryOpts = {}): Promise<void> {
     const text = await blob.text();
 
     // Classify and validate the WHOLE payload before the first write — see
@@ -763,7 +771,7 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
             }
         }
     }
-    await restoreEmojiVaultPart(userId, vault as EmojiVaultPart, realBackupIO());
+    await restoreEmojiVaultPart(userId, vault as EmojiVaultPart, realBackupIO(), { sealedFile: opts.emojiSealedFile });
     // Last-writer-wins against this device's own copy; verified (size, WebM,
     // content hash) before it is re-sealed under a fresh local key. Counted as
     // a LOCAL change so own-device sync carries it to the other devices.
@@ -820,6 +828,12 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
     // (restored just before this by the container reader) or fall back to
     // the bundled default so nothing references a file that isn't here.
     await repairCustomSoundPaths(userId);
+    // The theme applied when the backup was made goes back on THIS device
+    // (theme/restoreActiveTheme.ts): validated again, no restart needed.
+    try {
+        const { applyRestoredActiveTheme } = await import('../theme/restoreActiveTheme');
+        await applyRestoredActiveTheme(userId);
+    } catch (e) { console.warn('[importLocalHistory] theme restore skipped:', e); }
     // Tell a running app its settings changed under it (see BACKUP_RESTORED_EVENT).
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
         try { window.dispatchEvent(new CustomEvent(BACKUP_RESTORED_EVENT, { detail: { userId } })); } catch { /* non-fatal */ }

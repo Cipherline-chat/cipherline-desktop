@@ -11,6 +11,7 @@
  */
 
 import { deviceTimeZone, isValidTimeZone } from './profileVisibility';
+import { timeFormatRevision, withTimeFormat } from './a11y/timeFormat';
 
 export interface TimeZoneInfo {
     /** IANA id — the stored value. */
@@ -112,10 +113,13 @@ export function formatUtcOffset(minutes: number): string {
 const clockFmt = new Map<string, Intl.DateTimeFormat>();
 const nameFmt = new Map<string, Intl.DateTimeFormat | null>();
 
+let clockFmtRev = -1;
 function clockFormatter(id: string): Intl.DateTimeFormat {
+    // The 12/24-hour setting changes the formatter; rebuild lazily after it moves.
+    if (clockFmtRev !== timeFormatRevision()) { clockFmt.clear(); clockFmtRev = timeFormatRevision(); }
     let f = clockFmt.get(id);
     if (!f) {
-        f = new Intl.DateTimeFormat('en-US', { timeZone: id, hour: 'numeric', minute: '2-digit', timeZoneName: 'longOffset' as Intl.DateTimeFormatOptions['timeZoneName'] });
+        f = new Intl.DateTimeFormat('en-US', withTimeFormat({ timeZone: id, hour: 'numeric', minute: '2-digit', timeZoneName: 'longOffset' as Intl.DateTimeFormatOptions['timeZoneName'] }));
         clockFmt.set(id, f);
     }
     return f;
@@ -124,7 +128,7 @@ function clockFormatter(id: string): Intl.DateTimeFormat {
 function nameFormatter(id: string): Intl.DateTimeFormat | null {
     if (nameFmt.has(id)) return nameFmt.get(id) ?? null;
     let f: Intl.DateTimeFormat | null = null;
-    try { f = new Intl.DateTimeFormat('en-US', { timeZone: id, timeZoneName: 'long' }); } catch { f = null; }
+    try { f = new Intl.DateTimeFormat('en-US', { timeZone: id, timeZoneName: 'long' }); } catch { f = null; } // time-format-ok: date-only / validity / parse
     nameFmt.set(id, f);
     return f;
 }
@@ -178,9 +182,9 @@ function parseGmtName(s: string): number | null {
 
 /** Offset by wall-clock arithmetic — for engines without `longOffset`. */
 function offsetByArithmetic(id: string, now: Date): number {
-    const parts = new Intl.DateTimeFormat('en-US', {
+    const parts = new Intl.DateTimeFormat('en-US', { // time-format-ok: date-only / validity / parse
         timeZone: id, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric',
-        hour: 'numeric', minute: 'numeric', second: 'numeric',
+        hour: 'numeric', minute: 'numeric', second: 'numeric', // time-format-ok: arithmetic parse, never shown
     }).formatToParts(now);
     const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
     const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));

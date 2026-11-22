@@ -23,7 +23,9 @@ export const NOISE_PROMPT_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 export const NOISE_PROMPT_KEY = 'cipherline_ns_noise_prompt';
 
 /** Light or Off: the modes the prompt may suggest Strong for. */
-export function noisePromptApplies(s: Pick<VoiceSettings, 'noiseSuppression' | 'noiseSuppressionMode'>): boolean {
+export function noisePromptApplies(s: Pick<VoiceSettings, 'noiseSuppression' | 'noiseSuppressionMode' | 'audioEngine'>): boolean {
+    // The new audio engine has no gate to read a noise floor from (and no Strong mode to offer): never prompt.
+    if (s.audioEngine === 'v2') return false;
     return !s.noiseSuppression || s.noiseSuppressionMode !== 'strong';
 }
 

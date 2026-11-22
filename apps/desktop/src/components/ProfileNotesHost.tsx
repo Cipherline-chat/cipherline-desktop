@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { createNudgeCoalescer } from '../hooks/useOwnSlotNudge';
+import { OWN_SLOT_CHANGED_EVENT } from '../utils/muteSync';
 import { useAuth } from '../contexts/AuthContext';
 import secureLocalStore from '../utils/secureLocalStore';
 import { ANTI_ENTROPY_MIN_GAP_MS } from '../utils/ownSlotSync';
@@ -76,17 +78,22 @@ export const ProfileNotesHost: React.FC = () => {
             timer = setTimeout(() => { void run(); }, PUBLISH_DEBOUNCE_MS);
         };
         const onFocus = () => { if (Date.now() - lastRunAt >= FOCUS_MIN_GAP_MS) void run(); };
+        // Real time: another device wrote the slot (own_slot:changed) -> one coalesced pull.
+        const nudge = createNudgeCoalescer('profile_notes', () => { void run(); });
 
         void secureLocalStore.whenAccountReady().catch(() => undefined).then(() => {
             if (cancelled) return;
             bindNotes(userId, markDirty);
             void run();
             window.addEventListener('focus', onFocus);
+            window.addEventListener(OWN_SLOT_CHANGED_EVENT, nudge.onEvent);
         });
         return () => {
             cancelled = true;
             if (timer) clearTimeout(timer);
             window.removeEventListener('focus', onFocus);
+            window.removeEventListener(OWN_SLOT_CHANGED_EVENT, nudge.onEvent);
+            nudge.cancel();
             bindNotes(null);
         };
     }, [userId, deviceId]);

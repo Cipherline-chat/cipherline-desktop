@@ -69,7 +69,7 @@ describe('VoiceVideoSettings — the camera preview follows the picked camera', 
     });
 });
 
-describe('VoiceVideoSettings — voice gate: a fixed threshold with its slider always shown (automatic mode removed 2026-11-17)', () => {
+describe('VoiceVideoSettings — the manual noise gate is the only gate (the automatic voice gate and the engine switch are gone, 2026-11-20)', () => {
     const dir = dirname(fileURLToPath(import.meta.url));
     const vv = readFileSync(join(dir, 'VoiceVideoSettings.tsx'), 'utf8');
     const list = readFileSync(join(dir, 'settings', 'AudioDeviceList.tsx'), 'utf8');
@@ -83,9 +83,14 @@ describe('VoiceVideoSettings — voice gate: a fixed threshold with its slider a
         expect(vv).not.toMatch(/>\s*Manual\s*<\/ClButton>/);
         expect(list).not.toMatch(/>\s*Manual\s*<\/ClButton>/);
     });
-    it('the draggable slider is always shown under the row (no condition)', () => {
-        expect(vv).toMatch(/<\/Row>\s*<div className="vv-gate-drop"[^>]*>\s*<GateSlider\s+show="track"/);
+    it('the noise gate slider is shown under its row only while the gate is on', () => {
+        expect(vv).toMatch(/<\/Row>\s*\{settings\.voiceGateManual === true && \(\s*<div className="vv-gate-drop"[^>]*>\s*<GateSlider\s+show="track"/);
         expect(vv).toMatch(/<GateSlider\s+show="readout"/);
-        expect(list).toMatch(/<\/VvRow>\s*<div className="vv-gate-drop">\s*<ClSlider/);
+    });
+    it('no engine switch, no beta wording, no old Voice gate / Activity threshold anywhere', () => {
+        for (const src of [vv, list]) {
+            expect(src).not.toMatch(/Audio engine|New \(beta\)|New audio engine|label="Voice gate"|Activity threshold|setAudioEngine|setVoiceGateThreshold|voice\.setVoiceGate\b/);
+        }
+        expect(list).not.toMatch(/vv-gate-drop/);
     });
 });

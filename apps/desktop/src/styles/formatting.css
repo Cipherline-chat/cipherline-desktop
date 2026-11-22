@@ -57,6 +57,10 @@
    margins stay inside, as before); `overflow-x: clip` keeps the sideways clip. */
 .cl-msg-body{display:flow-root;overflow-x:clip;overflow-y:visible}
 
+/* Conversation system rows (joins, calls, pins...) follow Accessibility →
+   Message text size too (utils/a11y/messageTextSize.ts); 11px by default. */
+.cl-sys-text{font-size:calc(11px * var(--cl-msg-text-scale, 1))}
+
 .cl-fmt{display:block;min-width:0}
 .cl-fmt-p{min-width:0}
 
@@ -69,15 +73,15 @@
 
 .cl-fmt-code{
   font-family:var(--cl-font-mono);font-size:.86em;
-  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);
+  background:rgb(var(--cl-bright-rgb) / .07);border:1px solid rgb(var(--cl-bright-rgb) / .08);
   border-radius:5px;padding:.08em .38em;white-space:pre-wrap;word-break:break-word;
   font-variant-ligatures:none;
   color:var(--cl-text);
 }
 
 .cl-fmt-link{
-  color:var(--cl-lume);text-decoration:underline;text-underline-offset:2px;
-  text-decoration-color:rgba(37,224,200,.45);cursor:pointer;border-radius:3px;
+  color:var(--cl-lume-text);text-decoration:underline;text-underline-offset:2px;
+  text-decoration-color:rgb(var(--cl-lume-rgb) / .45);cursor:pointer;border-radius:3px;
 }
 .cl-fmt-link:hover{text-decoration-color:var(--cl-lume)}
 .cl-fmt-link:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
@@ -91,13 +95,13 @@
    (blur alone can leave short words legible). */
 .cl-fmt-spoiler{
   border-radius:4px;padding:0 .12em;cursor:pointer;
-  background:rgba(94,107,143,.55);box-decoration-break:clone;-webkit-box-decoration-break:clone;
+  background:rgb(var(--cl-faint-rgb) / .55);box-decoration-break:clone;-webkit-box-decoration-break:clone;
   transition:background-color .15s ease;
 }
-.cl-fmt-spoiler:hover{background:rgba(94,107,143,.75)}
+.cl-fmt-spoiler:hover{background:rgb(var(--cl-faint-rgb) / .75)}
 .cl-fmt-spoiler:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
 .cl-fmt-spoiler-inner{filter:blur(5px);opacity:.55;user-select:none;-webkit-user-select:none;pointer-events:none}
-.cl-fmt-spoiler[data-revealed]{background:rgba(255,255,255,.07);cursor:text}
+.cl-fmt-spoiler[data-revealed]{background:rgb(var(--cl-bright-rgb) / .07);cursor:text}
 @media (prefers-reduced-motion:reduce){.cl-fmt-spoiler{transition:none}}
 
 /* ── blocks ── */
@@ -105,9 +109,9 @@
 .cl-fmt > .cl-fmt-h:first-child,.cl-fmt-quote > .cl-fmt-h:first-child{margin-top:0}
 .cl-fmt-h1{
   font-family:var(--cl-font-display);font-weight:600;letter-spacing:.012em;color:var(--cl-text);
-  padding-bottom:.12em;border-bottom:1px solid rgba(255,255,255,.08);
+  padding-bottom:.12em;border-bottom:1px solid rgb(var(--cl-bright-rgb) / .08);
 }
-.cl-fmt-h2{font-weight:800;color:var(--cl-lume)}
+.cl-fmt-h2{font-weight:800;color:var(--cl-lume-text)}
 .cl-fmt-h3{font-weight:800;color:var(--cl-muted);text-transform:uppercase;letter-spacing:.07em}
 .cl-fmt-sub{color:var(--cl-faint);font-weight:600}
 
@@ -127,20 +131,20 @@ ol.cl-fmt-list{list-style:decimal outside}
 /* Code block: dark well, language + copy row, horizontal scroll, never wraps. */
 .cl-fmt-pre{
   margin:4px 0;max-width:100%;border-radius:10px;overflow:hidden;
-  background:var(--cl-abyss);border:1px solid rgba(255,255,255,.07);
+  background:var(--cl-abyss);border:1px solid rgb(var(--cl-bright-rgb) / .07);
   white-space:normal;
 }
 .cl-fmt-pre-head{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:4px 6px 0 11px;user-select:none;-webkit-user-select:none;
 }
-.cl-fmt-pre-lang{font-family:var(--cl-font-mono);font-size:calc(10.5px * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint)}
+.cl-fmt-pre-lang{font-family:var(--cl-font-mono);font-size:calc(10.5px * var(--cl-msg-text-scale, 1) * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint)}
 .cl-fmt-pre-copy{
   display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
   border:0;border-radius:7px;background:none;color:var(--cl-faint);cursor:pointer;
   transition:color .12s ease,background-color .12s ease;
 }
-.cl-fmt-pre-copy:hover{color:var(--cl-text);background:rgba(255,255,255,.07)}
+.cl-fmt-pre-copy:hover{color:var(--cl-text);background:rgb(var(--cl-bright-rgb) / .07)}
 .cl-fmt-pre-copy:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
 .cl-fmt-pre pre{margin:0;overflow-x:auto;padding:4px 12px 10px}
 /* A long message's collapsed preview shows a code block's first lines, fading out. */
@@ -149,26 +153,26 @@ ol.cl-fmt-list{list-style:decimal outside}
           mask-image:linear-gradient(to bottom,#000 45%,transparent);
 }
 .cl-fmt-pre code{
-  display:block;white-space:pre;font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-scale, 1));line-height:1.55;
-  color:#DCE3F5;tab-size:4;
+  display:block;white-space:pre;font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-text-scale, 1) * var(--cl-msg-scale, 1));line-height:1.55;
+  color:var(--cl-code-text);tab-size:4;
   /* JetBrains Mono draws => / -> / != as ligatures; code shows what was typed. */
   font-variant-ligatures:none;
 }
 
 /* Highlight tokens: brand-adjacent hues that stay readable on --cl-abyss. */
-.cl-hl-kw{color:#C7A6FF}
-.cl-hl-str{color:#FFD47A}
-.cl-hl-num{color:#FF9F85}
+.cl-hl-kw{color:var(--cl-code-kw)}
+.cl-hl-str{color:var(--cl-code-str)}
+.cl-hl-num{color:var(--cl-code-num)}
 .cl-hl-com{color:var(--cl-faint);font-style:italic}
-.cl-hl-lit{color:#FF8A7E}
-.cl-hl-fn{color:var(--cl-lume)}
-.cl-hl-type{color:#7CC9FF}
-.cl-hl-prop{color:#7CC9FF}
-.cl-hl-tag{color:#FF8A7E}
-.cl-hl-attr{color:#FFD47A}
-.cl-hl-meta{color:#C7A6FF}
-.cl-hl-add{color:#6EE79A;background:rgba(74,222,128,.08)}
-.cl-hl-del{color:#FF8A9E;background:rgba(255,92,122,.08)}
+.cl-hl-lit{color:var(--cl-code-lit)}
+.cl-hl-fn{color:var(--cl-lume-text)}
+.cl-hl-type{color:var(--cl-code-type)}
+.cl-hl-prop{color:var(--cl-code-type)}
+.cl-hl-tag{color:var(--cl-code-lit)}
+.cl-hl-attr{color:var(--cl-code-str)}
+.cl-hl-meta{color:var(--cl-code-kw)}
+.cl-hl-add{color:var(--cl-code-add);background:rgb(var(--cl-ok-rgb) / .08)}
+.cl-hl-del{color:var(--cl-code-del);background:rgb(var(--cl-danger-rgb) / .08)}
 
 /* ============================================================================
    Composer formatting bar
@@ -178,7 +182,7 @@ ol.cl-fmt-list{list-style:decimal outside}
 .fmt-toggle{gap:1px;font-family:var(--cl-font-display);font-weight:600;font-size:14px;line-height:1;min-width:32px}
 .fmt-toggle-aa{letter-spacing:-.02em}
 .fmt-toggle-chev{transition:transform .18s ease;margin-top:-1px}
-.fmt-toggle[aria-expanded="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+.fmt-toggle[aria-expanded="true"]{color:var(--cl-lume-text);background:var(--cl-lume-tint)}
 .fmt-toggle[aria-expanded="true"] .fmt-toggle-chev{transform:rotate(180deg)}
 .fmt-toggle[data-font]::after{
   content:'';position:absolute;top:5px;right:4px;width:5px;height:5px;border-radius:50%;background:var(--cl-glow);
@@ -192,7 +196,7 @@ ol.cl-fmt-list{list-style:decimal outside}
   display:flex;align-items:center;flex-wrap:wrap;gap:2px;max-width:calc(100% - 12px);
   padding:4px;border-radius:14px;
   background:var(--cl-deep);border:1.5px solid var(--cl-border);
-  box-shadow:0 8px 28px rgba(0,0,0,.42);
+  box-shadow:0 8px 28px rgb(var(--cl-shade-rgb) / .42);
   animation:fmt-bar-in .16s ease-out;
 }
 @keyframes fmt-bar-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -202,11 +206,11 @@ ol.cl-fmt-list{list-style:decimal outside}
   color:var(--cl-muted);font-family:var(--cl-font-body);font-size:13px;font-weight:800;
   transition:color .12s ease,background-color .12s ease;
 }
-.fmt-btn:hover{color:var(--cl-text);background:rgba(255,255,255,.07)}
+.fmt-btn:hover{color:var(--cl-text);background:rgb(var(--cl-bright-rgb) / .07)}
 .fmt-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px}
-.fmt-btn[aria-expanded="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+.fmt-btn[aria-expanded="true"]{color:var(--cl-lume-text);background:var(--cl-lume-tint)}
 /* On at the caret (the WYSIWYG box reports it): bold is on, you are in a list… */
-.fmt-btn[aria-pressed="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+.fmt-btn[aria-pressed="true"]{color:var(--cl-lume-text);background:var(--cl-lume-tint)}
 .fmt-btn-size{gap:3px}
 .fmt-size-glyph{display:inline-flex;align-items:baseline;font-family:var(--cl-font-display);font-weight:700;font-size:14px;line-height:1;margin-right:2px}
 .fmt-size-glyph small{font-size:10px;margin-right:1px}
@@ -216,35 +220,35 @@ ol.cl-fmt-list{list-style:decimal outside}
 .fmt-menu{
   position:absolute;bottom:calc(100% + 6px);right:0;z-index:41;min-width:210px;
   padding:5px;border-radius:13px;background:var(--cl-deep);border:1.5px solid var(--cl-border);
-  box-shadow:0 10px 30px rgba(0,0,0,.45);animation:fmt-bar-in .14s ease-out;
+  box-shadow:0 10px 30px rgb(var(--cl-shade-rgb) / .45);animation:fmt-bar-in .14s ease-out;
 }
 .fmt-menu-label{padding:5px 9px 4px;font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--cl-faint)}
 .fmt-menu-item{
   display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
   padding:7px 9px;border:0;border-radius:9px;background:none;cursor:pointer;text-align:left;color:var(--cl-text);
 }
-.fmt-menu-item:hover,.fmt-menu-item:focus-visible{background:rgba(255,255,255,.07);outline:none}
+.fmt-menu-item:hover,.fmt-menu-item:focus-visible{background:rgb(var(--cl-bright-rgb) / .07);outline:none}
 .fmt-menu-item[aria-checked="true"]{background:var(--cl-lume-tint)}
 .fmt-menu-name{font-size:15px;line-height:1.2}
 .fmt-menu-hint{display:block;font-family:var(--cl-font-body);font-size:11.5px;color:var(--cl-faint);margin-top:1px}
-.fmt-menu-check{color:var(--cl-lume);flex:none}
+.fmt-menu-check{color:var(--cl-lume-text);flex:none}
 
 /* "Paste as formatted text?" — sits where the big-paste chip does, above the pill. */
 .fmt-paste{
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   margin:0 8px 6px;padding:6px 6px 6px 12px;border-radius:13px;
-  background:var(--cl-deep);border:1.5px solid rgba(37,224,200,.35);
-  box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:12.5px;color:var(--cl-text);
+  background:var(--cl-deep);border:1.5px solid rgb(var(--cl-lume-rgb) / .35);
+  box-shadow:0 4px 18px rgb(var(--cl-shade-rgb) / .3);font-size:12.5px;color:var(--cl-text);
   animation:fmt-bar-in .16s ease-out;
 }
-.fmt-paste-ico{color:var(--cl-lume);flex:none}
+.fmt-paste-ico{color:var(--cl-lume-text);flex:none}
 .fmt-paste-text{flex:1 1 auto;min-width:0;font-weight:700}
 .fmt-paste-text small{display:block;font-weight:600;font-size:11px;color:var(--cl-faint)}
 .fmt-paste-btn{
   border:0;border-radius:9px;padding:6px 11px;cursor:pointer;font:inherit;font-weight:800;font-size:12px;
-  background:rgba(255,255,255,.06);color:var(--cl-muted);transition:background-color .12s ease,color .12s ease;
+  background:rgb(var(--cl-bright-rgb) / .06);color:var(--cl-muted);transition:background-color .12s ease,color .12s ease;
 }
-.fmt-paste-btn:hover{background:rgba(255,255,255,.1);color:var(--cl-text)}
+.fmt-paste-btn:hover{background:rgb(var(--cl-bright-rgb) / .1);color:var(--cl-text)}
 .fmt-paste-btn--go{background:var(--cl-lume);color:var(--cl-on-lume)}
 .fmt-paste-btn--go:hover{background:var(--cl-lume-hi);color:var(--cl-on-lume)}
 .fmt-paste-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
@@ -262,7 +266,7 @@ ol.cl-fmt-list{list-style:decimal outside}
 /* This message is styled: a quiet chip beside Aa while the bar is closed. */
 .cmp-card-chip{min-width:0;flex-shrink:1;
   display:inline-flex;align-items:center;height:26px;margin:0 2px;flex:0 1 auto;
-  border-radius:9px;border:1px solid rgba(37,224,200,.22);background:rgba(37,224,200,.06);overflow:hidden;
+  border-radius:9px;border:1px solid rgb(var(--cl-lume-rgb) / .22);background:rgb(var(--cl-lume-rgb) / .06);overflow:hidden;
 }
 .cmp-card-chip-open,.cmp-card-chip-x{
   display:inline-flex;align-items:center;gap:6px;height:100%;border:0;background:none;cursor:pointer;
@@ -272,7 +276,7 @@ ol.cl-fmt-list{list-style:decimal outside}
 .cmp-card-chip-open{padding:0 6px 0 5px;border-radius:9px 0 0 9px;min-width:0;overflow:hidden}
 .cmp-card-chip-x{flex:none}
 .cmp-card-chip-x{padding:0 6px;border-radius:0 9px 9px 0}
-.cmp-card-chip-open:hover,.cmp-card-chip-x:hover{color:var(--cl-text);background:rgba(37,224,200,.12)}
+.cmp-card-chip-open:hover,.cmp-card-chip-x:hover{color:var(--cl-text);background:rgb(var(--cl-lume-rgb) / .12)}
 .cmp-card-chip-open:focus-visible,.cmp-card-chip-x:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px}
 .cmp-card-chip-label{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* A card preview is on (ChatPane / ComposerCardSurface, data-card-preview):

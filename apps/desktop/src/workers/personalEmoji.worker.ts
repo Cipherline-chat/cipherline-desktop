@@ -15,16 +15,23 @@
  *
  * Protocol: process/protocol.ts. No dynamic imports (they break the worker
  * build); everything here is static.
+ *
+ * Stickers (2026-11-22) go through the same pipeline with the 'sticker'
+ * profile: 320 px square canvas (the caller asks for 'fit', so the picture
+ * keeps its aspect ratio with transparent padding), still <= 96 KB where
+ * quality/size can get it there, animation <= 512 KB.
  */
 import { planFrame, type FrameMode } from '../utils/personalEmoji/process/geometry';
 import { fitAnimated, fitStatic, decimateFrames, type TimedFrame } from '../utils/personalEmoji/process/budget';
 import { muxAnimatedWebp } from '../utils/personalEmoji/process/webpMux';
 import {
     EMOJI_INPUT_MAX_BYTES, EMOJI_MAX_DURATION_MS, EMOJI_MAX_OUTPUT_FRAMES, EMOJI_MAX_SOURCE_FRAMES,
-    EMOJI_MIN_FRAME_MS, EMOJI_SOURCE_MAX_SIDE,
+    EMOJI_MIN_FRAME_MS, EMOJI_SOURCE_MAX_SIDE, PROCESS_PROFILES,
     type EmojiProcessErrorCode, type EmojiProcessRequest, type EmojiProcessResponse,
 } from '../utils/personalEmoji/process/protocol';
-import { PERSONAL_EMOJI_MAX_BYTES, PERSONAL_EMOJI_PX, PERSONAL_EMOJI_STATIC_TARGET_BYTES, isAnimatedImage, sniffImageMime } from '../utils/personalEmoji/token';
+import { isAnimatedImage, sniffImageMime } from '../utils/personalEmoji/token';
+
+interface Limits { side: number; staticTargetBytes: number; maxBytes: number }
 
 interface WorkerScope {
     onmessage: ((e: MessageEvent<EmojiProcessRequest>) => void) | null;
@@ -78,17 +85,19 @@ function checkSize(w: number, h: number): void {
     }
 }
 
-async function processStill(bitmap: ImageBitmap, mode: FrameMode) {
+async function processStill(bitmap: ImageBitmap, mode: FrameMode, lim: Limits) {
     checkSize(bitmap.width, bitmap.height);
-    const base = drawSquare(bitmap, bitmap.width, bitmap.height, PERSONAL_EMOJI_PX, mode);
+    const PX = lim.side;
+    const base = drawSquare(bitmap, bitmap.width, bitmap.height, PX, mode);
     const fit = await fitStatic(async (q, side) => {
-        const c = side === PERSONAL_EMOJI_PX ? base : drawSquare(base, PERSONAL_EMOJI_PX, PERSONAL_EMOJI_PX, side, 'fit');
+        const c = side === PX ? base : drawSquare(base, PX, PX, side, 'fit');
         return encodeWebp(c, q);
-    }, PERSONAL_EMOJI_STATIC_TARGET_BYTES, PERSONAL_EMOJI_PX);
+    }, lim.staticTargetBytes, PX);
     return { bytes: fit.bytes, animated: false, frames: 1, width: fit.side, durationMs: 0, animationLost: false };
 }
 
-async function processAnimated(decoder: ImageDecoder, frameCount: number, mode: FrameMode, progress: (f: number) => void) {
+async function processAnimated(decoder: ImageDecoder, frameCount: number, mode: FrameMode, progress: (f: number) => void, lim: Limits) {
+    const PX = lim.side;
     const frames: TimedFrame<ImageBitmap>[] = [];
     let total = 0;
     const limit = Math.min(frameCount, EMOJI_MAX_SOURCE_FRAMES);
@@ -96,7 +105,7 @@ async function processAnimated(decoder: ImageDecoder, frameCount: number, mode: 
         const { image } = await decoder.decode({ frameIndex: i });
         try {
             checkSize(image.displayWidth, image.displayHeight);
-            const canvas = drawSquare(image, image.displayWidth, image.displayHeight, PERSONAL_EMOJI_PX, mode);
+            const canvas = drawSquare(image, image.displayWidth, image.displayHeight, PX, mode);
             const ms = Math.max(EMOJI_MIN_FRAME_MS, Math.round((image.duration ?? 100_000) / 1000));
             const kept = Math.min(ms, EMOJI_MAX_DURATION_MS - total);
             frames.push({ frame: await createImageBitmap(canvas), durationMs: kept });
@@ -116,12 +125,12 @@ async function processAnimated(decoder: ImageDecoder, frameCount: number, mode: 
             const stills: { webp: Uint8Array; durationMs: number }[] = [];
             for (const f of fs) {
                 const c = newCanvas(side);
-                c.ctx.drawImage(f.frame, 0, 0, PERSONAL_EMOJI_PX, PERSONAL_EMOJI_PX, 0, 0, side, side);
+                c.ctx.drawImage(f.frame, 0, 0, PX, PX, 0, 0, side, side);
                 stills.push({ webp: await encodeWebp(c.canvas, q), durationMs: f.durationMs });
             }
             return muxAnimatedWebp(stills, side, side);
-        }, PERSONAL_EMOJI_MAX_BYTES, PERSONAL_EMOJI_PX);
-        if (!fit) throw new ProcessError('TOO_COMPLEX', 'That animation is too detailed to fit in an emoji. Try a shorter or simpler one.');
+        }, lim.maxBytes, PX);
+        if (!fit) throw new ProcessError('TOO_COMPLEX', `That animation is too detailed to fit in ${lim.side > 128 ? 'a sticker' : 'an emoji'}. Try a shorter or simpler one.`);
         return {
             bytes: fit.bytes, animated: fit.keptFrames > 1, frames: fit.keptFrames, width: fit.side,
             durationMs: fit.frames.reduce((n, f) => n + f.durationMs, 0), animationLost: false,
@@ -132,6 +141,7 @@ async function processAnimated(decoder: ImageDecoder, frameCount: number, mode: 
 }
 
 async function run(req: EmojiProcessRequest): Promise<EmojiProcessResponse> {
+    const lim: Limits = PROCESS_PROFILES[req.profile === 'sticker' ? 'sticker' : 'emoji'];
     const progress = (fraction: number) => scope.postMessage({ type: 'progress', fraction: Math.min(1, fraction) });
     if (req.file.size > EMOJI_INPUT_MAX_BYTES) throw new ProcessError('INPUT_TOO_LARGE', 'That file is bigger than 25 MB.');
     const bytes = new Uint8Array(await req.file.arrayBuffer());
@@ -145,7 +155,7 @@ async function run(req: EmojiProcessRequest): Promise<EmojiProcessResponse> {
             await decoder.tracks.ready;
             const track = decoder.tracks.selectedTrack;
             if (track && track.frameCount > 1) {
-                const r = await processAnimated(decoder, track.frameCount, req.mode, progress);
+                const r = await processAnimated(decoder, track.frameCount, req.mode, progress, lim);
                 return { type: 'done', mime: 'image/webp', ...r };
             }
         } finally {
@@ -161,7 +171,7 @@ async function run(req: EmojiProcessRequest): Promise<EmojiProcessResponse> {
     }
     try {
         progress(0.3);
-        const r = await processStill(bitmap, req.mode);
+        const r = await processStill(bitmap, req.mode, lim);
         // The file WAS animated but this system could not decode the frames
         // (ImageDecoder missing): say so rather than silently saving frame 1.
         return { type: 'done', mime: 'image/webp', ...r, animationLost: isAnimatedImage(bytes, type) };

@@ -108,7 +108,7 @@ export const HuddleCallCard: React.FC<Props> = ({
 
             {/* Call name + meta */}
             <div className="flex-1 min-w-0">
-                <div className={`text-[12px] font-semibold truncate ${isMine ? 'text-cl-lume' : 'text-white/80'}`}>
+                <div className={`text-[12px] font-semibold truncate ${isMine ? 'text-cl-lume-text' : 'text-white/80'}`}>
                     {name}
                 </div>
                 <div className="text-[10px] text-cl-faint truncate">
@@ -169,7 +169,7 @@ export const HuddleCallCard: React.FC<Props> = ({
                     <span
                         aria-hidden
                         data-testid="huddle-call-join-hint"
-                        className="[grid-area:1/1] self-center px-1.5 py-[2px] rounded-md bg-cl-lume/15 text-cl-lume text-[10px] font-bold uppercase tracking-wider leading-none opacity-0 transition-opacity duration-150 group-hover/huddle:opacity-100 group-focus-within/huddle:opacity-100"
+                        className="[grid-area:1/1] self-center px-1.5 py-[2px] rounded-md bg-cl-lume/15 text-cl-lume-text text-[10px] font-bold uppercase tracking-wider leading-none opacity-0 transition-opacity duration-150 group-hover/huddle:opacity-100 group-focus-within/huddle:opacity-100"
                     >
                         Join
                     </span>

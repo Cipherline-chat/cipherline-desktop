@@ -302,7 +302,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
             </div>
             <span id={hintId} className="sr-only">Month, day, year, as {DOB_FORMAT_HINT}. Or pick it from the calendar.</span>
             {errorText && (
-                <p id={errorId} role="alert" className="text-xs mt-1" style={{ color: 'var(--cl-flash)' }}>
+                <p id={errorId} role="alert" className="text-xs mt-1" style={{ color: 'var(--cl-flash-text)' }}>
                     {errorText}
                 </p>
             )}
@@ -374,7 +374,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                                         cursor: 'pointer',
                                         fontWeight: isSelected ? 800 : 600,
                                     }}
-                                    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                                    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgb(var(--cl-bright-rgb) / 0.06)'; }}
                                     onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                                 >
                                     {d}

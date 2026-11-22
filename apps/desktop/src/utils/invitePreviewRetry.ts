@@ -21,7 +21,7 @@ export const RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
  * these should never retry, and should render as "expired", not
  * "unavailable". */
 export function isPermanentInviteFailure(status: number | undefined): boolean {
-    return status === 404 || status === 400;
+    return status === 404 || status === 400 || status === 410;
 }
 
 /** Resolve a retry delay from a 429's Retry-After header (seconds) when

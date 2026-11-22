@@ -44,7 +44,7 @@ export const VersionTapEgg: React.FC<{ children: React.ReactNode }> = ({ childre
                         data-testid="keys-dev-badge"
                         style={{
                             display: 'inline-flex', alignItems: 'center', gap: 5, padding: '1px 8px 1px 4px', borderRadius: 999,
-                            fontSize: 10.5, color: 'var(--cl-lume)', border: '1px solid rgba(37,224,200,.35)', background: 'rgba(37,224,200,.08)',
+                            fontSize: 10.5, color: 'var(--cl-lume-text)', border: '1px solid rgb(var(--cl-lume-rgb) / .35)', background: 'rgb(var(--cl-lume-rgb) / .08)',
                         }}
                     >
                         <span aria-hidden="true" style={{ display: 'inline-flex' }}>
@@ -56,7 +56,7 @@ export const VersionTapEgg: React.FC<{ children: React.ReactNode }> = ({ childre
                 )}
                 {children}
             </span>
-            <span role="status" aria-live="polite" className="sd-mono" style={{ fontSize: 11, color: 'var(--cl-lume)', minHeight: note ? undefined : 0 }}>
+            <span role="status" aria-live="polite" className="sd-mono" style={{ fontSize: 11, color: 'var(--cl-lume-text)', minHeight: note ? undefined : 0 }}>
                 {note}
             </span>
         </span>

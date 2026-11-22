@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConnectionsPane } from '../../integrations/ConnectionsPane';
 import { MostPlayedSetting } from './MostPlayedSetting';
-import { MyEmojisCard } from './PersonalizePane';
+import { MyEmojisCard, MyStickersCard } from './PersonalizePane';
 import { CallPersonalizeCard } from './CallPersonalizeCard';
 import '../../../styles/settings-ui.css';
 
@@ -38,6 +38,7 @@ export const ActivityStylePane: React.FC = () => (
                 <p>Yours alone: your emojis, and how you look and sound in a call. Your card&rsquo;s theme and effects are in Profile, under Style.</p>
             </header>
             <MyEmojisCard />
+            <MyStickersCard />
             <CallPersonalizeCard />
         </section>
     </div>

@@ -31,7 +31,7 @@ export type Proc = {
 const g = globalThis as unknown as Record<string, unknown>;
 
 /** Load an ES-module worklet source (Speex / RNNoise) through a temp file, the way noiseSuppressionWorklets.test.ts does. */
-export async function loadModuleWorklet(src: string, name: string): Promise<Proc> {
+export async function loadModuleWorklet(src: string, name: string, processorOptions: Record<string, unknown> = {}): Promise<Proc> {
     let Ctor: (new (opts?: unknown) => Proc) | undefined;
     g.registerProcessor = (n: string, c: unknown) => { if (n === name) Ctor = c as typeof Ctor; };
     g.AudioWorkletProcessor = class {
@@ -43,7 +43,7 @@ export async function loadModuleWorklet(src: string, name: string): Promise<Proc
     writeFileSync(f, src);
     try { await import(/* @vite-ignore */ `file://${f}`); } finally { unlinkSync(f); }
     if (!Ctor) throw new Error(`${name} did not register`);
-    return new Ctor({ processorOptions: {} });
+    return new Ctor({ processorOptions });
 }
 
 
@@ -57,7 +57,14 @@ export const waitFor = async (cond: () => boolean, ms = 8000) => {
 export type NsMode = 'off' | 'light' | 'strong';
 export type GateMode = 'off' | 'manual';
 
+/** The new audio engine ('v2', crates/cl-audio via cl-audio-worklet): one stage in place of NS + gate + mic gain + AGC. */
+export type EngineProfile = 'light' | 'off';
+
 export interface ChainConfig {
+    /** 'v2' runs ONLY the cl-audio worklet (profile + `agc` as auto gain + `slider` as manual gain when AGC is off); ns / gate are ignored. */
+    engine?: 'v2';
+    /** v2 noise profile (default 'light'). */
+    profile?: EngineProfile;
     ns: NsMode;
     gate: GateMode;
     /** Fixed threshold, dBFS (default -45, the app's default). */
@@ -77,7 +84,7 @@ export interface ChainConfig {
     muted?: Array<[number, number]>;
 }
 
-export interface NsSources { light: string; strong: string; speexWasm: () => ArrayBuffer }
+export interface NsSources { light: string; strong: string; speexWasm: () => ArrayBuffer; clAudio?: { source: string; wasm: ArrayBuffer } }
 
 export interface ChainTrace {
     out: Float32Array;
@@ -95,7 +102,16 @@ export interface ChainTrace {
 const MIC_GAIN_EXPONENT = 1.25;
 export const micSliderToGain = (slider: number) => Math.pow(Math.max(0, slider) / 100, MIC_GAIN_EXPONENT);
 
-export async function buildChain(cfg: ChainConfig, ns: NsSources) {
+type LegacyChain = Awaited<ReturnType<typeof buildLegacyChain>>;
+
+/** The chain for `cfg`. With engine 'v2' the result has the same shape, but `gate`, `agc` and `gatePosted` are null: that
+ *  chain is the cl-audio worklet alone (callers that read them are legacy-only). */
+export async function buildChain(cfg: ChainConfig, ns: NsSources): Promise<LegacyChain> {
+    if (cfg.engine === 'v2') return buildV2Chain(cfg, ns) as unknown as LegacyChain;
+    return buildLegacyChain(cfg, ns);
+}
+
+async function buildLegacyChain(cfg: ChainConfig, ns: NsSources) {
     let nsNode: Proc | null = null;
     if (cfg.ns === 'light') {
         nsNode = await loadModuleWorklet(ns.light, 'speex-light-worklet');
@@ -607,4 +623,47 @@ export function writeWavF32(path: string, x: Float32Array, sr = SR): void {
     h.writeUInt32LE(sr, 24); h.writeUInt32LE(sr * 4, 28); h.writeUInt16LE(4, 32); h.writeUInt16LE(32, 34);
     h.write('data', 36); h.writeUInt32LE(data.length, 40);
     writeFileSync(path, Buffer.concat([h, data]));
+}
+
+// ── New audio engine ─────────────────────────────────────────────────────────
+
+/** The v2 chain: cl-audio-worklet alone, driven in 128-sample quanta exactly as the render thread would. The returned
+ *  object mirrors buildChain's (run / nsNode) so callers can treat both alike; gate / agc are absent. */
+async function buildV2Chain(cfg: ChainConfig, ns: NsSources) {
+    if (!ns.clAudio) throw new Error('buildChain: engine v2 needs NsSources.clAudio');
+    const slider = cfg.slider ?? 100;
+    const settings = {
+        noise: cfg.profile === 'off' ? 0 : 1,
+        autoGain: cfg.agc,
+        manualGainDb: cfg.agc ? 0 : 20 * Math.log10(Math.max(micSliderToGain(slider), 1e-9)),
+        originalSound: false,
+    };
+    const node = await loadModuleWorklet(ns.clAudio.source, 'cl-audio-worklet', { wasmBytes: ns.clAudio.wasm.slice(0), settings });
+    await waitFor(() => !!node.ready || !!node.failed, 20000);
+    if (!node.ready) throw new Error('cl-audio-worklet did not come up');
+    let lastGain = 0;
+    let seen = 0;
+    function run(x: Float32Array): ChainTrace {
+        const blocks = Math.floor(x.length / Q);
+        const n = blocks * Q;
+        const out = new Float32Array(n);
+        const tr: ChainTrace = {
+            out, nsOut: out,
+            gateGain: new Float32Array(blocks).fill(1), gateOpen: new Uint8Array(blocks).fill(1), gateThrDb: new Float32Array(blocks).fill(NaN),
+            agcGainDb: new Float32Array(blocks), agcVoice: new Uint8Array(blocks), agcLimHeld: new Uint8Array(blocks),
+        };
+        const a = new Float32Array(Q);
+        const msgs = (node as unknown as { _msgs: Array<{ type?: string; deviceGainDb?: number; speechProb?: number }> })._msgs;
+        for (let k = 0; k < blocks; k++) {
+            node.process([[x.subarray(k * Q, (k + 1) * Q)]], [[a]]);
+            out.set(a, k * Q);
+            for (; seen < msgs.length; seen++) {
+                const m = msgs[seen];
+                if (m.type === 'stats' && typeof m.deviceGainDb === 'number') lastGain = m.deviceGainDb;
+            }
+            tr.agcGainDb[k] = lastGain; // the engine's learned device gain, as of its last once-a-second report
+        }
+        return tr;
+    }
+    return { run, nsNode: node, gate: null, agc: null, gatePosted: null };
 }

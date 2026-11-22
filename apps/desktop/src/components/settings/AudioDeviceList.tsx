@@ -36,16 +36,6 @@ const InputEditor: React.FC<{ s: InputProfileSettings; set: (p: Partial<InputPro
                 onModeChange={m => set({ noiseSuppressionMode: m })}
             />
         </VvRow>
-        <VvRow label="Voice gate">
-            <span className="vv-val vv-val--wide">{`${s.voiceGateThreshold} dB`}</span>
-            <ClToggle checked={s.voiceGate} onChange={v => set({ voiceGate: v })} aria-label="Voice gate" />
-        </VvRow>
-        <div className="vv-gate-drop">
-            <ClSlider
-                min={-60} max={-20} step={1} value={s.voiceGateThreshold} onChange={v => set({ voiceGateThreshold: v })}
-                resetValue={DEFAULT_VOICE_SETTINGS.voiceGateThreshold} formatLabel={v => `${v} dB`} style={{ flex: 1, minWidth: 0, opacity: s.voiceGate ? 1 : 0.35 }}
-            />
-        </div>
         <VvRow label="Echo cancellation" kind="switch" note="Only recommended when using speakers.">
             <ClToggle checked={s.echoCancellation} onChange={v => set({ echoCancellation: v })} aria-label="Echo cancellation" />
         </VvRow>
@@ -144,7 +134,7 @@ export const AudioDeviceList: React.FC<{ api: AudioDeviceProfilesApi }> = ({ api
             <div className="vv-head">
                 <h3>Your audio devices</h3>
                 <InfoTip label="Your audio devices">
-                    <p>Every microphone and speaker or headset you use keeps its own settings: input volume, noise suppression, voice gate, echo cancellation, auto gain and mic EQ for a mic; output volume and normalize voice volume for a speaker.</p>
+                    <p>Every microphone and speaker or headset you use keeps its own settings: input volume, noise suppression, echo cancellation, auto gain and mic EQ for a mic; output volume and normalize voice volume for a speaker.</p>
                     <p>When you plug one in, or Windows switches its default, that device&rsquo;s settings come back on their own, in a call too. The first time a device is used it starts from the settings you had.</p>
                     <p>Open a device to change its settings even while it is unplugged. Push to talk, camera and video settings are the same everywhere.</p>
                     <p>Device names stay on this computer and in your encrypted backup. They are never sent to Cipherline.</p>

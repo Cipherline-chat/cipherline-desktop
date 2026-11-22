@@ -3,6 +3,7 @@ import { CirclePause, ShieldCheck, Sparkles } from 'lucide-react';
 import { ClButton } from './cl';
 import { ClientBlockScreen } from './ClientBlockScreen';
 import { formatEta, type SuspendedNotice } from '../utils/clientControl';
+import { formatDateTime } from '../utils/a11y/timeFormat';
 
 /**
  * "App shut down" — the admin kill switch's blocking screen. Presentational:
@@ -27,7 +28,7 @@ function fmtTime(iso: string | null): string | null {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return null;
     const sameDay = d.toDateString() === new Date().toDateString();
-    return d.toLocaleString(undefined, sameDay
+    return formatDateTime(d, undefined, sameDay
         ? { hour: 'numeric', minute: '2-digit' }
         : { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }

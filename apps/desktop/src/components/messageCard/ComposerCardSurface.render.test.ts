@@ -34,7 +34,8 @@ window.matchMedia = ((q: string) => ({
 })) as unknown as typeof window.matchMedia;
 
 const { ComposerCardSurface, COMPOSER_SHADOW_BORROW } = await import('./ComposerCardSurface');
-const { MESSAGE_BODY_CLASS, MESSAGE_BODY_PX, MESSAGE_BODY_LINE_HEIGHT } = await import('../../utils/formatting/messageSize');
+const { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT } = await import('../../utils/formatting/messageSize');
+const { messageBodyFontSize } = await import('../../utils/a11y/messageTextSize');
 const { MessageCard } = await import('./MessageCard');
 const { RichComposer } = await import('../composer/RichComposer');
 type Handle = import('../composer/RichComposer').RichComposerHandle;
@@ -348,7 +349,7 @@ describe('WYSIWYG: the preview card is the posted card', () => {
             React.createElement(MessageCard, { resolved: r },
                 React.createElement('div', {
                     'data-sent-body': '', className: MESSAGE_BODY_CLASS,
-                    style: { fontSize: `${MESSAGE_BODY_PX}px`, lineHeight: MESSAGE_BODY_LINE_HEIGHT, ...(color ? { color } : {}) },
+                    style: { fontSize: messageBodyFontSize(), lineHeight: MESSAGE_BODY_LINE_HEIGHT, ...(color ? { color } : {}) },
                 }, text)));
     }
     const BOX = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
@@ -377,8 +378,12 @@ describe('WYSIWYG: the preview card is the posted card', () => {
         expect(box.style.fontSize).toBe(body.style.fontSize);
         expect(box.style.lineHeight).toBe(body.style.lineHeight);
         expect(box.style.color).toBe(body.style.color);
-        expect(box.style.fontSize).toBe('15px');
-        expect(box.style.lineHeight).toBe('normal');
+        // Accessibility → Message text size: both read the same CSS var (15px when unset). The test
+        // DOM drops var() from inline styles, so the shared expression is asserted on the style object.
+        expect(composerTextStyle(r, {}).fontSize).toBe('var(--cl-msg-text-px, 15px)');
+        // Accessibility > Line spacing: both read --cl-msg-leading (normal when unset).
+        expect(composerTextStyle(r, {}).lineHeight).toBe(MESSAGE_BODY_LINE_HEIGHT);
+        expect(box.style.lineHeight).toBe(MESSAGE_BODY_LINE_HEIGHT);
     });
 
     it('the Event card keeps its double gold border in the composer (the owner\'s report)', () => {
@@ -399,11 +404,11 @@ describe('WYSIWYG: the preview card is the posted card', () => {
         expect(frame().style.getPropertyValue('--cl-msg-col-w')).toBe('336px');
     });
 
-    it('the text metrics have ONE source: ChatPane\'s row body and the preview both use MESSAGE_BODY_PX / MESSAGE_BODY_LINE_HEIGHT', () => {
+    it('the text metrics have ONE source: ChatPane\'s row body and the preview both use messageBodyFontSize / MESSAGE_BODY_LINE_HEIGHT', () => {
         const cp = readFileSync(join(SRC, 'components', 'ChatPane.tsx'), 'utf8');
-        expect(cp).toMatch(/let fontSize = scaledPx\(MESSAGE_BODY_PX, msgSize\);/);
+        expect(cp).toMatch(/let fontSize = messageBodyFontSize\(sizeScaleFor\(msgSize\)\);/);
         expect(cp).toMatch(/let lineHeight: string \| number = MESSAGE_BODY_LINE_HEIGHT;/);
-        expect(composerTextStyle(resolveCard(tpl('event'), 'full'), {})).toMatchObject({ fontSize: `${MESSAGE_BODY_PX}px`, lineHeight: MESSAGE_BODY_LINE_HEIGHT });
+        expect(composerTextStyle(resolveCard(tpl('event'), 'full'), {})).toMatchObject({ fontSize: messageBodyFontSize(), lineHeight: MESSAGE_BODY_LINE_HEIGHT });
         expect(composerTextStyle(null, { padding: '2px 4px' })).toEqual({ padding: '2px 4px' });
     });
 });

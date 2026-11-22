@@ -144,13 +144,10 @@ describe('useGateCutPrompt', () => {
         expect(prompt()).toBeNull();
     });
 
-    it('the in-call pill is wired to the hook and the Settings setters (same style and place as the echo prompt)', () => {
+    it('the in-call pill is no longer mounted: the automatic voice gate it talks about is gone (the new audio engine is the only engine)', () => {
         const dir = dirname(fileURLToPath(import.meta.url));
         const src = readFileSync(join(dir, '..', 'components', 'SidebarConference.tsx'), 'utf8');
-        expect(src).toMatch(/setThreshold: voice\?\.setVoiceGateThreshold/);
-        expect(src).toMatch(/setGate: voice\?\.setVoiceGate/);
-        expect(src).toMatch(/micOpen: !localIsMuted,\s*deafened: isDeafenedForUi/);
-        expect(src).toMatch(/data-testid="gate-cut-prompt"/);
-        expect(src).toMatch(/GATE_CUT_PROMPT_COPY\.lower\(gateCut\.prompt\.detection\.suggestDb\)/);
+        expect(src).not.toMatch(/useGateCutPrompt/);
+        expect(src).not.toMatch(/data-testid="gate-cut-prompt"/);
     });
 });

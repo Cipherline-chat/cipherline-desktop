@@ -20,15 +20,15 @@
 /* Impact at 1.45 s: two shockwave rings off the block, and a bubble burst. */
 .mo-fb-ring {
   position: absolute; left: -60px; top: 90px; width: 120px; height: 60px; border-radius: 50%;
-  border: 3px solid var(--cl-glow, #FFC94D); opacity: 0;
+  border: 3px solid var(--cl-glow, var(--cl-glow)); opacity: 0;
   animation: mo-fb-ring 1s ease-out both;
 }
 .mo-fb-ring-1 { animation-delay: 1.45s; }
-.mo-fb-ring-2 { animation-delay: 1.65s; border-color: var(--cl-lume, #25E0C8); }
+.mo-fb-ring-2 { animation-delay: 1.65s; border-color: var(--cl-lume, var(--cl-lume)); }
 @keyframes mo-fb-ring { 0% { transform: scale(.4); opacity: 0; } 10% { opacity: 1; } 100% { transform: scale(2.6); opacity: 0; } }
 .mo-fb-bit {
   position: absolute; left: -6px; top: 112px; width: 12px; height: 12px; border-radius: 50%;
-  border: 2px solid rgba(37, 224, 200, .8); opacity: 0;
+  border: 2px solid rgb(var(--cl-lume-rgb) / .8); opacity: 0;
   animation: mo-fb-bit .9s ease-out 1.45s both;
 }
 @keyframes mo-fb-bit {
@@ -47,7 +47,7 @@
 }
 .mo-fb-bubble {
   position: absolute; left: -12px; top: -12px; width: 104px; height: 104px; border-radius: 50%;
-  border: 3px solid rgba(37, 224, 200, .75); background: rgba(37, 224, 200, .1); opacity: 0;
+  border: 3px solid rgb(var(--cl-lume-rgb) / .75); background: rgb(var(--cl-lume-rgb) / .1); opacity: 0;
   animation: mo-fb-bubble .4s cubic-bezier(.2, .8, .3, 1.2) 1.5s both;
 }
 @keyframes mo-fb-bubble { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }

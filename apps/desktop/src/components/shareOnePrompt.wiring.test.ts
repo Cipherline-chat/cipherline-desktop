@@ -123,7 +123,7 @@ describe('renderer: the portal capture is opened at the quality picked, and a li
         const keep = body(sc, 'if (reusedCapture && !sliceLayout) {', '} else if (sliceLayout) {');
         expect(keep).toMatch(/if \(!portalCap \|\| portalRetuneTouchesCapture\(\{ restoreListed: restoreListedRef\.current, asked: portalAskedRef\.current, want: cloneWant \}\)\) \{\s*try \{\s*await clone\.applyConstraints\(/);
         expect(keep).toContain('settleCaptureSize(clone, captureBox)');
-        const crop = body(sc, 'const captureDisplayForCrop = async', 'await mintShareGrant(options);\n            pendingScreenShareRef.current = pendingShare(options, false);\n            const handshakeMs');
+        const crop = body(sc, 'const captureDisplayForCrop = async', 'await mintShareGrant(captureOptions);\n            pendingScreenShareRef.current = pendingShare(captureOptions, false);\n            const handshakeMs');
         expect(crop).toContain('if (!portalCap) try { await capturedFirst.applyConstraints(');
     });
     it('every applyConstraints on a share track is either off the portal or the kept-capture / retune paths guarded above', () => {
@@ -178,7 +178,7 @@ describe('republish paths reach no new portal request, audio on or off', () => {
     });
     it('a placeholder with an app\'s audio is "window" audio mode (the app handle), anything else on the portal is everything-except-us', () => {
         expect(start).toContain('const portalAppAudio = isPortalSourceId(options.sourceId) && !!options.appAudio?.handle;');
-        expect(start).toContain("const nativeMode: 'window' | 'screen' = (isWindowSource || portalAppAudio) ? 'window' : 'screen';");
+        expect(start).toContain("const nativeMode: 'window' | 'screen' = (isWindowSource || portalAppAudio || !!options.audioWindowId) ? 'window' : 'screen';");
     });
 });
 

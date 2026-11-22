@@ -88,6 +88,7 @@ import { resolveShareRef } from '../../utils/shareRef';
 import { RemoteCameraGapTracker } from '../../utils/remoteCameraGap';
 import { measureDisplayHz } from '../../utils/displayRefresh';
 import { capKbpsFromEncodings } from '../../utils/shareNetStats';
+import { realRemoteCount } from '../../utils/shareAudioHelper';
 import { setShareSnapProvider, type ShareSnapTarget } from '../../utils/shareSnapshot';
 
 /** rx_video_health window: one line per remote video per window, only when it lost packets or asked for keyframes. */
@@ -143,7 +144,7 @@ export const CallEventMonitor: React.FC = () => {
         if (!room) return;
         markCallStart();
         resetAvSyncMonitor(); // A/V-sync placeholders (remote-av-N) are per call too
-        const count = () => room.remoteParticipants.size + 1;
+        const count = () => realRemoteCount(room.remoteParticipants) + 1;
         logCallEvent('call_join', { participants: count() });
         const onCount = () => logCallEvent('participants', { count: count() });
         const onReconnecting = () => logCallEvent('reconnecting');

@@ -24,7 +24,7 @@ export interface AnnotationRequestButtonProps {
     trackKey: string;
 }
 
-const btn = 'inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium bg-black/35 backdrop-blur-sm pointer-events-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70';
+const btn = 'inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium bg-pure-black/35 backdrop-blur-sm pointer-events-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70';
 
 /** m:ss, floor-free: 1ms left still reads as a second so the label never
  *  shows "0:00" beside a disabled button. */
@@ -66,7 +66,7 @@ export const AnnotationRequestButton: React.FC<AnnotationRequestButtonProps> = (
     const stop = (e: React.SyntheticEvent) => e.stopPropagation();
     if (asked) {
         return (
-            <span className={`${btn} text-white/70`} aria-live="polite" onClick={stop} onPointerDown={stop}>
+            <span className={`${btn} text-pure-white/70`} aria-live="polite" onClick={stop} onPointerDown={stop}>
                 <Hourglass size={12} /> Asked to draw
             </span>
         );
@@ -74,7 +74,7 @@ export const AnnotationRequestButton: React.FC<AnnotationRequestButtonProps> = (
     if (cooling) {
         return (
             <span
-                className={`${btn} text-white/55`}
+                className={`${btn} text-pure-white/55`}
                 role="status"
                 aria-live="polite"
                 title="They declined for now. You can ask again when this runs out."
@@ -92,7 +92,7 @@ export const AnnotationRequestButton: React.FC<AnnotationRequestButtonProps> = (
             onClick={e => { stop(e); annotationStore.requestAccess(trackKey); }}
             onDoubleClick={stop}
             onPointerDown={stop}
-            className={`${btn} text-white/85 hover:text-white hover:bg-black/50`}
+            className={`${btn} text-pure-white/85 hover:text-pure-white hover:bg-pure-black/50`}
         >
             <PenLine size={12} /> Ask to draw
         </button>

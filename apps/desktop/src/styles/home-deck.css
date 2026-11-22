@@ -37,9 +37,9 @@
      zero animation cost (doctrine rule 11), and they scroll with content so
      the "surface" stays at the top of the page, not the viewport. */
   background:
-    radial-gradient(56% 320px at 32% -40px, rgba(37, 224, 200, .075), transparent 70%),
-    radial-gradient(40% 260px at 78% -60px, rgba(37, 224, 200, .05), transparent 70%),
-    linear-gradient(160deg, transparent 0 30%, rgba(37, 224, 200, .012) 42%, transparent 54%),
+    radial-gradient(56% 320px at 32% -40px, rgb(var(--cl-lume-rgb) / .075), transparent 70%),
+    radial-gradient(40% 260px at 78% -60px, rgb(var(--cl-lume-rgb) / .05), transparent 70%),
+    linear-gradient(160deg, transparent 0 30%, rgb(var(--cl-lume-rgb) / .012) 42%, transparent 54%),
     linear-gradient(180deg, color-mix(in oklab, var(--cl-deep) 94%, #1b3a4a) 0, var(--cl-deep) 420px);
   background-color: var(--cl-deep);
 }
@@ -64,7 +64,7 @@
   color: var(--cl-text); margin: 0;
   /* Faint bioluminescent halo on the display type — static, sub-perceptual
      until you look for it, but it lifts the headline off the page. */
-  text-shadow: 0 0 34px rgba(37, 224, 200, .18);
+  text-shadow: 0 0 34px rgb(var(--cl-lume-rgb) / .18);
 }
 @container (min-width: 880px) {
   .hd-greet h1 { font-size: 36px; }
@@ -80,7 +80,7 @@
 .hd-mascotbtn { position: relative; }
 .hd-mascotbtn::before {
   content: ''; position: absolute; inset: -22% -28%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(37, 224, 200, .11), transparent 72%);
+  background: radial-gradient(closest-side, rgb(var(--cl-lume-rgb) / .11), transparent 72%);
   border-radius: 50%;
 }
 /* Keys scales with the pane: the slot width steps per container tier and the
@@ -157,7 +157,7 @@
      same "lit from above" grammar as the rest of the deep. */
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--cl-sink) 90%, var(--cl-raise)) 0, var(--cl-sink) 86px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  box-shadow: inset 0 1px 0 rgb(var(--cl-bright-rgb) / .035);
   /* --hd-d is this tile's entrance delay (set by the nth-child ladder below).
      Rows and numbers INSIDE the tile add to it, so the whole load sequence is
      one delay system with no JS. */
@@ -282,10 +282,11 @@
   font-family: var(--cl-font-body); color: inherit;
   transition: background .16s;
 }
-.hd-row:hover { background: rgba(255, 255, 255, .035); }
+.hd-row:hover { background: rgb(var(--cl-bright-rgb) / .035); --hd-backing: color-mix(in srgb, var(--cl-sink), rgb(var(--cl-bright-rgb)) 3.5%); }
+.hd-card .hd-av { --hd-backing: var(--cl-surface); }
 .hd-row:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: -2px; }
 
-.hd-av { position: relative; flex: 0 0 auto; width: 32px; height: 32px; }
+.hd-av { position: relative; flex: 0 0 auto; width: 32px; height: 32px; --status-backing: var(--hd-backing, var(--cl-sink)); }
 .hd-av > * { width: 100%; height: 100%; border-radius: 99px; overflow: hidden; }
 .hd-chip {
   display: flex; align-items: center; justify-content: center;
@@ -296,7 +297,7 @@
 .hd-dot {
   position: absolute; right: -1px; bottom: -1px;
   width: 11px; height: 11px; border-radius: 99px;
-  box-shadow: 0 0 0 2.5px var(--cl-sink);
+  box-shadow: 0 0 0 2.5px var(--status-backing, var(--cl-sink));
 }
 /* "On mobile": the shared phone glyph (StatusDot → MobileStatusGlyph) in
    place of the dot, on a small pill of the deck's sink colour so it punches
@@ -329,7 +330,7 @@
 }
 /* "Playing X" is the only friend signal accented — it's the one that reads as
    an invitation rather than a state. */
-.hd-sub--game { color: var(--cl-lume); font-weight: 700; }
+.hd-sub--game { color: var(--cl-lume-text); font-weight: 700; }
 .hd-sub--quiet { color: var(--cl-faint); }
 
 /* Unread weight is encoded in shape as well as number. */
@@ -344,14 +345,14 @@
   flex: 0 0 auto; padding: 1px 6px; border-radius: 5px;
   font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
   letter-spacing: .05em; text-transform: uppercase;
-  background: var(--cl-flash-tint); color: var(--cl-flash);
+  background: var(--cl-flash-tint); color: var(--cl-flash-text);
 }
 .hd-live {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 7px; border-radius: 99px;
   font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
   letter-spacing: .05em; text-transform: uppercase;
-  background: var(--cl-lume-tint); color: var(--cl-lume);
+  background: var(--cl-lume-tint); color: var(--cl-lume-text);
 }
 /* Mini avatar cluster inside a Friends-row .hd-live pill — who a friend is
    actually on the call WITH, not just that they're on one. Same overlap
@@ -373,7 +374,7 @@
 }
 .hd-more {
   margin: 9px 0 0; padding-top: 9px;
-  border-top: 1px solid rgba(42, 53, 88, .5);
+  border-top: 1px solid rgb(var(--cl-border-rgb) / .5);
   font-size: 11.5px; color: var(--cl-faint); font-family: var(--cl-font-body);
 }
 
@@ -434,7 +435,7 @@
   transition: opacity .14s, color .14s, background .14s;
 }
 .hd-card:hover .hd-unpin, .hd-unpin:focus-visible { opacity: 1; }
-.hd-unpin:hover { color: var(--cl-flash); background: var(--cl-flash-tint); }
+.hd-unpin:hover { color: var(--cl-flash-text); background: var(--cl-flash-tint); }
 
 /* ── Pin reorder (components/HomePinsGrid.tsx) ────────────────────────────────
    Same language as the server rail drag: the dragged pin's own slot is the
@@ -448,8 +449,8 @@
 .hd-cards[data-sorting] .hd-card::after { opacity: 0; }
 .hd-cards[data-sorting] .hd-unpin { opacity: 0; pointer-events: none; }
 .hd-card[data-dnd="source"] {
-  background: rgba(37, 224, 200, .05);
-  border: 1px dashed rgba(37, 224, 200, .55);
+  background: rgb(var(--cl-lume-rgb) / .05);
+  border: 1px dashed rgb(var(--cl-lume-rgb) / .55);
 }
 /* visibility, not opacity: the unread pill's pop animation fills opacity and
    would win over a plain declaration. */
@@ -458,7 +459,7 @@
 .hd-pinlift > .hd-card {
   height: 100%; box-sizing: border-box; cursor: grabbing;
   border-color: hsl(var(--hd-hue, 172) 65% 55% / .65);
-  box-shadow: 0 16px 34px -12px rgba(0, 0, 0, .7), 0 4px 10px -4px rgba(0, 0, 0, .5);
+  box-shadow: 0 16px 34px -12px rgb(var(--cl-shade-rgb) / .7), 0 4px 10px -4px rgb(var(--cl-shade-rgb) / .5);
   transform: scale(1.04);
   transition: none;
 }
@@ -474,7 +475,7 @@
   font-family: var(--cl-font-body); font-size: 12.5px; font-weight: 700;
   transition: color .16s, border-color .16s;
 }
-.hd-addcard:hover { color: var(--cl-lume); border-color: var(--cl-lume); }
+.hd-addcard:hover { color: var(--cl-lume-text); border-color: var(--cl-lume); }
 .hd-addcard:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
 
 /* ── Attention tile ───────────────────────────────────────────────────────── */
@@ -492,9 +493,9 @@
   padding: 2px 8px; border-radius: 99px; margin-bottom: 9px;
   font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
   letter-spacing: .09em; text-transform: uppercase;
-  background: rgba(255, 201, 77, .14); color: var(--cl-glow);
+  background: rgb(var(--cl-glow-rgb) / .14); color: var(--cl-glow-text);
 }
-.is-critical .hd-attnchip { background: var(--cl-flash-tint); color: var(--cl-flash); }
+.is-critical .hd-attnchip { background: var(--cl-flash-tint); color: var(--cl-flash-text); }
 .hd-attntitle {
   font-family: var(--cl-font-display); font-weight: 600; font-size: 15.5px;
   line-height: 1.25; color: var(--cl-text); margin: 0 0 4px;
@@ -533,7 +534,7 @@
   padding-right: 4px; border-radius: 9px;
   transition: background .16s;
 }
-.hd-call:hover { background: rgba(255, 255, 255, .035); }
+.hd-call:hover { background: rgb(var(--cl-bright-rgb) / .035); }
 .hd-call-open {
   flex: 1 1 auto; min-width: 0; height: 100%;
   display: flex; align-items: center; gap: 8px; padding: 0 6px;
@@ -566,7 +567,7 @@
   font-variant-numeric: tabular-nums; color: var(--cl-muted);
 }
 .hd-call-n svg { opacity: .75; }
-.hd-call-media { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 11px; color: var(--cl-lume); }
+.hd-call-media { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 11px; color: var(--cl-lume-text); }
 .hd-call .hd-call-media > * { margin-left: 0; } /* drop CallMediaSummary's inline-text ml-1.5 */
 .hd-call-media:empty { display: none; }
 .hd-call-act { flex: 0 0 auto; }
@@ -576,7 +577,7 @@
 .hd-call-here {
   display: inline-flex; align-items: center; gap: 6px; padding: 0 6px;
   font-family: var(--cl-font-mono); font-size: 10px; font-weight: 600;
-  letter-spacing: .08em; text-transform: uppercase; color: var(--cl-lume);
+  letter-spacing: .08em; text-transform: uppercase; color: var(--cl-lume-text);
   white-space: nowrap;
 }
 .hd-call-here i {
@@ -628,7 +629,7 @@
   letter-spacing: .06em; color: var(--cl-muted);
   transition: color .16s, background .16s;
 }
-.hd-calls-more:hover { color: var(--cl-text); background: rgba(255, 255, 255, .035); }
+.hd-calls-more:hover { color: var(--cl-text); background: rgb(var(--cl-bright-rgb) / .035); }
 .hd-calls-more:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
 .hd-calls-more svg { transition: transform .2s ease; }
 .hd-calls-more svg.is-up { transform: rotate(180deg); }
@@ -719,7 +720,7 @@
 .hd-floor {
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
   margin-top: 18px; padding: 13px 4px 0;
-  border-top: 1px solid rgba(42, 53, 88, .55);
+  border-top: 1px solid rgb(var(--cl-border-rgb) / .55);
   font-family: var(--cl-font-mono); font-size: 10.5px; font-weight: 600;
   letter-spacing: .06em; color: var(--cl-faint);
   animation: hd-row-in .38s var(--cl-spring) both; animation-delay: .55s;
@@ -732,7 +733,7 @@
 .hd-host[data-ambient="on"] .hd-floor-dot { animation: hd-breathe 4s ease-in-out infinite; }
 .hd-floor-stats { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .hd-floor-stats i { font-style: normal; opacity: .5; }
-.hd-floor-warn { color: var(--cl-glow); }
+.hd-floor-warn { color: var(--cl-glow-text); }
 .hd-floor-ver { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 /* ── Ambient layer — rising bioluminescent motes ─────────────────────────────
@@ -749,7 +750,7 @@
 .hd-inner { position: relative; z-index: 1; }
 .hd-mote {
   position: absolute; bottom: -8px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(37, 224, 200, .9) 0%, rgba(37, 224, 200, .25) 55%, transparent 75%);
+  background: radial-gradient(circle, rgb(var(--cl-lume-rgb) / .9) 0%, rgb(var(--cl-lume-rgb) / .25) 55%, transparent 75%);
   opacity: 0;
   animation: hd-rise var(--dur, 40s) linear infinite;
   animation-delay: var(--delay, 0s);
@@ -825,3 +826,52 @@
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-live:not(.sd-root *),
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-mascotbtn:not(.sd-root *)::before,
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-clear-buoy:not(.sd-root *) { animation: none; }
+
+/* ── The ambient motes in the other themes ───────────────────────────────────
+   Same look rules as the canvases (utils/ambientPalette.ts). Dark and dark
+   custom themes use the base rule above as is (a custom theme's accent comes
+   in through --cl-lume-rgb). No selector here matches plain Dark. Still only
+   transform / opacity animate (`scale` is a static size, composited). Worst-case
+   text contrast over a mote is checked in ambientPalette.test.ts. */
+/* Midnight: dim, fewer, no bloom (a glow on pure black reads cheap). */
+:root[data-theme="midnight"]:not([data-custom-theme]) .hd-ambient { opacity: .6; }
+:root[data-theme="midnight"]:not([data-custom-theme]) .hd-mote:nth-child(3n) { display: none; }
+/* Light-scheme themes (Light, custom light): soft bubbles, a pale accent fill
+   with a thin rim in the accent's UI shade, a little larger. */
+:root[data-scheme="light"] .hd-mote {
+  background: radial-gradient(circle, rgb(var(--cl-lume-rgb) / .22) 0 44%, rgb(var(--cl-lume-ui-rgb) / .6) 58%, transparent 72%);
+  scale: 2.2;
+}
+/* High contrast: half the motes, small neutral dots, very faint (body and
+   secondary text stay >= 7:1 with a mote right behind them). */
+:root[data-contrast="high"] .hd-mote { background: rgb(var(--cl-faint-rgb)); scale: 1; }
+:root[data-contrast="high"] .hd-mote:nth-child(2n) { display: none; }
+:root[data-contrast="high"] .hd-ambient { opacity: .35; }
+
+/* ── Light theme ────────────────────────────────────────────────────────────
+   Cream page, white cards with a soft warm edge (the website's bento), ink
+   text. Structural only — every colour is a token. Dark is untouched. */
+:root[data-scheme="light"] .hd-host { background: var(--cl-abyss); }
+/* A friend's "In call" pill: the accent text on the full accent tint is ~4:1
+   in light themes; half the tint keeps the pill and clears 4.5:1. */
+:root[data-scheme="light"] .hd-live { background: color-mix(in oklab, var(--cl-lume-tint) 50%, var(--cl-deep)); }
+:root[data-scheme="light"] .hd-greet h1 { text-shadow: none; }
+:root[data-scheme="light"] .hd-eyebrow,
+:root[data-scheme="light"] .hd-head h2 { color: var(--cl-muted); }
+:root[data-scheme="light"] .hd-tile {
+  background: var(--cl-deep);
+  border-color: var(--cl-border);
+  box-shadow: var(--cl-shadow-card);
+}
+:root[data-scheme="light"] .hd-tile::before {
+  background: radial-gradient(130px 84px at 100% 0, color-mix(in srgb, var(--hd-accent) 10%, transparent), transparent 70%);
+}
+:root[data-scheme="light"] .hd-tile:hover { border-color: color-mix(in srgb, var(--hd-accent) 45%, var(--cl-border)); }
+:root[data-scheme="light"] .hd-t--attn,
+:root[data-scheme="light"] .hd-t--call { border-color: color-mix(in srgb, var(--hd-accent) 50%, var(--cl-border)); }
+/* Accent text on white: the raw accents (teal/amber/lilac) are fills; darken them for text. */
+:root[data-scheme="light"] .hd-head .hd-ic { color: color-mix(in srgb, var(--hd-accent) 55%, var(--cl-text)); background: color-mix(in srgb, var(--hd-accent) 20%, transparent); }
+:root[data-scheme="light"] .hd-count { color: var(--cl-muted); }
+:root[data-scheme="light"] .hd-av { --status-backing: var(--hd-backing, var(--cl-deep)); }
+:root[data-scheme="light"] .hd-dot.hd-dot--mobile { background: var(--cl-deep); }
+:root[data-scheme="light"] .hd-row:hover { background: rgb(var(--cl-bright-rgb) / .05); --hd-backing: color-mix(in srgb, var(--cl-deep), rgb(var(--cl-bright-rgb)) 5%); }

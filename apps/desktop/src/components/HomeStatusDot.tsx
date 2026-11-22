@@ -1,6 +1,6 @@
 import React from 'react';
 import { StatusDot } from './StatusIcon';
-import type { UserStatus } from '../utils/userStatusModel';
+import { statusDotFill, type UserStatus } from '../utils/userStatusModel';
 
 /**
  * The presence dot on the Home deck's avatars (conversation rows, friends
@@ -34,5 +34,5 @@ export const HomeStatusDot: React.FC<{ status: UserStatus; onMobile?: boolean }>
             </span>
         );
     }
-    return <span className="hd-dot" style={{ background: HOME_DOT_COLOR[status] ?? HOME_DOT_COLOR.offline }} />;
+    return <span className="hd-dot" style={{ background: statusDotFill(status, HOME_DOT_COLOR[status] ?? HOME_DOT_COLOR.offline) }} />;
 };

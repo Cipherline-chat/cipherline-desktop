@@ -15,6 +15,7 @@
     ],
     "exclude": [
         "electron/test-*.ts",
-        "electron/**/*.test.ts"
+        "electron/**/*.test.ts",
+        "electron/**/__fixtures__/**"
     ]
 }

@@ -12,6 +12,7 @@
  * disagree.
  */
 import type { Roster } from './serverRosterCache';
+import { mentionTokenLabel } from './mentionTokens';
 
 export interface MentionMember {
     user_id: string;
@@ -60,8 +61,8 @@ export function deriveMentionRoster(roster: Roster | null | undefined, viewerUse
         .filter(r => !r.is_everyone)
         .map(r => ({ role_id: r.role_id, name: r.name, color: r.color, mentionable: !!r.mentionable }));
     const tokenMap: Record<string, string> = { everyone: '@everyone', here: '@here' };
-    for (const m of members) tokenMap[m.username] = `<@u:${m.user_id}:${m.username}>`;
-    for (const r of roles) tokenMap[r.name] = `<@r:${r.role_id}:${r.name}>`;
+    for (const m of members) tokenMap[m.username] = `<@u:${m.user_id}:${mentionTokenLabel(m.username)}>`;
+    for (const r of roles) tokenMap[r.name] = `<@r:${r.role_id}:${mentionTokenLabel(r.name)}>`;
     const me = viewerUserId ? roster.members.find(m => m.user_id === viewerUserId) : undefined;
     return { members, roles, tokenMap, myRoleIds: parseRoleIds(me?.role_ids) };
 }

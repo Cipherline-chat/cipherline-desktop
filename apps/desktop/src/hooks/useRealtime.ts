@@ -1,4 +1,5 @@
 import { emitGiftUpdated } from '../components/billing/gifts/giftEvents';
+import { OWN_SLOT_CHANGED_EVENT } from '../utils/muteSync';
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { WireGameDetail } from '../utils/richPresence';
 import { presenceBus, type WirePresence } from '../utils/presenceState';
@@ -41,6 +42,7 @@ import { parseGuestKeyEvent, parseGuestKeyRequestEvent, type GuestKeyEvent, type
 import { readTheme } from '../utils/profileTheme';
 import type { CosmeticOptions } from '../utils/profileCosmetics';
 import { netTiming } from '../utils/netTiming';
+import { DISCORD_LINK_CHANGED_EVENT } from '../utils/discordLinkEvents';
 
 /** Matches the application-defined close code in the gateway. */
 const WS_CLOSE_UPGRADE_REQUIRED = 4426;
@@ -526,6 +528,28 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
      *  GET /channels/:cid/saves rather than trusting anything in the payload.
      *  Also fired for channel:saves_changed (save/unsave without a pin change). */
     const [channelPinsChangedEvent, setChannelPinsChangedEvent] = useState<{ server_id: string; channel_id: string; ts: number } | null>(null);
+    /** Imported history (Discord import phase 2). Rows are never fanned out one
+     *  by one: `channel:import_progress` says "refetch the newest page of this
+     *  channel" (throttled server-side), `channel:import_removed` says "drop
+     *  every cached row of import X here". Metadata only; same VIEW_CHANNEL
+     *  audience as pins. */
+    const [channelImportEvent, setChannelImportEvent] = useState<
+        | { kind: 'progress'; server_id: string; channel_id: string; ts: number }
+        // Either a whole import (`import_id`) or one imported author's rows
+        // (`import_author_id`: the claimant deleted them, phase 3).
+        | { kind: 'removed'; server_id: string; channel_id: string; import_id?: string; import_author_id?: string; ts: number }
+        | null
+    >(null);
+    /** `import:message_reported` — to the IMPORTER only: a message they imported
+     *  was reported (plan B6.2 rule 8). Never names the reporter. */
+    const [importReportedEvent, setImportReportedEvent] = useState<{ server_id: string; channel_id: string; message_id: string; ts: number } | null>(null);
+    /** `import:author_claim` (phase 3) — an imported author in a server you are
+     *  in was claimed (`claimed_user_id`) or unclaimed (null): cached rows of
+     *  that author re-render as the claimant or the imported name. */
+    const [importClaimEvent, setImportClaimEvent] = useState<{ server_id: string; author_id: string; claimed_user_id: string | null; ts: number } | null>(null);
+    /** `discord:claims_changed` (phase 3) — to YOU only: an import auto-claimed
+     *  your Discord messages, or you can claim some. Metadata; re-read /discord/claims. */
+    const [discordClaimsEvent, setDiscordClaimsEvent] = useState<{ server_id: string; ts: number } | null>(null);
     /** Fires on server:emojis_updated — a moderator added, renamed, or
      *  deleted one of this server's custom emojis (docs/custom-emoji-design.md).
      *  Carries ONLY server_id, same rationale as serverUpdatedEvent: the key
@@ -1058,6 +1082,15 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         selfPresenceBus.emit(msg.data);
                     }
 
+                    // Another of OUR devices wrote an own-device slot (mutes, themes, ...): a content-free "pull now".
+                    // Validated here (slot name only); each sync hook filters on the slot it owns.
+                    if (msg.event === 'own_slot:changed') {
+                        const slot = msg.data?.slot;
+                        if (typeof slot === 'string' && /^[a-z_]{1,32}$/.test(slot)) {
+                            window.dispatchEvent(new CustomEvent(OWN_SLOT_CHANGED_EVENT, { detail: { slot } }));
+                        }
+                    }
+
                     if (msg.event === 'friend:removed') {
                         setFriendRemovedEvent({
                             removed_by: msg.data.removed_by,
@@ -1295,11 +1328,57 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             ts: Date.now(),
                         });
                     }
+                    if (msg.event === 'channel:import_progress' && typeof msg.data?.channel_id === 'string') {
+                        setChannelImportEvent({ kind: 'progress', server_id: String(msg.data.server_id ?? ''), channel_id: msg.data.channel_id, ts: Date.now() });
+                    }
+                    if (msg.event === 'channel:import_removed' && typeof msg.data?.channel_id === 'string'
+                        && (typeof msg.data?.import_id === 'string' || typeof msg.data?.import_author_id === 'string')) {
+                        setChannelImportEvent({
+                            kind: 'removed', server_id: String(msg.data.server_id ?? ''), channel_id: msg.data.channel_id,
+                            ...(typeof msg.data.import_id === 'string' ? { import_id: msg.data.import_id } : {}),
+                            ...(typeof msg.data.import_author_id === 'string' ? { import_author_id: msg.data.import_author_id } : {}),
+                            ts: Date.now(),
+                        });
+                    }
+                    if (msg.event === 'import:author_claim' && typeof msg.data?.author_id === 'string') {
+                        setImportClaimEvent({
+                            server_id: String(msg.data.server_id ?? ''), author_id: msg.data.author_id,
+                            claimed_user_id: typeof msg.data.claimed_user_id === 'string' ? msg.data.claimed_user_id : null, ts: Date.now(),
+                        });
+                    }
+                    if (msg.event === 'discord:claims_changed') {
+                        setDiscordClaimsEvent({ server_id: String(msg.data?.server_id ?? ''), ts: Date.now() });
+                    }
+                    // Phase 3b: your Discord link was moved to or away from this
+                    // account (a Discord sign-in elsewhere). Metadata only: the
+                    // shared link store re-reads /discord/link, which drives
+                    // Settings and the "moved to another account" notice.
+                    // (A window event, not an import: this hook must not pull the
+                    // Discord API module into everything that uses it.)
+                    if (msg.event === 'discord:link_changed') {
+                        window.dispatchEvent(new CustomEvent(DISCORD_LINK_CHANGED_EVENT));
+                        setDiscordClaimsEvent({ server_id: '', ts: Date.now() });
+                    }
+                    if (msg.event === 'import:message_reported' && typeof msg.data?.message_id === 'string') {
+                        setImportReportedEvent({ server_id: String(msg.data.server_id ?? ''), channel_id: String(msg.data.channel_id ?? ''), message_id: msg.data.message_id, ts: Date.now() });
+                    }
                     if (msg.event === 'server:emojis_updated') {
                         setEmojisChangedEvent({
                             server_id: msg.data.server_id,
                             ts: Date.now(),
                         });
+                    }
+                    // Stickers: payload is `{ server_id }` only (the list endpoint is
+                    // the one place that decides who sees key material), so refetch
+                    // that server's list into the shared cache. Only a server whose
+                    // list this session already holds — nothing is fetched for one
+                    // that was never opened in a picker or a sticker message.
+                    // Loaded on demand: this hook must not pull axios into everything that uses it.
+                    if (msg.event === 'server:stickers_updated' && typeof msg.data?.server_id === 'string' && token) {
+                        const sid = msg.data.server_id as string;
+                        void import('../utils/stickers/serverStickers').then(({ refreshServerStickers, stickerListCache }) => {
+                            if (stickerListCache.has(sid)) return refreshServerStickers(sid, token);
+                        }).catch(() => {});
                     }
                     if (msg.event === 'server:owner_lapsed' || msg.event === 'server:owner_grace_cleared') {
                         setServerGraceStatusEvent({
@@ -1727,6 +1806,10 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         serverUpdatedEvent,
         serverMembersChangedEvent,
         channelPinsChangedEvent,
+        channelImportEvent,
+        importReportedEvent,
+        importClaimEvent,
+        discordClaimsEvent,
         emojisChangedEvent,
         serverGraceStatusEvent,
         channelKeyEnvelopesReadyEvents,

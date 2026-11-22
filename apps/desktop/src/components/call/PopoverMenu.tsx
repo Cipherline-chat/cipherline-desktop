@@ -201,7 +201,7 @@ export const PerUserVolumeSlider = ({ label, value, onChange }: { label: string;
         <>
             <div className="flex justify-between items-center text-[10px]">
                 <span className="text-cl-faint">{label}</span>
-                <span className="text-cl-lume font-semibold">{formatPerUserVolume(live)}</span>
+                <span className="text-cl-lume-text font-semibold">{formatPerUserVolume(live)}</span>
             </div>
             <VolumeCeilingWatch>
                 <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={value} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={handle} formatLabel={formatPerUserVolume} />

@@ -20,10 +20,24 @@ export interface MentionMatchable {
     discriminator?: number | null;
 }
 
-/** Lowercase + strip combining marks so "jose" finds "José". Never throws. */
+/** Small-capital Latin letters (ᴀʙᴄ...) have no Unicode compatibility
+ *  decomposition, so NFKD alone leaves "ᴀᴇsᴛʜᴇᴛɪᴄ" unmatched by "aesthetic". */
+const SMALL_CAPS: Record<string, string> = {
+    'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g', 'ʜ': 'h', 'ɪ': 'i',
+    'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n', 'ᴏ': 'o', 'ᴘ': 'p', 'ʀ': 'r', 'ꜱ': 's',
+    'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v', 'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z',
+};
+
+/**
+ * Lowercase + strip combining marks so "jose" finds "José". Compatibility
+ * folding (NFKD) also lets plain typing find decorative names: 𝓐𝓮𝓼𝓽𝓱𝓮𝓽𝓲𝓬,
+ * 𝐁𝐨𝐥𝐝, Ⓐ and fullwidth letters fold to ASCII, and small caps are mapped by
+ * hand. Never throws.
+ */
 export function foldForMatch(s: string): string {
     let out = s;
-    try { out = out.normalize('NFD').replace(/[̀-ͯ]/g, ''); } catch { /* keep raw */ }
+    try { out = out.normalize('NFKD').replace(/[̀-ͯ]/g, ''); } catch { /* keep raw */ }
+    out = out.replace(/[ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘʀꜱᴛᴜᴠᴡʏᴢ]/g, c => SMALL_CAPS[c] ?? c);
     return out.toLowerCase();
 }
 

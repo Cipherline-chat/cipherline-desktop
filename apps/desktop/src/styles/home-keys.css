@@ -100,8 +100,8 @@
   aspect-ratio: 110 / 92;
   pointer-events: none;
 }
-.hk-eyes { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; fill: var(--cl-abyss); }
-.hk-eyes--stroke { fill: none; stroke: var(--cl-abyss); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+.hk-eyes { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; fill: var(--cl-keys-ink); }
+.hk-eyes--stroke { fill: none; stroke: var(--cl-keys-ink); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
 /* camo: the eyes left floating once he has faded (fade in as he fades out) */
 .hk-eyes--light { stroke: #EFFFFC; opacity: 0; }
 

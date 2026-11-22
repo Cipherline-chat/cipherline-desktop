@@ -30,3 +30,21 @@ export async function writeToClipboard(text: string): Promise<void> {
     document.body.removeChild(el);
     if (!ok) throw new Error('clipboard write failed');
 }
+
+/**
+ * Boolean-returning wrapper over {@link writeToClipboard} for copy buttons.
+ * `true` = the text is on the clipboard; `false` = every tier failed, so the
+ * caller MUST show a visible fallback (select/show the text) instead of a
+ * silent no-op. Never call `navigator.clipboard` directly from a component:
+ * the packaged app's permission handler denies it
+ * (electron/permission-policy.ts, decidePermissionRequest `default: return false`),
+ * and the ratchet in clipboard.noDirect.test.ts enforces that.
+ */
+export async function copyText(text: string): Promise<boolean> {
+    try {
+        await writeToClipboard(text);
+        return true;
+    } catch {
+        return false;
+    }
+}

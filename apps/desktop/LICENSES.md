@@ -122,6 +122,120 @@ The "Light" noise suppressor runs SpeexDSP's preprocessor, compiled to WebAssemb
 
 ---
 
+## Rust call-audio engine (cl-audio, compiled to WebAssembly)
+
+The opt-in "New (beta)" audio engine (Settings → Voice & Video → Audio engine) is Cipherline's own `cl-audio`
+crate (Apache-2.0, `crates/cl-audio`, built to `src/audio/engine/cl_audio.wasm`; the exact build is recorded in
+`cl_audio.wasm.json`). It statically links these Rust crates (dependency set from `cargo metadata` for
+`wasm32-unknown-unknown`, 45 crates besides `cl-audio`; none is copyleft):
+
+Model weights compiled into the same binary (both MIT, run by Cipherline's own code; details in `crates/cl-audio/assets/README.md`):
+
+- **FastEnhancer** B and S (the Strong noise suppression, run in a Web Worker) — https://github.com/aask1357/fastenhancer,
+  Copyright (c) 2025 AHN Sung Hwan, trained on the DNS Challenge data.
+- **Silero VAD** v6, 16 kHz (the speech detector) — https://github.com/snakers4/silero-vad, Copyright (c) 2020-present Silero Team.
+
+BSD-3-Clause:
+
+- **nnnoiseless** 0.5.2 — Rust port of Xiph's RNNoise, embeds the RNNoise model weights. Copyright (c) 2020, Joe Neeman;
+  Copyright (c) 2017, Mozilla; Copyright (c) 2007-2017, Jean-Marc Valin; Copyright (c) 2005-2017, Xiph.Org Foundation;
+  Copyright (c) 2003-2004, Mark Borgerding
+- **sonora** 0.3.0 and its `sonora-aec3`, `sonora-agc2`, `sonora-common-audio`, `sonora-fft`, `sonora-ns`, `sonora-simd` —
+  pure-Rust port of the WebRTC audio-processing module (AGC2, limiter, high-pass). Copyright (c) 2011, The WebRTC
+  Project Authors; Copyright (c) 2016, Arun Raghavan and contributors; Copyright (c) 2026, dignifiedquire
+
+> Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+> following conditions are met:
+>
+> - Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+>   disclaimer.
+> - Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following
+>   disclaimer in the documentation and/or other materials provided with the distribution.
+> - Neither the name of the copyright holders (including the Xiph.Org Foundation, Mozilla and The WebRTC Project Authors)
+>   nor the names of its contributors may be used to endorse or promote products derived from this software without
+>   specific prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+> INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+> DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+> SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+> SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+> WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+> OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+MIT:
+
+- **rubato** 0.14.1 and **realfft** 3.5.1 — Copyright (c) Henrik Enquist (resampling, FFT front end)
+- **tracing** 0.1.44, **tracing-core** 0.1.36 (and the build-time `tracing-attributes`) — Copyright (c) Tokio Contributors
+- **derive_more** 2.1.1 (and the build-time `derive_more-impl`) — Copyright (c) Jelte Fennema
+
+MIT OR Apache-2.0 (Cipherline uses the MIT option; Apache-2.0 notices are in the Apache section below):
+
+- **rustfft** 6.4.1 (Allen Welkie), **primal-check**, **strength_reduce**, **transpose**, **easyfft**, **generic_singleton**,
+  **array-init**, **num-complex**, **num-integer**, **num-traits** (The Rust Project Developers), **once_cell**, **cfg-if**,
+  **scopeguard**, **lock_api**, **parking_lot**, **parking_lot_core**, **smallvec** (The Servo Project Developers),
+  **pin-project-lite**, **serde**, **serde_core** (and the build-time `serde_derive`, `syn`, `quote`, `proc-macro2`,
+  `unicode-ident`, `unicode-xid`) — copyright held by their respective authors
+- **bytemuck** 1.25.2 (Zlib OR Apache-2.0 OR MIT) and **anymap3** 1.1.0 (BlueOak-1.0.0 OR MIT OR Apache-2.0) — MIT option
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+> documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+> rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+> persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and
+> this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED
+> "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+> MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+> BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## Retired: native DeepFilterNet "Strong" (cl-audio-node addon)
+
+NOT SHIPPED any more: Strong is now FastEnhancer inside the page's wasm (see above) and no build packages the addon or the
+model. The entry stays until the retired code (`electron/audio-engine-*`, `crates/cl-audio-node`) is deleted.
+
+Strong noise suppression ran natively in an Electron utility process: `crates/cl-audio-node` (Apache-2.0, Cipherline's own) is a
+Node-API addon (`build/Release/cl_audio_node.node`) that links `cl-audio` with its `dfn` feature, plus the DeepFilterNet 3 low-delay
+model file (`resources/dfn/DeepFilterNet3_ll_onnx.tar.gz`, fetched by a script that no longer exists, pinned commit
+and sha256, never committed). Dependency set from `cargo metadata` (runtime dependencies of `cl-audio-node`, `x86_64-unknown-linux-gnu`,
+146 crates besides `cl-audio-node` and `cl-audio`; none is GPL, LGPL, AGPL or SSPL; nothing has a missing licence field). The
+nnnoiseless / sonora / rubato entries above apply to this binary too. New, grouped by licence:
+
+MIT:
+
+- **napi** 3.16.2, **napi-sys** 3.4.1 (and the build-time **napi-derive** 3.7.1, **napi-build** 2.6.0) — the Node-API binding
+  (napi-rs), Copyright (c) 2020 LongYinan and contributors. Used as plain crates built by cargo: no napi CLI, no npm package.
+
+ISC:
+
+- **libloading** 0.9.1 — Copyright (c) 2015 Simonas Kazlauskas (napi loads the Node-API symbols lazily)
+
+MIT OR Apache-2.0 (Cipherline uses the MIT option; Apache-2.0 notices are in the Apache section below):
+
+- **deep_filter** (libDF) 0.5.7-pre, git `Rikorose/DeepFilterNet` @ `7b14b895fe7fc42cab72b4a4c1e49c982bd6404b` — Copyright (c) Hendrik
+  Schröter. The repository states that all code **and model weights** are dual-licensed MIT / Apache-2.0, which covers the bundled
+  standard model compiled into the addon and the separately downloaded `DeepFilterNet3_ll_onnx.tar.gz`
+- **tract-core**, **tract-onnx**, **tract-linalg**, **tract-hir**, **tract-nnef** and the other `tract-*` crates 0.21.4 — Copyright
+  (c) Sonos, Inc. and Mathieu Poumeyrol (the neural-network runtime that executes DeepFilterNet)
+- **ndarray** 0.15.6 (Ulrik Sverdrup, Jim Turner), **flate2**, **tar** (Alex Crichton), **ctor** (Matt Mastracci), and about 70 further
+  crates of the tract / ndarray / serde / regex family — copyright held by their respective authors
+
+Other permissive licences in that set (all on the repository's allow list, or a permissive option of a multi-licence crate), flagged here
+because they are not plain MIT / Apache-2.0 / BSD / ISC:
+
+- **zlib-rs** 0.6.8 — Zlib licence (permissive; requires the notice to be kept, "altered source versions must be plainly marked")
+- **tiny-keccak** 2.0.2 — CC0-1.0 (public-domain dedication)
+- **libm** 0.2.11 — MIT AND (MIT OR Apache-2.0)
+- **unicode-ident** 1.0.27 — (MIT OR Apache-2.0) AND Unicode-3.0 (Unicode data licence, permissive)
+- **aho-corasick**, **byteorder**, **memchr**, **same-file**, **walkdir** — Unlicense OR MIT (MIT option)
+- **miniz_oxide**, **adler2**, **bytemuck**, **zerocopy**, **rustix**, **linux-raw-sys** — multi-licence with an MIT or Apache-2.0 option
+
+The Windows and macOS builds add platform crates (`windows-sys` and friends, MIT OR Apache-2.0) that this Linux metadata run does not
+list; re-run `cargo metadata --filter-platform <triple>` per target when the CI build is added (docs/plans/audio-strong-native-ci.md).
+
+---
+
 ## BSD 3-Clause License (dual-licensed — BSD option chosen)
 
 The following package is available under BSD-3-Clause OR GPL-2.0; Cipherline uses the
@@ -183,7 +297,7 @@ files as published by Google Fonts / Fontsource, unmodified):
 
 ## SIL Open Font License 1.1 (fonts)
 
-The following fonts are bundled with the app (message fonts, `src/assets/fonts`) as
+The following fonts are bundled with the app (message fonts and the Accessibility font choice, `src/assets/fonts`) as
 latin-subset woff2 files exactly as published by Google Fonts / Fontsource (not
 modified by us). The full licence text of each ships inside the app as
 `licenses/fonts/<Font>-OFL.license` (from `public/licenses/fonts`), as the OFL requires.
@@ -192,6 +306,8 @@ Approved by the owner on 2026-11-16 (OFL is not on the default allow-list).
 - **Lora** — Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name "Lora"
 - **Caveat** — Copyright 2014 The Caveat Project Authors (https://github.com/googlefonts/caveat)
 - **Atkinson Hyperlegible** — Copyright 2020 Braille Institute of America, Inc.
+- **Lexend** — Copyright 2019 The Lexend Project Authors (https://github.com/googlefonts/lexend). UI / message font choice in Settings → Accessibility (latin subset, regular + bold)
+- **OpenDyslexic** — Copyright (c) 2019-07-29, Abbie Gonzalez (https://abbiecod.es), with Reserved Font Name OpenDyslexic. UI / message font choice in Settings → Accessibility (latin subset, regular + bold). The OFL-1.1 release (3.0); the older Bitstream Vera-licensed OpenDyslexic is not used
 
 Full license text: https://openfontlicense.org (SIL Open Font License, Version 1.1)
 

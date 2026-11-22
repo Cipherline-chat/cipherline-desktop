@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useState, useCallback, useSyncExternalStore }
 import { Volume2, Headphones, Video, VideoOff, SlidersHorizontal, AudioLines } from 'lucide-react';
 import { PttKeybind } from './PttKeybind';
 import { PTT_NO_KEY_HINT } from '../utils/pushToTalk';
+import { ELEVATED_GAME_HELP, holdKeyFocusNote, isWindowsPlatform } from '../utils/holdKeys';
+import { useHoldKeySupport } from '../hooks/useHoldKeySupport';
 import {
     DEFAULT_VOICE_SETTINGS,
     MIC_VOLUME_MAX,
@@ -13,6 +15,8 @@ import { MAX_VOLUME_PERCENT } from '../utils/volumeLimits';
 import { VolumeCeilingWatch } from './moments/VolumeCeilingWatch';
 import { useMediaDevices, deviceLabel } from '../hooks/useMediaDevices';
 import { CipherlineVoiceProcessor } from '../utils/voiceProcessor';
+import { CL_GATE_DEFAULT_DB, CL_GATE_MAX_DB, CL_GATE_MIN_DB, clampGateDb, strongUnavailableNote } from '../utils/clAudioSettings';
+import { nativeEngineStatus, type NativeStatus } from '../utils/clAudioNative';
 import { ClSlider } from './ClSlider';
 import { useSliderResetHint } from './sliderReset';
 import {
@@ -30,7 +34,6 @@ import { registerOutputAudioContext, unregisterOutputAudioContext } from '../uti
 import { testSpeakers, DEFAULT_SOUNDS } from '../utils/notificationSounds';
 import { describeSpeakerTest } from '../utils/speakerTestSummary';
 import { subscribe as subscribeAudioHealth, getSnapshot as getAudioHealthSnapshot } from '../utils/audioHealth';
-import { describeAutoEcho } from '../utils/outputKind';
 import { ClToggle, ClButton, ClSelect, ClSegment } from './cl';
 import { NoiseSuppressionEngine, NoiseSuppressionInfo } from './NoiseSuppressionEngine';
 import type { ClSelectOption } from './cl';
@@ -112,18 +115,13 @@ const VuMeter: React.FC<{ level: number }> = ({ level }) => {
 
 // ── Gate Slider — live level bar built into slider track ──────────────────────
 
-const GATE_DEFAULT_THRESHOLD = DEFAULT_VOICE_SETTINGS.voiceGateThreshold; // dBFS
-const GATE_MIN = -60, GATE_MAX = -20;
 
 /**
- * `level` is the gate's OWN detector — the loudest 128-sample block of each
- * 50 ms, measured where the gate measures it (after noise suppression, before
- * EQ / auto gain / mic volume) — and `open` is the gate's real state. It used
- * to be the end-of-chain level instead: shifted by AGC and mic volume, and
- * blank whenever the gate was closed, so with noise suppression off the room
- * noise could sit visibly under the thumb while the gate let it through.
+ * `level` is the gate's OWN detector (the raw mic level, before any processing)
+ * and `open` is the gate's real state, so the room noise sits visibly under the
+ * thumb exactly when the gate lets it through.
  *
- * Inline in the Voice gate row: the track, then the threshold (lume while the
+ * Inline in the Noise gate row: the track, then the threshold (lume while the
  * gate is open = you are transmitting). Arrow keys move it 1 dB, Home/End jump
  * to the ends; double-click resets.
  */
@@ -135,7 +133,13 @@ const GateSlider: React.FC<{
     disabled?: boolean;
     /** Which part to draw: the draggable track (under the row), the live readout (the row), or both. */
     show?: 'track' | 'readout' | 'both';
-}> = ({ threshold, level, open, onChange, disabled, show = 'both' }) => {
+    /** The scale (dBFS): the noise gate reads the raw mic level. */
+    min?: number;
+    max?: number;
+    /** Reset value for a double-click. */
+    resetTo?: number;
+    ariaLabel?: string;
+}> = ({ threshold, level, open, onChange, disabled, show = 'both', min = CL_GATE_MIN_DB, max = CL_GATE_MAX_DB, resetTo = CL_GATE_DEFAULT_DB, ariaLabel = 'Noise gate threshold' }) => {
     const trackRef = useRef<HTMLDivElement | null>(null);
     const dragging = useRef(false);
     const [grabbing, setGrabbing] = useState(false);
@@ -147,7 +151,7 @@ const GateSlider: React.FC<{
     }, [hintAnchorRef]);
 
     const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
-    const dbToPercent = (db: number) => clamp((db + 60) / 40 * 100, 0, 100);
+    const dbToPercent = (db: number) => clamp((db - min) / (max - min) * 100, 0, 100);
 
     const levelPct = isFinite(level) ? dbToPercent(level) : 0;
     const thumbPct = dbToPercent(threshold);
@@ -166,8 +170,8 @@ const GateSlider: React.FC<{
         if (!trackRef.current) return threshold;
         const rect = trackRef.current.getBoundingClientRect();
         const pct = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-        return Math.round(pct * 40 - 60);
-    }, [threshold]);
+        return Math.round(pct * (max - min) + min);
+    }, [threshold, min, max]);
 
     const onPointerDown = (e: React.PointerEvent) => {
         hint.closeHint();
@@ -186,9 +190,9 @@ const GateSlider: React.FC<{
         if (disabled) return;
         const step = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1
             : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0;
-        if (step) { onChange(clamp(threshold + step, GATE_MIN, GATE_MAX)); e.preventDefault(); return; }
-        if (e.key === 'Home') { onChange(GATE_MIN); e.preventDefault(); }
-        if (e.key === 'End') { onChange(GATE_MAX); e.preventDefault(); }
+        if (step) { onChange(clamp(threshold + step, min, max)); e.preventDefault(); return; }
+        if (e.key === 'Home') { onChange(min); e.preventDefault(); }
+        if (e.key === 'End') { onChange(max); e.preventDefault(); }
     };
 
     return (
@@ -205,9 +209,9 @@ const GateSlider: React.FC<{
                     className={`cls vv-gate${grabbing ? ' grab' : ''}${disabled ? ' vv-off' : ''} select-none`}
                     role="slider"
                     tabIndex={disabled ? -1 : 0}
-                    aria-label="Activity threshold"
-                    aria-valuemin={GATE_MIN}
-                    aria-valuemax={GATE_MAX}
+                    aria-label={ariaLabel}
+                    aria-valuemin={min}
+                    aria-valuemax={max}
                     aria-valuenow={threshold}
                     aria-valuetext={`${threshold} dBFS${disabled ? '' : open ? ', transmitting' : ', gated'}`}
                     aria-disabled={disabled || undefined}
@@ -216,7 +220,7 @@ const GateSlider: React.FC<{
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
                     onKeyDown={onKeyDown}
-                    onDoubleClick={() => { if (!disabled) onChange(GATE_DEFAULT_THRESHOLD); }}
+                    onDoubleClick={() => { if (!disabled) onChange(resetTo); }}
                 >
                     <span className="sbody">
                         <span className="strk" />
@@ -587,6 +591,8 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     const { settings, deviceProfiles } = voice;
     // Bumped when push to talk is switched on with no key: opens the key field's capture straight away.
     const [pttCapture, setPttCapture] = useState(0);
+    // Can the push-to-talk key be watched while a game has focus here? (main's dry run; null = yes / unknown)
+    const pttFocusNote = holdKeyFocusNote(useHoldKeySupport(settings.pushToTalk ? settings.pushToTalkKey : null));
     const cameraTier = useCameraQualityTier();
     const incomingMode = useIncomingVideoMode();
 
@@ -740,11 +746,18 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     const echoCancellationSetting = resolveEchoCancellation(settings.echoCancellation);
     // Auto / On / Off: Auto follows the output device until the user picks On or Off (utils/outputKind.ts).
     const echoMode: EchoMode = voice.echoAuto.auto ? 'auto' : echoCancellationSetting ? 'on' : 'off';
-    const echoAutoNote = voice.echoAuto.auto ? describeAutoEcho(voice.echoAuto.outputKind) : ECHO_NOTE;
     const onEchoMode = (m: EchoMode) => {
         if (m === 'auto') voice.setEchoCancellationAuto();
         else voice.setEchoCancellation(m === 'on');
     };
+    // Strong's worker (FastEnhancer, utils/clAudioNative.ts): null while the probe is in flight
+    const [nativeStrong, setNativeStrong] = useState<NativeStatus | null>(null);
+    useEffect(() => {
+        let live = true;
+        void nativeEngineStatus().then((v) => { if (live) setNativeStrong(v); });
+        return () => { live = false; };
+    }, []);
+    const manualDb = clampGateDb(settings.voiceGateManualDb);
     const echoMountedRef = useRef(false);
     useEffect(() => {
         if (!echoMountedRef.current) { echoMountedRef.current = true; return; }
@@ -889,7 +902,12 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                         style={{ flex: 1, minWidth: 0 }}
                     />
                 </Row>
-                <Row label="Input volume" labels={['Microphone level']} info="How loud your mic is sent. Remembered per microphone.">
+                <Row
+                    label="Input volume"
+                    labels={['Microphone level']}
+                    note={settings.volumeNormalization ? 'Not used while Auto gain control is on.' : undefined}
+                    info="How loud your mic is sent. Remembered per microphone."
+                >
                     <VolumeSlider value={settings.micVolume} onChange={voice.setMicVolume} resetValue={DEFAULT_VOICE_SETTINGS.micVolume} max={MIC_VOLUME_MAX} />
                 </Row>
                 <Row
@@ -964,34 +982,51 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                         mode={settings.noiseSuppressionMode}
                         onEnabledChange={voice.setNoiseSuppression}
                         onModeChange={voice.setNoiseSuppressionMode}
+                        strongNote={strongUnavailableNote(settings, nativeStrong)}
                     />
                 </Row>
                 <Row
-                    label="Voice gate"
-                    labels={['Activity threshold']}
-                    info="Only sends your mic when it is louder than the threshold. Drag the marker against your live level: left is more sensitive (quieter speech gets through), right sends only loud speech. The dot lights up green while you are transmitting. Double-click the track to reset it. Remembered per microphone."
+                    label="Noise gate"
+                    labels={['Noise gate threshold']}
+                    info="Off by default, and rarely needed: with noise suppression on, silence is already sent whenever you are not talking. When on, whenever your microphone is quieter than the line you set, nothing is sent, so room noise and breathing disappear. Anything under the line is cut, including soft speech. Drag the marker so your room sits to its left and your voice to its right; the bar shows your microphone level as the gate sees it (before any processing). The dot lights up green while you are transmitting. Double-click the track to reset it."
                 >
-                    <GateSlider
-                        show="readout"
-                        threshold={settings.voiceGateThreshold}
-                        level={gateLevel.db}
-                        open={gateLevel.open}
-                        onChange={voice.setVoiceGateThreshold}
-                        disabled={!settings.voiceGate}
-                    />
-                    <ClToggle checked={settings.voiceGate} onChange={voice.setVoiceGate} aria-label="Voice gate" />
+                    {settings.voiceGateManual === true && (
+                        <GateSlider
+                            show="readout"
+                            threshold={manualDb}
+                            level={gateLevel.db}
+                            open={gateLevel.open}
+                            onChange={voice.setVoiceGateManualDb}
+                            min={CL_GATE_MIN_DB}
+                            max={CL_GATE_MAX_DB}
+                            resetTo={CL_GATE_DEFAULT_DB}
+                            ariaLabel="Noise gate threshold"
+                        />
+                    )}
+                    <ClToggle checked={settings.voiceGateManual === true} onChange={voice.setVoiceGateManual} aria-label="Noise gate" />
                 </Row>
-                <div className="vv-gate-drop" data-labels="Activity threshold">
-                    <GateSlider
-                        show="track"
-                        threshold={settings.voiceGateThreshold}
-                        level={gateLevel.db}
-                        open={gateLevel.open}
-                        onChange={voice.setVoiceGateThreshold}
-                        disabled={!settings.voiceGate}
-                    />
-                </div>
-                <Row label="Push to talk" note={settings.pushToTalk && !settings.pushToTalkKey ? PTT_NO_KEY_HINT : undefined} info="Hold a key to transmit; you are silent otherwise. Any key works, including a modifier such as Alt. Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal; on Wayland the key needs a non-modifier key). Click the key to change it; it is the same key as in Keybinds, and the same on every microphone.">
+                {settings.voiceGateManual === true && (
+                    <div className="vv-gate-drop" data-labels="Noise gate threshold">
+                        <GateSlider
+                            show="track"
+                            threshold={manualDb}
+                            level={gateLevel.db}
+                            open={gateLevel.open}
+                            onChange={voice.setVoiceGateManualDb}
+                            min={CL_GATE_MIN_DB}
+                            max={CL_GATE_MAX_DB}
+                            resetTo={CL_GATE_DEFAULT_DB}
+                            ariaLabel="Noise gate threshold"
+                        />
+                    </div>
+                )}
+                <Row
+                    label="Push to talk"
+                    note={settings.pushToTalk && !settings.pushToTalkKey
+                        ? PTT_NO_KEY_HINT
+                        : pttFocusNote ? <span role="status" data-testid="ptt-background-hint">{pttFocusNote}</span> : undefined}
+                    info={`Hold a key to transmit; you are silent otherwise. Any key works, including a modifier such as Alt, a numpad key, Right Alt, or a mouse button (middle, 4 or 5). Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal; on Wayland the key needs a non-modifier key and cannot be a mouse button). ${isWindowsPlatform() ? `${ELEVATED_GAME_HELP} ` : ''}Click the key to change it; it is the same key as in Keybinds, and the same on every microphone.`}
+                >
                     {settings.pushToTalk && (
                         <PttKeybind
                             value={settings.pushToTalkKey}
@@ -1003,8 +1038,6 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 </Row>
                 <Row
                     label="Echo cancellation"
-                    kind="block"
-                    note={echoAutoNote}
                     info={`Stops people hearing themselves when your mic picks up your speakers. ${ECHO_NOTE} Auto (the default until you choose) turns it on for speakers, and when the output type is unknown, and off for headphones or a headset; it follows you when you switch outputs, even during a call. Choose On or Off to decide yourself: that choice then always wins. Remembered per microphone, so it can be on for a laptop mic and off for your headset.`}
                 >
                     <ClSegment<EchoMode>
@@ -1017,7 +1050,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     label="Auto gain control"
                     kind="switch"
                     labels={['Volume normalization']}
-                    info="Evens out whisper-to-shout swings in your own voice before it is sent. Remembered per microphone."
+                    info="Keeps your voice at a steady level for the people listening: it brings you back up within a few seconds when you turn away from the microphone or speak softly, and holds a shout instead of letting it clip. It never turns a normal voice down."
                 >
                     <ClToggle checked={settings.volumeNormalization} onChange={voice.setVolumeNormalization} aria-label="Auto gain control" />
                 </Row>

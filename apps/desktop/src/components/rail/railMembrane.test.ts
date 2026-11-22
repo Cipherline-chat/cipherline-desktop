@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    stepSpring, stepMembrane, membraneSettled, membraneShape, initialMembrane,
+    stepSpring, stepMembrane, membraneSettled, membraneShape, initialMembrane, frameStep, NOMINAL_FRAME_S,
     RAIL_RADIUS, LEAD_STIFFNESS, LEAD_DAMPING, TRAIL_STIFFNESS, TRAIL_DAMPING,
     BOUNCE_STIFFNESS, BOUNCE_DAMPING, type RestBox,
 } from './railMembrane';
@@ -209,6 +209,61 @@ describe('rail membrane', () => {
             for (let f = 0; f < 900; f++) s = stepMembrane(s, 0, TILE.height, 1 / 60);
             expect(Math.abs(s.a)).toBeLessThan(0.3);
             expect(Math.abs(s.b)).toBeLessThan(0.3);
+        });
+    });
+
+    describe('time never runs backwards — the "stretched and jumping around" bug (2026-11-22)', () => {
+        // The loop used to start its clock with performance.now() and subtract it
+        // from rAF stamps, which begin at the frame's vsync. After a long commit
+        // (a server's first open) the first stamp predated the clock, so the first
+        // step was NEGATIVE, and the closed form run backwards grows instead of
+        // decays. The owner's recording matches a -40..-50 ms first step.
+        const span = (box: { top: number; height: number }, from: number, to: number) =>
+            box.top >= Math.min(from, to) - 0.01 && box.top + box.height <= Math.max(from, to) + TILE.height + 0.01;
+
+        it('a negative or NaN step leaves a spring exactly where it was', () => {
+            for (const dt of [-0.001, -0.05, -3, 0, Number.NaN]) {
+                expect(stepSpring(0, 0, 100, LEAD_STIFFNESS, LEAD_DAMPING, dt)).toEqual([0, 0]);
+                expect(stepSpring(40, 900, 100, TRAIL_STIFFNESS, TRAIL_DAMPING, dt)).toEqual([40, 900]);
+                expect(stepSpring(0.3, -2, 0, BOUNCE_STIFFNESS, BOUNCE_DAMPING, dt)).toEqual([0.3, -2]);
+            }
+        });
+
+        it('a negative first step cannot throw the membrane off the span (the recorded case)', () => {
+            for (const neg of [-0.016, -0.04, -0.05, -0.08, -1.5]) {
+                let s = initialMembrane(0);
+                s = stepMembrane(s, 100, TILE.height, neg);
+                for (let f = 0; f < 120; f++) {
+                    s = stepMembrane(s, 100, TILE.height, 1 / 60);
+                    const box = membraneShape(s, 100, at(100));
+                    expect(span(box, 0, 100), `first step ${neg}s, frame ${f}: ${box.top}+${box.height}`).toBe(true);
+                    expect(Number.isFinite(box.top) && Number.isFinite(box.height)).toBe(true);
+                }
+                expect(membraneSettled(s, 100)).toBe(true);
+            }
+        });
+
+        it('frameStep: the first frame is one nominal frame, then rAF deltas, never negative', () => {
+            expect(frameStep(null, 12345)).toBeCloseTo(NOMINAL_FRAME_S, 10);
+            expect(frameStep(1000, 1016)).toBeCloseTo(0.016, 10);
+            expect(frameStep(1000, 1000)).toBe(0);
+            expect(frameStep(1000, 950)).toBe(0);           // out-of-order stamp
+            expect(frameStep(1000, 1250)).toBeCloseTo(0.25, 10); // a stall: exact, unclamped
+        });
+
+        it('a stall mid-flight jumps forward exactly and stays inside the span', () => {
+            // Main-thread stalls cannot be painted through, but the frame after one
+            // must land where the flight would have been: never past the target.
+            for (const stall of [0.05, 0.15, 0.4, 2]) {
+                let s = initialMembrane(0);
+                for (let f = 0; f < 3; f++) s = stepMembrane(s, 150, TILE.height, 1 / 60);
+                s = stepMembrane(s, 150, TILE.height, stall);
+                for (let f = 0; f < 120; f++) {
+                    const box = membraneShape(s, 150, at(150));
+                    expect(span(box, 0, 150), `stall ${stall}s frame ${f}`).toBe(true);
+                    s = stepMembrane(s, 150, TILE.height, 1 / 60);
+                }
+            }
         });
     });
 });

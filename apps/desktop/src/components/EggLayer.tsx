@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../utils/a11y/motionPrefs';
 import { KeysParty } from './KeysParty';
 import { claimEggNow } from '../hooks/useEasterEggs';
 import { recordEggFound } from '../utils/eggProgress';
@@ -8,7 +9,7 @@ import { KONAMI, isTypingTarget, konamiStep } from '../utils/easterEggs';
 export const KONAMI_COOLDOWN_MS = 30_000;
 
 const reducedMotion = () =>
-    typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    typeof window !== 'undefined' && celebrationReducedNow();
 
 /**
  * The global easter-egg surface, mounted once for the signed-in app. Today:

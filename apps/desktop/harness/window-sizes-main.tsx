@@ -27,7 +27,8 @@ import { ComposerCardSurface } from '../src/components/messageCard/ComposerCardS
 import { useMessageColumnWidth } from '../src/components/messageCard/messageColumn';
 import { MessageCard } from '../src/components/messageCard/MessageCard';
 import { renderFormatted } from '../src/components/formatting/FormattedText';
-import { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT, MESSAGE_BODY_PX } from '../src/utils/formatting/messageSize';
+import { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT } from '../src/utils/formatting/messageSize';
+import { messageBodyFontSize } from '../src/utils/a11y/messageTextSize';
 import { SuggestionMenu } from '../src/components/composer/SuggestionMenu';
 import { detectChannelTrigger } from '../src/utils/channelRefs';
 import { resolveCard, composerCardMode, cardTextColor, composerTextStyle } from '../src/utils/cardStyle/cardStyleReact';
@@ -38,6 +39,10 @@ import { GiftActionsProvider, type GiftActions } from '../src/components/billing
 import { GiftCardEmbed } from '../src/components/billing/gifts/GiftCardEmbed';
 import { GiftProModal, GiftModalFrame, GiftSuccessPanel } from '../src/components/billing/gifts/GiftProModal';
 import { ClButton } from '../src/components/ClButton';
+import { ControlBar } from '../src/components/call/ControlBar';
+import { JoiningControlBar } from '../src/components/call/JoiningControlBar';
+import { CallEncryptionIndicator } from '../src/components/server/CallEncryptionIndicator';
+import { CallProvider } from '../src/contexts/CallContext';
 import { ToastProvider } from '../src/contexts/ToastContext';
 import secureLocalStore from '../src/utils/secureLocalStore';
 import { memberGroupsCollapsedKey } from '../src/utils/memberGroupCollapse';
@@ -73,6 +78,13 @@ import type { ChannelInfo, CategoryInfo, DividerInfo, ServerInfo } from '../src/
  *   giftpick    Gift Pro modal, first step (friend picker); the check script clicks on to the payment step
  *   giftsuccess the celebration
  *   call        the call sidebar's echo + gate-cut prompt pills (the pill JSX of SidebarConference)
+ *   incall      in a voice call: the right panel shaped like Dashboard's pane4 (scroll zone with pb-24 + the
+ *               absolute #call-controlbar-root) holding the REAL ControlBar over the REAL ServerContextPanel,
+ *               self row with a long name + custom status (&selflong=1). &rw=<px|max> forces the panel width
+ *               (&lw= the channel list's); &share=1 a live share (stop + chevron); &cam=1 camera on;
+ *               &joining=1 the JoiningControlBar; &enc=mixed the "not encrypted" notice above the bar;
+ *               &scroll=bottom scrolls the zone to the end; &legacy=1 the positive control: the console CSS as
+ *               it was before the narrow tier.
  * Driven by harness/window-sizes-check.mjs.
  */
 const q = new URLSearchParams(location.search);
@@ -143,6 +155,8 @@ const members = [
     member('Avery', 'offline'), member('Blake', 'offline', ['mods']), member('Casey', 'offline'), member('Devon', 'offline', ['artists']),
     member('Emery', 'offline'), member('Finley', 'offline'),
 ];
+
+if (q.get('selflong') === '1') members[0].username = 'tayce_with_a_really_long_display_name';
 
 const gid = (k: number) => `11111111-1111-4111-8111-${String(k).padStart(12, '0')}`;
 const G = { unopened: gid(1), openedTime: gid(3), openedCredit: gid(4), sentWaiting: gid(5), sentAccepted: gid(6), refunded: gid(7), missing: gid(8), broken: gid(9), loading: gid(10), expired: gid(11) };
@@ -224,7 +238,12 @@ const giftActions: GiftActions = { friends, nameFor: (uid) => (uid ? NAMES[uid] 
 /** Dashboard.tsx: SIDEBAR_MIN_PX 200, RIGHT_PANEL_MIN_PX 240, sidebarMaxPx, default ratios .18 / .20. */
 function paneWidths(W: number) {
     const max = Math.max(500, Math.round(W * 0.35));
-    return { left: Math.max(200, Math.min(max, 0.18 * W)), right: Math.max(240, Math.min(max, 0.2 * W)) };
+    const rw = q.get('rw'), lw = q.get('lw');
+    const clampW = (v: number, min: number) => Math.max(min, Math.min(max, v));
+    return {
+        left: lw ? clampW(lw === 'max' ? max : Number(lw), 200) : clampW(0.18 * W, 200),
+        right: rw ? clampW(rw === 'max' ? max : Number(rw), 240) : clampW(0.2 * W, 240),
+    };
 }
 function useWindowWidth() {
     const [w, setW] = React.useState(window.innerWidth);
@@ -233,8 +252,8 @@ function useWindowWidth() {
 }
 const card: React.CSSProperties = { background: 'var(--cl-deep)', borderRadius: 16, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 };
 
-const Dash: React.FC<{ left?: React.ReactNode; header?: React.ReactNode; feed?: React.ReactNode; composer?: React.ReactNode; right?: React.ReactNode | null; overlay?: React.ReactNode }> =
-({ left, header, feed, composer, right, overlay }) => {
+const Dash: React.FC<{ left?: React.ReactNode; header?: React.ReactNode; feed?: React.ReactNode; composer?: React.ReactNode; right?: React.ReactNode | null; overlay?: React.ReactNode; panelStyle?: React.CSSProperties }> =
+({ left, header, feed, composer, right, overlay, panelStyle }) => {
     const W = useWindowWidth();
     const { left: lw, right: rw } = paneWidths(W);
     return (
@@ -251,7 +270,7 @@ const Dash: React.FC<{ left?: React.ReactNode; header?: React.ReactNode; feed?: 
                     <div id="composer-host" style={{ padding: '0 16px 16px', position: 'relative' }}>{composer ?? <ComposerStandIn />}</div>
                 </main>
                 {right !== null && <div style={{ width: 10, flex: 'none' }} />}
-                {right !== null && <aside id="panel" style={{ ...card, width: rw, flex: 'none', overflowY: 'auto' }}>{right ?? <MemberPanel />}</aside>}
+                {right !== null && <aside id="panel" style={{ ...card, width: rw, flex: 'none', overflowY: 'auto', ...panelStyle }}>{right ?? <MemberPanel />}</aside>}
             </div>
             {overlay}
         </div>
@@ -305,7 +324,7 @@ const Row: React.FC<{ who: string; hue?: string; children: React.ReactNode; id?:
     </div>
 );
 const Body: React.FC<{ text: string }> = ({ text }) => (
-    <div className={MESSAGE_BODY_CLASS} style={{ fontSize: 15, lineHeight: 'normal', wordBreak: 'break-word' }}>{text}</div>
+    <div className={MESSAGE_BODY_CLASS} style={{ fontSize: messageBodyFontSize(), lineHeight: 'normal', wordBreak: 'break-word' }}>{text}</div>
 );
 const FEED = (
     <>
@@ -325,7 +344,7 @@ const SentStyled: React.FC = () => {
         <Row who="You" hue="#8B5CF6" id="sent">
             <MessageCard resolved={card}>
                 <div data-sent-body="" className={MESSAGE_BODY_CLASS}
-                    style={{ fontSize: `${MESSAGE_BODY_PX}px`, lineHeight: MESSAGE_BODY_LINE_HEIGHT, wordBreak: 'break-word', fontFamily: fontStackFor(null), ...(color ? { color } : {}) }}>
+                    style={{ fontSize: messageBodyFontSize(), lineHeight: MESSAGE_BODY_LINE_HEIGHT, wordBreak: 'break-word', fontFamily: fontStackFor(null), ...(color ? { color } : {}) }}>
                     {renderFormatted(text, { renderLeaf: (leaf: string) => leaf })}
                 </div>
             </MessageCard>
@@ -517,7 +536,7 @@ const SysPill: React.FC<{ kind: 'join' | 'leave' | 'call'; text: string; hover: 
     return (
         <div className="group flex items-center gap-3 my-2 px-4 select-none" data-sys-kind={kind}>
             <div className="flex-1 h-px bg-white/[0.05]" />
-            <div title={t?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${tone}`}>
+            <div title={t?.full} className={`flex min-w-0 max-w-full items-center gap-1.5 px-3 py-1 rounded-full border cl-sys-text font-medium ${tone}`}>
                 <Icon className="w-3 h-3 flex-shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">{text}{t && <> <span data-system-row-time className={`${hover ? 'inline' : 'hidden'} group-hover:inline whitespace-nowrap tabular-nums opacity-70`}>· {t.label}</span></>}</span>
             </div>
@@ -587,6 +606,64 @@ const GiftPick: React.FC = () => {
     return <Dash feed={FEED} right={<div />} overlay={open && <GiftProModal onClose={() => setOpen(false)} initialRecipientId={q.get('pre') === '1' ? 'u-alex' : null} />} />;
 };
 
+/** incall: Dashboard's pane4 while in a server voice call (Dashboard.tsx pane4El: the <aside> with its 1px
+ *  border, the unified scroll zone with pb-24, and #call-controlbar-root), with the REAL ControlBar placed
+ *  the way SidebarConference portals it there. */
+const LEGACY_CONSOLE_CSS = `@container (max-width: 251.98px) {
+  .cl-console-inner { --cs: clamp(31px, calc((84cqi - 8px) / 6), 46px); --cg: clamp(3px, 1.2cqi, 7px); --cp: clamp(4px, 1.4cqi, 8px); }
+  .cl-console-inner[data-live-share] { --cs: clamp(31px, calc((84cqi - 8px) / 6.56), 46px); }
+  .cl-console-sep { margin: 0 calc(var(--cg) * 0.75); }
+  .cl-console-sep--leave { margin-left: calc(var(--cg) * 1.6); margin-right: calc(var(--cg) * 1.2); }
+}`;
+const InCallScene: React.FC = () => {
+    const share = q.get('share') === '1';
+    const cam = q.get('cam') === '1';
+    const zoneRef = React.useRef<HTMLDivElement>(null);
+    React.useEffect(() => {
+        if (q.get('scroll') !== 'bottom') return;
+        const t = setInterval(() => { const z = zoneRef.current; if (z) z.scrollTop = z.scrollHeight; }, 100);
+        return () => clearInterval(t);
+    }, []);
+    const lp = { isMicrophoneEnabled: true, isCameraEnabled: cam, isScreenShareEnabled: share };
+    return (
+        <Dash feed={FEED} panelStyle={{ overflowY: 'hidden', borderRight: '1px solid rgba(255,255,255,0.04)', position: 'relative', background: 'transparent' }} right={
+            <div className="relative w-full h-full flex flex-col" style={{ overflow: 'hidden' }}>
+                {q.get('legacy') === '1' && <style>{LEGACY_CONSOLE_CSS}</style>}
+                <div ref={zoneRef} data-call-scroll-zone className="flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col isolate bg-cl-deep pb-24">
+                    <ServerContextPanel
+                        server={SERVER} channel={CHANNELS[1]} token="harness" userId={ME}
+                        myPermissions={ALL_PERMISSIONS}
+                        allChannels={CALL_CHANNELS} categories={CALL_CATS} dividers={NONE}
+                        voiceParticipants={{ 'General Voice': [ME, ...CALL_PEOPLE] }} activeVoiceChannelId="General Voice"
+                        friendStatuses={EMPTY} presenceAuthoritative={false}
+                        myStatus="online" myCurrentGame={null}
+                        myCustom={{ text: "Where's your money at? Asking for a very long custom status", emoji: '', expiresAt: null }}
+                        globalFriends={null} conversations={NONE} sentFriendRequests={SET} setSentFriendRequests={noop}
+                        huddleCalls={EMPTY} searchableMessages={NONE} channelPermissionsMap={EMPTY}
+                        onOpenProfile={noop} onStartChat={noop} onOpenDMWithUser={async () => {}} onStartCall={noop} onBlock={noop}
+                    />
+                </div>
+                <div id="call-controlbar-root" className="absolute bottom-0 left-0 right-0 z-10 px-2 pb-1 pointer-events-none">
+                    {q.get('joining') === '1' ? (
+                        <JoiningControlBar phase="securing" muted={false} deafened={false} canSpeak onToggleMute={noop} onToggleDeafen={noop} onLeave={noop} />
+                    ) : (
+                        <div>
+                            {q.get('enc') === 'mixed' && <CallEncryptionIndicator mode="mixed" unencryptedNames={['Maximilian_the_extremely_long_username_42', 'Riley', 'Sam']} />}
+                            <ControlBar
+                                localParticipant={lp as never} isLocalDeafened={false}
+                                onToggleMic={noop} onToggleDeafen={noop} onToggleCamera={noop} onToggleScreenshare={noop}
+                                onOpenScreenSharePicker={noop} onAdjustScreenShareQuality={noop} onToggleScreenShareAudio={noop}
+                                currentShareResolution="1080p" currentShareFrameRate={30 as never} currentShareAudio={false}
+                                onLeave={noop} showFullscreenButton={share || cam}
+                            />
+                        </div>
+                    )}
+                </div>
+            </div>
+        } />
+    );
+};
+
 function Scene() {
     React.useEffect(() => { (window as any).__ready = true; }, []);
     switch (scene) {
@@ -610,6 +687,7 @@ function Scene() {
         } />;
         case 'call': return <Dash feed={FEED} right={<><CallPills /><MemberPanel hidden onShow={noop} voice /></>} />;
         case 'callhover': return <CallHoverScene />;
+        case 'incall': return <CallProvider><InCallScene /></CallProvider>;
         case 'sysrows': return <Dash feed={<SysRows hover={q.get('hover') === '1'} long={q.get('long') === '1'} />} />;
         case 'broken': return (
             /* The check's positive control: a deliberately broken layout (a fixed-width

@@ -24,6 +24,7 @@
  * on an ordinary category.
  */
 
+import { MutedGlyph } from './muteMenu';
 import React from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { CategoryInfo } from '../../hooks/useServers';
@@ -31,6 +32,7 @@ import { CATEGORY_LABEL_CLASS, CATEGORY_LABEL_STYLE, categoryDividerLook } from 
 import { ChannelDividerVisual } from './ChannelDividerRow';
 import { ChannelIconRenderer } from './ChannelIconPicker';
 import type { UnreadKind } from './offscreenUnread';
+import { readableNameColor } from '../../utils/roleColor';
 
 interface Props {
     category: CategoryInfo;
@@ -41,9 +43,11 @@ interface Props {
     iconSize?: number;
     /** Collapsed: the strongest unread kind inside, and a count. */
     rolled?: { kind: UnreadKind; count: number } | null;
+    /** The category is muted (utils/channelMute.ts): dim the label, show the muted glyph. */
+    muted?: boolean;
 }
 
-export const CategoryHeading: React.FC<Props> = ({ category: cat, collapsed, fallbackIcon = null, iconSize = 13, rolled }) => {
+export const CategoryHeading: React.FC<Props> = ({ category: cat, collapsed, fallbackIcon = null, iconSize = 13, rolled, muted = false }) => {
     const look = categoryDividerLook(cat);
     const Chevron = collapsed ? ChevronRight : ChevronDown;
     const dot = rolled ? (
@@ -65,7 +69,7 @@ export const CategoryHeading: React.FC<Props> = ({ category: cat, collapsed, fal
             <>
                 <span
                     className="shrink-0 w-4 h-4 flex items-center justify-center opacity-80 group-hover:opacity-100 transition-opacity"
-                    style={{ color: look.color }}
+                    style={{ color: readableNameColor(look.color) ?? look.color }}
                     data-testid="divider-category-chevron"
                 >
                     <Chevron size={16} />
@@ -73,6 +77,7 @@ export const CategoryHeading: React.FC<Props> = ({ category: cat, collapsed, fal
                 <div className="flex-1 min-w-0" data-divider-category={look.style}>
                     <ChannelDividerVisual compact divider={{ style: look.style, label: cat.name, color: look.color }} />
                 </div>
+                {muted && <MutedGlyph size={12} />}
                 {dot}
             </>
         );
@@ -86,7 +91,8 @@ export const CategoryHeading: React.FC<Props> = ({ category: cat, collapsed, fal
                 <ChannelIconRenderer name={cat.icon_name} size={iconSize} className="shrink-0 block text-cl-muted group-hover:text-cl-text transition-colors" />
             ) : fallbackIcon}
             {/* The TOP level: never quieter than a sub-category label. */}
-            <span className={CATEGORY_LABEL_CLASS} style={CATEGORY_LABEL_STYLE}>{cat.name}</span>
+            <span className={`${CATEGORY_LABEL_CLASS}${muted ? ' opacity-60' : ''}`} style={CATEGORY_LABEL_STYLE}>{cat.name}</span>
+            {muted && <MutedGlyph size={12} />}
             {dot}
         </>
     );

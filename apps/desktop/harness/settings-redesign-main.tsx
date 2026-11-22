@@ -107,6 +107,12 @@ function installElectronStub() {
     // ?gaming=1: a main process that knows the startup flags, so Voice & Video
     // shows its "while gaming" row (it renders nothing without them).
     if (q.get('gaming') === '1') values.getStartupFlags = { platform: 'win32', saved: {}, active: {} };
+    // Settings → Accessibility: the host's interface-size state. ?uiscale=<step>&uimax=<step>
+    // (default 100 / 150, a 1080p display); a preference above uimax shows the "limited" note.
+    {
+        const percent = Number(q.get('uiscale') ?? 100), max = Number(q.get('uimax') ?? 150);
+        values.getUiScale = { percent, effective: Math.min(percent, max), max, source: 'init' };
+    }
     const excluded = new Set(['secureKvOpen', 'secureKvSeal', 'getLocalMasterKeyStatus', 'then']);
     (window as any).electronAPI = new Proxy({}, {
         get(_t, prop: string) {
@@ -177,6 +183,13 @@ async function installAudioDevices() {
 
 async function boot() {
     await secureLocalStore.hydrate();
+    // ?motion=<json>: Settings → Accessibility → Motion & effects stored value (reduce / images / effects).
+    if (q.get('motion')) {
+        secureLocalStore.setItem('cipherline_user_id', 'u-me');
+        await secureLocalStore.whenAccountReady();
+        secureLocalStore.setItem('cipherline_motion_prefs', q.get('motion')!);
+    }
+    (await import('../src/utils/a11y/motionPrefs')).bootMotion();
     await installAudioDevices();
     installElectronStub();
     const [{ SettingsScreen }, { ToastProvider }, { UpdateProvider }, { NotificationProvider }, { SubscriptionProvider },

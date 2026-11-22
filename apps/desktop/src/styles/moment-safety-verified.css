@@ -3,7 +3,7 @@
    read 1.5–3.2, hold 3.2–3.6, exit 3.6–4.0.
    Geometry is around .mo-anchor (the screen centre): orbs at x ±130 / y -96, the lock between them,
    the two blocks below meeting at x 0, the line under those. */
-.mo-sv { --sv-lume: var(--cl-lume, #25E0C8); --sv-glow: var(--cl-glow, #FFC94D); }
+.mo-sv { --sv-lume: var(--cl-lume, var(--cl-lume)); --sv-glow: var(--cl-glow, var(--cl-glow)); }
 
 /* Notice (0–0.3): the dim (the host's egg scrim, timed off --mo-main) is quicker than a
    moment's, and the orbs come up with it. */
@@ -11,7 +11,7 @@
   position: absolute; top: -132px; width: 72px; height: 72px; border-radius: 50%;
   box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
-  background: var(--cl-deep, #131A30);
+  background: var(--cl-deep, var(--cl-deep));
   animation: mo-sv-orb-in .35s cubic-bezier(.2, .8, .3, 1) both;
 }
 .mo-sv-orb-l { left: -166px; border: 2px solid var(--sv-lume); }
@@ -33,7 +33,7 @@
 @keyframes mo-sv-snap-l { 0% { transform: none; } 45% { transform: translateX(5px); } 100% { transform: none; } }
 @keyframes mo-sv-snap-r { 0% { transform: none; } 45% { transform: translateX(-5px); } 100% { transform: none; } }
 .mo-sv-blk { display: block; }
-.mo-sv-card { fill: var(--cl-deep, #131A30); stroke-width: 1.5; }
+.mo-sv-card { fill: var(--cl-deep, var(--cl-deep)); stroke-width: 1.5; }
 .mo-sv-blk-l .mo-sv-card { stroke: var(--sv-lume); }
 .mo-sv-blk-r .mo-sv-card { stroke: var(--sv-glow); }
 .mo-sv-blk-l .mo-sv-pill { fill: var(--sv-lume); opacity: .7; }
@@ -41,7 +41,7 @@
 /* The seam where they meet lights up on the lock and stays. */
 .mo-sv-seam {
   position: absolute; left: -1px; top: 6px; width: 2px; height: 80px; border-radius: 1px;
-  background: var(--cl-text, #F4F7FF); opacity: 0;
+  background: var(--cl-text, var(--cl-text)); opacity: 0;
   animation: mo-sv-seam .35s ease-out .95s both;
 }
 @keyframes mo-sv-seam { 0% { transform: scaleY(.2); opacity: 0; } 40% { opacity: 1; } 100% { transform: none; opacity: .75; } }
@@ -56,16 +56,16 @@
 @keyframes mo-sv-link { from { transform: scaleX(.05); opacity: 0; } to { transform: none; opacity: .9; } }
 .mo-sv-lock { position: absolute; left: -32px; top: -128px; width: 64px; height: 64px; animation: mo-sv-lock-in .35s cubic-bezier(.2, .8, .3, 1.25) 1s both; }
 @keyframes mo-sv-lock-in { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
-.mo-sv-lock-disc { fill: var(--cl-abyss, #0B0F1E); stroke: var(--sv-lume); stroke-width: 2.5; }
+.mo-sv-lock-disc { fill: var(--cl-abyss, var(--cl-abyss)); stroke: var(--sv-lume); stroke-width: 2.5; }
 .mo-sv-lock-body { fill: var(--sv-lume); }
-.mo-sv-keyhole { fill: var(--cl-abyss, #0B0F1E); }
+.mo-sv-keyhole { fill: var(--cl-abyss, var(--cl-abyss)); }
 .mo-sv-shackle { stroke: var(--sv-lume); animation: mo-sv-shackle .16s ease-in 1.2s both; }
 @keyframes mo-sv-shackle { from { transform: translateY(-5px); } to { transform: none; } }
 
 /* 1.25–2.4: a bioluminescent pulse leaves the lock, twice. A band of light that scales up and fades. */
 .mo-sv-pulse {
   position: absolute; left: -80px; top: -176px; width: 160px; height: 160px; border-radius: 50%;
-  background: radial-gradient(circle, transparent 52%, rgba(37, 224, 200, .45) 61%, rgba(37, 224, 200, .12) 69%, transparent 76%);
+  background: radial-gradient(circle, transparent 52%, rgb(var(--cl-lume-rgb) / .45) 61%, rgb(var(--cl-lume-rgb) / .12) 69%, transparent 76%);
   opacity: 0; transform: scale(.3);
   animation: mo-sv-pulse 1.1s cubic-bezier(.2, .6, .3, 1) 1.25s both;
 }

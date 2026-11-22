@@ -244,14 +244,14 @@ export const ParticipantCard = ({
                     {/* Active screenshare indicator */}
                     {hasActiveScreenShare && !modMeta.serverMutedScreenShare && (
                         isHiddenScreenShare
-                            ? <MonitorOff className="w-3.5 h-3.5 text-white/30" />
-                            : <Monitor className="w-3.5 h-3.5 text-white/50" />
+                            ? <MonitorOff className="w-3.5 h-3.5 text-pure-white/30" />
+                            : <Monitor className="w-3.5 h-3.5 text-pure-white/50" />
                     )}
                     {/* Active camera indicator */}
                     {hasActiveCamera && !modMeta.serverMutedVideo && (
                         isHiddenVideo
-                            ? <VideoOff className="w-3.5 h-3.5 text-white/30" />
-                            : <Video className="w-3.5 h-3.5 text-white/50" />
+                            ? <VideoOff className="w-3.5 h-3.5 text-pure-white/30" />
+                            : <Video className="w-3.5 h-3.5 text-pure-white/50" />
                     )}
                     {/* Skip the regular deafen/mute icons when server-muted —
                         the red server badge above already conveys the muted state. */}
@@ -262,10 +262,10 @@ export const ParticipantCard = ({
                         <MicOff className="w-3.5 h-3.5 text-red-400" />
                     )}
                     {!isMuted && !isDeafened && isLocalMuted && (
-                        <MicOff className="w-3.5 h-3.5 text-white/30" />
+                        <MicOff className="w-3.5 h-3.5 text-pure-white/30" />
                     )}
                     {isLocalDeafened && isLocal && !isDeafened && (
-                        <Headphones className="w-3.5 h-3.5 text-white/30" />
+                        <Headphones className="w-3.5 h-3.5 text-pure-white/30" />
                     )}
                 </>}
             >
@@ -328,25 +328,25 @@ export const ParticipantCard = ({
             buttonRef={buttonRef}
             badges={<>
                     {isHiddenScreenShare && hasActiveScreenShare && (
-                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[1]`}>
+                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[1]`}>
                             <MonitorOff className={`${badgeIconSize} text-[darkgray]`} />
                         </div>
                     )}
                     {isHiddenVideo && hasActiveCamera && (
-                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[2] -ml-2`}>
+                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[2] -ml-2`}>
                             <VideoOff className={`${badgeIconSize} text-[darkgray]`} />
                         </div>
                     )}
                     {isDeafened ? (
-                        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[3] -ml-2`}>
-                            <Headphones className={`${badgeIconSize} text-white`} />
+                        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[3] -ml-2`}>
+                            <Headphones className={`${badgeIconSize} text-pure-white`} />
                         </div>
                     ) : isMuted ? (
-                        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[3] -ml-2`}>
-                            <MicOff className={`${badgeIconSize} text-white`} />
+                        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[3] -ml-2`}>
+                            <MicOff className={`${badgeIconSize} text-pure-white`} />
                         </div>
                     ) : isLocalMuted ? (
-                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[3] -ml-2`}>
+                        <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[3] -ml-2`}>
                             <MicOff className={`${badgeIconSize} text-[darkgray]`} />
                         </div>
                     ) : null}
@@ -434,7 +434,7 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
     const { ring_color } = useCallPersonalization(userId);
     return (
     <div
-        className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full relative cursor-pointer"
+        className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-pure-white/[0.04] transition-colors w-full relative cursor-pointer"
         onClick={onClick}
         onContextMenu={onContextMenu}
     >
@@ -442,7 +442,7 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
         <div
             ref={avatarRef}
             className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface shrink-0
-                ${speaking ? 'scale-105' : 'ring-1 ring-white/10'}`}
+                ${speaking ? 'scale-105' : 'ring-1 ring-pure-white/10'}`}
             style={speaking ? { boxShadow: speakingShadow(ring_color, { glow: 12, alpha: 0.35 }) } : undefined}
         >
             <EncryptedAvatar
@@ -460,7 +460,7 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
         {/* Name — dimmed when silenced, role colour otherwise */}
         <span
             className={`flex-1 text-[13px] font-medium truncate transition-colors ${silenced ? 'text-white/40' : ''}`}
-            style={!silenced && roleColor ? { color: roleColor } : !silenced ? { color: 'rgba(255,255,255,0.8)' } : undefined}
+            style={!silenced && roleColor ? { color: roleColor } : !silenced ? { color: 'rgb(var(--cl-bright-rgb) / 0.8)' } : undefined}
         >
             {displayName}
         </span>
@@ -556,7 +556,7 @@ export const ParticipantTileShell = ({ userId, displayName, avatarId, token, siz
                     className={`${size} p-0 border-none rounded-full overflow-hidden bg-cl-surface cursor-pointer transition-[transform,box-shadow] duration-150
                         ${speaking
                             ? 'scale-105'
-                            : 'ring-1 ring-white/10 hover:ring-white/30'}`}
+                            : 'ring-1 ring-pure-white/10 hover:ring-pure-white/30'}`}
                     style={speaking ? { boxShadow: speakingShadow(ring_color, { glow: 20, alpha: 0.3 }) } : undefined}
                 >
                     <EncryptedAvatar
@@ -596,7 +596,7 @@ export const ParticipantTileShell = ({ userId, displayName, avatarId, token, siz
                     {nameRow}
                 </TileNamePill>
             ) : (
-                <div className={`flex items-center gap-1 ${nameSize} font-semibold px-2 py-0.5 rounded-full bg-white/5 max-w-full`}>
+                <div className={`flex items-center gap-1 ${nameSize} font-semibold px-2 py-0.5 rounded-full bg-pure-white/5 max-w-full`}>
                     {nameRow}
                 </div>
             )}

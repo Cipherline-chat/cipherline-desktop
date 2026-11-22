@@ -1,10 +1,21 @@
 import type { FrameMode } from './geometry';
 
+export type ImageProfileId = 'emoji' | 'sticker';
+
+/** Per-profile output limits. Sticker numbers: packages/shared stickers.ts (320 px, 512 KiB). */
+export const PROCESS_PROFILES: Record<ImageProfileId, { side: number; staticTargetBytes: number; maxBytes: number }> = {
+    emoji: { side: 128, staticTargetBytes: 16 * 1024, maxBytes: 256 * 1024 },
+    sticker: { side: 320, staticTargetBytes: 96 * 1024, maxBytes: 512 * 1024 },
+};
+
 /** Messages between the page and src/workers/personalEmoji.worker.ts. */
 export interface EmojiProcessRequest {
     type: 'process';
     file: Blob;
     mode: FrameMode;
+    /** 'emoji' (default): 128 px, still <= 16 KB, animation <= 256 KB.
+     *  'sticker': 320 px (fit, aspect kept), still <= 96 KB, animation <= 512 KB. */
+    profile?: ImageProfileId;
 }
 
 export type EmojiProcessErrorCode =

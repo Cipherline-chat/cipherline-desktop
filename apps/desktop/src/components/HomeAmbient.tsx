@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useEffectsEnabled, useMotionSnapshot } from '../utils/a11y/motionPrefs';
 import { moteCount, makeMotes } from '../utils/homeAmbient';
 
 /**
@@ -18,6 +19,9 @@ import { moteCount, makeMotes } from '../utils/homeAmbient';
  */
 
 export const HomeAmbient: React.FC<{ enabled: boolean }> = ({ enabled }) => {
+    // Settings → Accessibility → Celebrations and effects (also re-renders on reduce-motion changes).
+    const effectsOn = useEffectsEnabled();
+    useMotionSnapshot();
     const hostRef = useRef<HTMLDivElement>(null);
     const [motes, setMotes] = useState(() => makeMotes(moteCount(1080)));
 
@@ -35,7 +39,7 @@ export const HomeAmbient: React.FC<{ enabled: boolean }> = ({ enabled }) => {
         return () => ro.disconnect();
     }, [enabled]);
 
-    if (!enabled) return null;
+    if (!enabled || !effectsOn) return null;
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return null;
 
     return (

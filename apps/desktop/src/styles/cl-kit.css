@@ -264,7 +264,7 @@
   .avx:hover{transform:scale(1.1)}
   .avx.shakeno{animation:avshake .5s ease 1}
   .avx.boing{animation:avboing .45s var(--spr) 1}
-  .avx .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:3px solid var(--deep)}
+  .avx .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:3px solid var(--status-backing,var(--deep))}
   .dot.onl{background:var(--ok);animation:ping 2.4s ease-out infinite}
   .dot.idle{background:var(--glow)}
   .dot.dnd{background:radial-gradient(circle closest-side,#000 0 36%,var(--flash) 42%)} /* DND: small black centre (owner 2026-11-16) */

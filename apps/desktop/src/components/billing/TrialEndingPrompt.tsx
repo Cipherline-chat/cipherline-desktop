@@ -64,7 +64,7 @@ export const TrialEndingPromptView: React.FC<{
                         className="inline-flex items-center gap-1.5"
                         style={{
                             fontSize: 11.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase',
-                            color: 'var(--cl-glow)', background: 'rgba(255,201,77,.10)', border: '1px solid rgba(255,201,77,.22)',
+                            color: 'var(--cl-glow-text)', background: 'rgb(var(--cl-glow-rgb) / .10)', border: '1px solid rgb(var(--cl-glow-rgb) / .22)',
                             borderRadius: 999, padding: '3px 9px 3px 7px',
                         }}
                     >
@@ -84,12 +84,12 @@ export const TrialEndingPromptView: React.FC<{
                     data-testid="trial-prompt-offer"
                     style={{
                         background: 'var(--cl-surface)',
-                        border: `1px solid ${founder ? 'rgba(37,224,200,.32)' : 'var(--cl-border)'}`,
+                        border: `1px solid ${founder ? 'rgb(var(--cl-lume-rgb) / .32)' : 'var(--cl-border)'}`,
                         borderRadius: 16, padding: '16px 16px 14px',
                     }}
                 >
                     {founder && (
-                        <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--cl-lume)', marginBottom: 6 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--cl-lume-text)', marginBottom: 6 }}>
                             Founding price
                         </div>
                     )}
@@ -119,7 +119,7 @@ export const TrialEndingPromptView: React.FC<{
                 <motion.ul variants={rise} style={{ listStyle: 'none', padding: 0, margin: '14px 2px 18px' }}>
                     {copy.perks.map((p) => (
                         <li key={p} className="flex items-center gap-2" style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--cl-muted)', padding: '3px 0' }}>
-                            <Check size={14} aria-hidden style={{ color: 'var(--cl-lume)', flexShrink: 0 }} />
+                            <Check size={14} aria-hidden style={{ color: 'var(--cl-lume-text)', flexShrink: 0 }} />
                             {p}
                         </li>
                     ))}
@@ -165,12 +165,16 @@ const FounderOfferView: React.FC<{
         onClose={onLater}
         width={460}
         label={copy.headline ?? copy.title}
+        // The founding offer is a gold-on-navy object (its art and gold text are
+        // designed on navy): a D4 dark island in every theme, like the Pro
+        // welcome it leads to (theme coverage audit, 2026-11-20).
+        cardClassName="cl-island-dark"
         cardStyle={{
             padding: 0, overflow: 'hidden', borderRadius: 28,
             border: '1.5px solid transparent',
             background: 'linear-gradient(var(--cl-deep), var(--cl-deep)) padding-box, '
                 + 'linear-gradient(155deg, #FFE08A 0%, #F2A93B 38%, rgba(255,201,77,.18) 72%, rgba(255,201,77,.45) 100%) border-box',
-            boxShadow: '0 28px 80px -24px rgba(255,176,46,.38), 0 0 0 1px rgba(0,0,0,.25)',
+            boxShadow: '0 28px 80px -24px rgba(255,176,46,.38), 0 0 0 1px rgb(var(--cl-shade-rgb) / .25)',
         }}
     >
         <motion.div
@@ -184,7 +188,7 @@ const FounderOfferView: React.FC<{
             <div
                 style={{
                     position: 'relative', textAlign: 'center', padding: '30px 26px 20px',
-                    background: 'radial-gradient(120% 95% at 50% 0%, rgba(255,201,77,.24) 0%, rgba(255,201,77,0) 68%), '
+                    background: 'radial-gradient(120% 95% at 50% 0%, rgb(var(--cl-glow-rgb) / .24) 0%, rgb(var(--cl-glow-rgb) / 0) 68%), '
                         + 'linear-gradient(180deg, #241F33 0%, var(--cl-deep) 100%)',
                 }}
             >
@@ -194,9 +198,9 @@ const FounderOfferView: React.FC<{
                         aria-hidden
                         style={{
                             width: 74, height: 74, borderRadius: '50%', display: 'grid', placeItems: 'center',
-                            background: 'radial-gradient(circle at 34% 28%, #FFF0C2 0%, #FFC94D 42%, #D48F1C 100%)',
-                            boxShadow: '0 0 0 6px rgba(255,201,77,.12), 0 0 0 7px rgba(255,201,77,.28), 0 12px 32px rgba(255,166,36,.35), inset 0 -3px 0 rgba(122,72,0,.35)',
-                            color: '#4A3406',
+                            background: 'radial-gradient(circle at 34% 28%, #FFF0C2 0%, var(--cl-glow) 42%, #D48F1C 100%)',
+                            boxShadow: '0 0 0 6px rgb(var(--cl-glow-rgb) / .12), 0 0 0 7px rgb(var(--cl-glow-rgb) / .28), 0 12px 32px rgba(255,166,36,.35), inset 0 -3px 0 rgba(122,72,0,.35)',
+                            color: 'var(--cl-on-glow)',
                         }}
                     >
                         <Award size={36} strokeWidth={2.2} />
@@ -208,7 +212,7 @@ const FounderOfferView: React.FC<{
                         className="inline-flex items-center gap-1.5"
                         style={{
                             fontSize: 11.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase',
-                            color: GOLD, background: 'rgba(255,201,77,.10)', border: '1px solid rgba(255,201,77,.30)',
+                            color: GOLD, background: 'rgb(var(--cl-glow-rgb) / .10)', border: '1px solid rgb(var(--cl-glow-rgb) / .30)',
                             borderRadius: 999, padding: '4px 10px 4px 8px',
                         }}
                     >
@@ -234,7 +238,7 @@ const FounderOfferView: React.FC<{
                     style={{ gap: 14, marginTop: 18 }}
                 >
                     <span style={{ fontFamily: 'var(--cl-font-display)', fontWeight: 600, fontSize: 24, color: 'var(--cl-muted)' }}>
-                        <s data-testid="trial-prompt-was" style={{ textDecorationColor: 'rgba(255,107,94,.75)', textDecorationThickness: 2 }} aria-label={`was ${copy.wasPrice}`}>
+                        <s data-testid="trial-prompt-was" style={{ textDecorationColor: 'rgb(var(--cl-flash-rgb) / .75)', textDecorationThickness: 2 }} aria-label={`was ${copy.wasPrice}`}>
                             {copy.wasPrice}
                         </s>
                     </span>
@@ -259,7 +263,7 @@ const FounderOfferView: React.FC<{
             )}
             <div style={{ padding: '6px 26px 22px' }}>
                 {/* Perks: the Founder badge leads */}
-                <motion.ul variants={rise} style={{ listStyle: 'none', padding: '12px 14px', margin: '0 0 18px', borderRadius: 16, background: 'rgba(255,201,77,.06)', border: '1px solid rgba(255,201,77,.16)' }}>
+                <motion.ul variants={rise} style={{ listStyle: 'none', padding: '12px 14px', margin: '0 0 18px', borderRadius: 16, background: 'rgb(var(--cl-glow-rgb) / .06)', border: '1px solid rgb(var(--cl-glow-rgb) / .16)' }}>
                     {copy.perks.map((p, i) => (
                         <li key={p} className="flex items-center gap-2.5" style={{ fontSize: 13.5, fontWeight: i === 0 ? 800 : 600, color: i === 0 ? 'var(--cl-text)' : GOLD_SOFT, padding: '3px 0' }}>
                             {i === 0

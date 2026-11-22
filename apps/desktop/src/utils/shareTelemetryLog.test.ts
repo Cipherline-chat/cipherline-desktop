@@ -175,7 +175,7 @@ describe('the current share\'s context outlives the ring', () => {
 
     it('only the context kinds are pinned; periodic samples never are', () => {
         // + the voice context (voiceDiagLog.ts: voice_settings / mic_capture), also one-off facts, never periodic samples
-        expect([...PINNED_KINDS].sort()).toEqual(['mic_capture', 'share_clamp', 'share_codec', 'share_crop', 'share_display', 'share_rx_start', 'share_start', 'voice_settings']);
+        expect([...PINNED_KINDS].sort()).toEqual(['mic_capture', 'share_clamp', 'share_codec', 'share_crop', 'share_display', 'share_rx_start', 'share_start', 'share_window_fallback', 'voice_settings']);
         logCallEvent('share_rx_fps', rx());
         logCallEvent('share_net', net());
         logCallEvent('share_fps', { src_fps: 90 });

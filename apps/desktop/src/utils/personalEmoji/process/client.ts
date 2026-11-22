@@ -4,7 +4,7 @@
  * next one. Never blocks the UI thread.
  */
 import type { FrameMode } from './geometry';
-import type { EmojiProcessErrorCode, EmojiProcessResponse } from './protocol';
+import type { EmojiProcessErrorCode, EmojiProcessResponse, ImageProfileId } from './protocol';
 
 export interface ProcessedEmoji {
     bytes: Uint8Array;
@@ -42,6 +42,8 @@ export function processEmojiImage(
     mode: FrameMode,
     onProgress?: (fraction: number) => void,
     makeWorker: WorkerFactory = defaultFactory,
+    /** 'sticker' = My stickers (320 px, <= 512 KB); default 'emoji'. */
+    profile: ImageProfileId = 'emoji',
 ): ProcessHandle {
     let worker: ReturnType<WorkerFactory> | null = null;
     let rejectFn: (e: EmojiProcessError) => void = () => {};
@@ -67,7 +69,7 @@ export function processEmojiImage(
             worker?.terminate(); worker = null;
             reject(new EmojiProcessError('FAILED', 'Something went wrong processing that picture.'));
         };
-        worker.postMessage({ type: 'process', file, mode });
+        worker.postMessage({ type: 'process', file, mode, profile });
     });
     return {
         result,

@@ -7,6 +7,7 @@ import {
     decideDisconnectHandling,
     disconnectedToast,
     failureTitleFor,
+    isDisplacedByOtherConnection,
     moveFailureTitle,
     parseForceDisconnect,
     parseFromCallId,
@@ -528,5 +529,25 @@ describe('wire parsing (WS payloads are untrusted)', () => {
         expect(parseFromCallId(undefined)).toBeNull();
         expect(parseFromCallId(7)).toBeNull();
         expect(parseFromCallId('')).toBeNull();
+    });
+});
+
+describe('isDisplacedByOtherConnection', () => {
+    // Prod 2026-11-20: a client displaced by its own account's other connection used
+    // to POST leave_voice / leave, deleting the roster entry of the connection that
+    // had taken over.
+    it('is true only for DUPLICATE_IDENTITY', () => {
+        expect(isDisplacedByOtherConnection(DisconnectReason.DUPLICATE_IDENTITY)).toBe(true);
+    });
+
+    it.each([
+        DisconnectReason.CLIENT_INITIATED,
+        DisconnectReason.PARTICIPANT_REMOVED,
+        DisconnectReason.ROOM_DELETED,
+        DisconnectReason.SERVER_SHUTDOWN,
+        DisconnectReason.JOIN_FAILURE,
+        undefined,
+    ])('is false for %s (the server must still be told)', (reason) => {
+        expect(isDisplacedByOtherConnection(reason)).toBe(false);
     });
 });

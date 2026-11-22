@@ -45,8 +45,9 @@ describe('only the user\'s own Leave is deliberate', () => {
         expect(conf).toContain('onLeave={handleUserLeave}');
         // ...and nothing else uses the raw handler with deliberate=true.
         const uses = [...conf.matchAll(/handleLeave\(([^)]*)\)/g)].map(m => m[1]);
-        // '' = the inactivity timer's bare handleLeave() (deliberate defaults to false).
-        expect(uses.sort()).toEqual(['', 'false', 'true']);
+        // 'false' x2 = the alone auto-leave (AloneGuard's onLeave -> handleLeaveRef) and the alone dialog's "Leave now";
+        // 'true' = handleUserLeave. Nothing else calls the raw handler.
+        expect(uses.sort()).toEqual(['false', 'false', 'true']);
     });
 
     it('handleUserLeave is a plain deliberate leave: no guard, no dialog, nothing to wait for', () => {
@@ -58,8 +59,11 @@ describe('only the user\'s own Leave is deliberate', () => {
 
     it('the inactivity auto-leave is NOT deliberate', () => {
         expect(conf).toContain('const handleLeave = (deliberate: boolean = false) => {');
-        expect(conf).toContain('if (inactivityCountdown <= 0) { handleLeave(); return; }');
-        expect(conf).toContain('setInactivityCountdown(null); handleLeave(false);');
+        // The alone timer (utils/aloneLeave.ts AloneGuard) leaves through handleLeaveRef, which is pinned to false...
+        expect(conf).toContain('onLeave: () => handleLeaveRef.current(),');
+        expect(conf).toContain('handleLeaveRef.current = () => handleLeave(false);');
+        // ...and the countdown dialog's "Leave now" is an explicit non-deliberate leave too.
+        expect(conf).toContain('onLeaveNow={() => { aloneGuard.disarm(); handleLeave(false); }}');
     });
 
     it('SidebarConference passes `deliberate` up as the second argument', () => {
@@ -68,8 +72,9 @@ describe('only the user\'s own Leave is deliberate', () => {
 
     it('CallPane: its own LiveKit-disconnect and failure paths call onDisconnect() with NO arguments', () => {
         const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={(err) => {');
-        expect(disc).toContain('if (handling.teardown) onDisconnect();');
-        expect(disc).not.toMatch(/onDisconnect\([^)]/);
+        expect(disc).toContain('if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));');
+        // never deliberate, never 'last person': the only argument it may pass is the third (displaced by this account's other connection)
+        expect(disc).not.toMatch(/onDisconnect\((?!undefined, undefined, )[^)]/);
         // Connection / encryption failures route through stableOnLeave() with no args too.
         const fc = pane.slice(pane.indexOf('const failConnection'), pane.indexOf('const failEncryption'));
         expect(fc).toContain('stableOnLeave()');
@@ -80,11 +85,11 @@ describe('only the user\'s own Leave is deliberate', () => {
     });
 
     it('Dashboard: only a strict `deliberate === true` from the pane reaches handleDisconnectCall as deliberate', () => {
-        expect(dash).toContain('void handleDisconnectCall(wasLastPerson, deliberate === true);');
+        expect(dash).toContain('void handleDisconnectCall(wasLastPerson, deliberate === true, displaced === true);');
     });
 
     it('Dashboard: handleDisconnectCall defaults to NOT deliberate, and the huddle branch passes it on', () => {
-        expect(dash).toContain('const handleDisconnectCall = async (wasLastPerson: boolean = false, deliberate: boolean = false) => {');
+        expect(dash).toContain('const handleDisconnectCall = async (wasLastPerson: boolean = false, deliberate: boolean = false, displaced: boolean = false) => {');
         expect(dash).toContain('handleLeaveHuddleCall({ deliberate });');
     });
 
@@ -103,7 +108,7 @@ describe('only the user\'s own Leave is deliberate', () => {
             'false',                         // key-wait "Leave" (CallEncryptionIndicator)
             'false',                         // still-connecting "Leave" (JoiningControlBar)
             'true',                          // asleep-while-ended teardown (ref)
-            'wasLastPerson, deliberate === true', // CallPane forwarder
+            'wasLastPerson, deliberate === true, displaced === true', // CallPane forwarder
         ].sort());
     });
 

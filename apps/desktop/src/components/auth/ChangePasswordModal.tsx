@@ -207,7 +207,7 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
         if (totpEnabled === null) {
             return (
                 <div style={{ height: 76, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <div className="w-4 h-4 rounded-full border-2 animate-spin" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: 'var(--cl-lume)' }} />
+                    <div className="w-4 h-4 rounded-full border-2 animate-spin" style={{ borderColor: 'rgb(var(--cl-bright-rgb) / .2)', borderTopColor: 'var(--cl-lume)' }} />
                 </div>
             );
         }
@@ -313,7 +313,7 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
                 </div>
                 {newPw && (
                     <div>
-                        <div className="h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,.08)' }}>
+                        <div className="h-[3px] rounded-full overflow-hidden" style={{ background: 'rgb(var(--cl-bright-rgb) / .08)' }}>
                             <div className={`h-full rounded-full transition-all duration-300 ${STRENGTH_BAR[pwScore]}`} style={{ width: `${(pwScore + 1) * 20}%` }} />
                         </div>
                         <div className="dlg-help" style={{ textAlign: 'right', marginTop: 4 }}>{STRENGTH_LABEL[pwScore]}</div>

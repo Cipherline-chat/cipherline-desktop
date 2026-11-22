@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
 import type { ServerInfo } from './useServers';
-import { RETRY_DELAYS_MS, isPermanentInviteFailure, resolveRetryDelayMs } from '../utils/invitePreviewRetry';
-import { sharedInvitePreview } from '../utils/invitePreviewCache';
+import { RETRY_DELAYS_MS, resolveRetryDelayMs } from '../utils/invitePreviewRetry';
+import { inviteLookup } from '../utils/invitePreviewCache';
 
 /**
  * Shared invite-preview fetch, used by both the in-chat invite card
@@ -51,6 +51,16 @@ import { sharedInvitePreview } from '../utils/invitePreviewCache';
  * caller now gets 60/min on this route, and a card that remounts (scrolling,
  * switching channels and back) reuses a recent answer instead of spending the
  * budget again (utils/invitePreviewCache.ts).
+ *
+ * Later still (2026-11-21): scrolling a long list of invite cards still turned
+ * them all "unavailable". Every card retried its own 429s, all at the instant
+ * the window reopened, and gave up after three. The lookup is now one shared
+ * queue (utils/invitePreviewCache.ts: dedupe, 4 at a time, a 429 pauses every
+ * lookup until Retry-After and is retried there, answers kept 5 minutes), and
+ * this hook only maps its answer: `gone` → 'invalid' (the only "expired"),
+ * `throttled` / `failed` → 'error' (a Retry button, never "expired"). A card
+ * may pass `enabled: false` until it is near the viewport, so cards nobody has
+ * scrolled to do not spend the budget.
  */
 
 export interface InvitePreview {
@@ -68,67 +78,83 @@ export interface InvitePreview {
 
 export type InvitePreviewState = 'loading' | 'valid' | 'joined' | 'invalid' | 'error';
 
-export function useInvitePreview(code: string, token: string | null, servers: ServerInfo[]) {
-    const [preview, setPreview] = useState<InvitePreview | null>(null);
-    const [state, setState] = useState<InvitePreviewState>('loading');
+/** The preview GET: bearer token (per-account throttle bucket, see 1. above)
+ *  and a timeout, so a request that never answers cannot leave a card loading forever. */
+export const INVITE_PREVIEW_TIMEOUT_MS = 15_000;
+
+export function useInvitePreview(code: string, token: string | null, servers: ServerInfo[], opts: { enabled?: boolean } = {}) {
+    const enabled = opts.enabled ?? true;
+    const [preview, setPreview] = useState<InvitePreview | null>(() => {
+        const hit = inviteLookup.peek<InvitePreview>(code);
+        return hit?.kind === 'valid' ? hit.data : null;
+    });
+    const [state, setState] = useState<InvitePreviewState>(() => {
+        const hit = inviteLookup.peek<InvitePreview>(code);
+        return hit?.kind === 'valid' ? 'valid' : hit?.kind === 'gone' ? 'invalid' : 'loading';
+    });
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const attemptRef = useRef(0);
-    // Flips true on cleanup (code/token change, or unmount) so a fetch or
+    // Flips true on cleanup (code/token change, or unmount) so a lookup or
     // scheduled retry belonging to a previous `code`/`token` can never apply
-    // its result after the fact — without this, switching invite cards
-    // mid-fetch (or an in-flight retry outliving a fast unmount) could
-    // clobber the current card's state with a stale response.
+    // its result after the fact.
     const cancelledRef = useRef(false);
-    // A scheduled retry calls back into `load` — routed through a ref
-    // (kept fresh below) rather than a direct self-reference so `load`
-    // isn't recursively self-referential in its own closure.
+    // A scheduled retry calls back into `load` through a ref (kept fresh
+    // below) rather than a direct self-reference.
     const loadRef = useRef<(fresh?: boolean) => Promise<void>>(async () => {});
 
     const load = useCallback(async (fresh = false) => {
         cancelledRef.current = false;
-        try {
-            const data = await sharedInvitePreview<InvitePreview>(code, async () => {
-                const res = await axios.get(apiUrl`/invites/${code}/preview`, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-                });
-                return res.data;
-            }, fresh);
-            if (cancelledRef.current) return;
+        const result = await inviteLookup.lookup<InvitePreview>(code, async () => {
+            const res = await axios.get(apiUrl`/invites/${code}/preview`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                timeout: INVITE_PREVIEW_TIMEOUT_MS,
+            });
+            return res.data;
+        }, fresh);
+        if (cancelledRef.current) return;
+        if (result.kind === 'valid') {
             attemptRef.current = 0;
-            setPreview(data);
+            setPreview(result.data);
             setState('valid'); // membership reconciled by the effect below, not refetched
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
-        } catch (e: any) {
-            if (cancelledRef.current) return;
-            const status = e?.response?.status;
-            if (isPermanentInviteFailure(status)) {
-                setState('invalid');
-                return;
-            }
-            const attempt = attemptRef.current++;
-            if (attempt >= RETRY_DELAYS_MS.length) {
-                setState('error');
-                return;
-            }
-            const delay = resolveRetryDelayMs(e?.response?.headers?.['retry-after'], attempt);
-            if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-            retryTimerRef.current = setTimeout(() => {
-                if (!cancelledRef.current) void loadRef.current();
-            }, delay);
+            return;
         }
+        if (result.kind === 'gone') {
+            setState('invalid');
+            return;
+        }
+        // Rate limited even after the shared lookup waited it out: show
+        // "couldn't load" with a Retry, never "expired".
+        if (result.kind === 'throttled') {
+            setState('error');
+            return;
+        }
+        // Network / 5xx: a few quiet retries before offering the button.
+        const attempt = attemptRef.current++;
+        if (attempt >= RETRY_DELAYS_MS.length) {
+            setState('error');
+            return;
+        }
+        const delay = resolveRetryDelayMs(undefined, attempt);
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = setTimeout(() => {
+            if (!cancelledRef.current) void loadRef.current();
+        }, delay);
     }, [code, token]);
 
     useEffect(() => { loadRef.current = load; }, [load]);
 
     useEffect(() => {
+        if (!enabled) return;
         attemptRef.current = 0;
-        setState('loading');
+        const hit = inviteLookup.peek<InvitePreview>(code);
+        if (hit?.kind === 'valid') { setPreview(hit.data); setState('valid'); }
+        else { setPreview(null); setState(hit?.kind === 'gone' ? 'invalid' : 'loading'); }
         void load();
         return () => {
             cancelledRef.current = true;
             if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         };
-    }, [load]);
+    }, [load, enabled, code]);
 
     // "Already a member" is derived locally, never triggers a refetch — the
     // whole point of this hook is that ambient server-list churn (WS events
@@ -141,9 +167,8 @@ export function useInvitePreview(code: string, token: string | null, servers: Se
         });
     }, [servers, preview]);
 
-    /** Manual retry (e.g. a "Retry" button once auto-retries are exhausted)
-     * — resets the attempt counter so it gets the full backoff budget
-     * again, not whatever was left over. */
+    /** Manual retry (the "Retry" button) — resets the attempt counter so it
+     * gets the full backoff budget again, and asks the server afresh. */
     const reload = useCallback(() => {
         attemptRef.current = 0;
         cancelledRef.current = false;

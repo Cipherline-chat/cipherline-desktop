@@ -42,11 +42,11 @@ export const ShareHoldNote = ({ belowAvatar, avatarPx = 0 }: { belowAvatar: bool
         className="@container absolute inset-0 z-[6] flex items-center justify-center pointer-events-none"
     >
         <div
-            className="cl-share-hold-note flex items-center gap-2 bg-black/55 backdrop-blur-sm rounded-lg px-3 py-1.5"
+            className="cl-share-hold-note flex items-center gap-2 bg-pure-black/55 backdrop-blur-sm rounded-lg px-3 py-1.5"
             style={belowAvatar ? { transform: `translateY(${avatarPx / 2 + 26}px)` } : undefined}
         >
             <span className="cl-share-hold-dot w-1.5 h-1.5 rounded-full bg-cl-lume shrink-0" />
-            <span className="hidden @[220px]:inline text-white/90 text-xs font-medium whitespace-nowrap">
+            <span className="hidden @[220px]:inline text-pure-white/90 text-xs font-medium whitespace-nowrap">
                 Changing stream settings
             </span>
         </div>

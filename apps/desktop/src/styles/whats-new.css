@@ -95,7 +95,7 @@
   font-family: var(--cl-font-display);
   font-size: 14px;
   font-weight: 600;
-  color: var(--cl-lume);
+  color: var(--cl-lume-text);
   letter-spacing: .02em;
 }
 .wn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }

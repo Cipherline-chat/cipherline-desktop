@@ -12,6 +12,7 @@ import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { useEscape } from '../../hooks/useEscape';
 import { setOccluded } from '../../utils/idleMotion';
 import { AppearancePane } from './panes/AppearancePane';
+import { AccessibilityPane } from './panes/AccessibilityPane';
 import { ActivityStylePane } from './panes/ActivityStylePane';
 import { DevicesPane } from './panes/DevicesPane';
 import { DangerPane } from './panes/DangerPane';
@@ -51,7 +52,7 @@ import type { GifSettingsHook } from '../../hooks/useGifSettings';
  * exits fast and plain, reduced-motion strips everything (CSS layer).
  */
 export type PaneId =
-    | 'profile' | 'activityStyle' | 'appearance'
+    | 'profile' | 'activityStyle' | 'appearance' | 'accessibility'
     | 'devices' | 'voice' | 'notifications' | 'keybinds' | 'activity'
     | 'privacy' | 'storage' | 'billing'
     | 'advanced' | 'danger';
@@ -60,6 +61,7 @@ const PANE_META: Record<PaneId, { title: string; desc: string }> = {
     profile:       { title: 'Profile',          desc: 'How you show up to the people who can actually see you.' },
     activityStyle: { title: 'Activity & Style', desc: 'What you share with friends, and the touches that are yours alone.' },
     appearance:    { title: 'Appearance',       desc: 'The window, the tray, and how the app behaves around your OS.' },
+    accessibility: { title: 'Accessibility',    desc: 'Sizes you can actually read. More ways to make it yours are on the way.' },
     devices:       { title: 'Security & devices', desc: 'Your sign-in protections, and every device that carries your keys. This is the list, and the axe.' },
     voice:         { title: 'Voice & Video',    desc: 'Tuned on-device. Encrypted per frame on the way out.' },
     notifications: { title: 'Notifications',    desc: 'What’s allowed to glow, and when.' },
@@ -320,6 +322,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                                 {pane === 'profile' && <ProfilePane onDirtyChange={unsaved.setDirty} />}
                                 {pane === 'activityStyle' && <ActivityStylePane />}
                                 {pane === 'appearance' && <AppearancePane gif={gif} />}
+                                {pane === 'accessibility' && <AccessibilityPane />}
                                 {pane === 'devices' && <DevicesPane />}
                                 {pane === 'voice' && <VoiceVideoSettings voice={voice} />}
                                 {pane === 'notifications' && <NotificationsTab />}

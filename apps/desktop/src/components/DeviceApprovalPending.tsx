@@ -173,7 +173,7 @@ export const DeviceApprovalPending: React.FC<Props> = ({ userId, deviceId, token
             <>
                 <div className="text-center mb-7">
                     <div className="w-14 h-14 rounded-2xl bg-cl-flash/10 border border-cl-flash/20 flex items-center justify-center mx-auto mb-4">
-                        <Clock className="w-7 h-7 text-cl-flash" />
+                        <Clock className="w-7 h-7 text-cl-flash-text" />
                     </div>
                     <h2 className="text-xl font-bold text-cl-text mb-1">
                         {terminal === 'expired' ? 'Request expired' : 'Request declined'}
@@ -193,7 +193,7 @@ export const DeviceApprovalPending: React.FC<Props> = ({ userId, deviceId, token
         <>
             <div className="text-center mb-6">
                 <div className="w-14 h-14 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center mx-auto mb-4">
-                    <ShieldCheck className="w-7 h-7 text-cl-lume" />
+                    <ShieldCheck className="w-7 h-7 text-cl-lume-text" />
                 </div>
                 <h2 className="text-xl font-bold text-cl-text mb-1">Approve this device</h2>
                 <p className="text-cl-faint text-sm leading-relaxed">
@@ -228,7 +228,7 @@ export const DeviceApprovalPending: React.FC<Props> = ({ userId, deviceId, token
             </div>
 
             {resetDueAt != null && (
-                <div className="mb-4 px-4 py-3 rounded-xl text-sm text-center" style={{ background: 'rgba(37,224,200,.06)', border: '1px solid var(--cl-border)', color: 'var(--cl-text)' }}>
+                <div className="mb-4 px-4 py-3 rounded-xl text-sm text-center" style={{ background: 'rgb(var(--cl-lume-rgb) / .06)', border: '1px solid var(--cl-border)', color: 'var(--cl-text)' }}>
                     Device reset scheduled. If none of your other devices are used before then, this device is approved
                     {resetRemaining != null ? ` in ${Math.max(1, Math.ceil(resetRemaining / 3600))} h` : ''} and your other devices are signed out.
                     Using any of them cancels the reset.

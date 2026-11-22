@@ -73,6 +73,7 @@
  */
 
 import secureLocalStore from '../utils/secureLocalStore';
+import { formatDateTime } from '../utils/a11y/timeFormat';
 
 export type BackupDestinationLabel = 'local' | 'drive';
 
@@ -174,7 +175,7 @@ function when(iso: string): string {
     const ms = Date.parse(iso);
     if (!Number.isFinite(ms)) return 'an unknown date';
     try {
-        return new Date(ms).toLocaleString(undefined, {
+        return formatDateTime(new Date(ms), undefined, {
             year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
         });
     } catch { return new Date(ms).toISOString(); }

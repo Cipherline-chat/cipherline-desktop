@@ -11,8 +11,9 @@
  *
  * HOW. A small thread per watch samples the physical keyboard state every ~8 ms
  * and reports every change of "every watched key group is down":
- *   Windows  GetAsyncKeyState(virtual key)
- *   X11      XQueryKeymap on the thread's own display connection (libX11 is
+ *   Windows  GetAsyncKeyState(virtual key) - mouse buttons included
+ *   X11      XQueryKeymap (+ the pointer's button state, only when a mouse button
+ *            is watched) on the thread's own display connection (libX11 is
  *            dlopen()ed, so the addon loads on a machine without it)
  * It is deliberately a POLL, not a hook / grab: it never sits in the input path,
  * so it cannot swallow, delay or reorder a key for another application, needs no
@@ -27,12 +28,43 @@
  *
  *   watchKeys(slot: number, groups: number[][], callback: (down: boolean) => void): boolean
  *     Replaces any previous watch in `slot` (0..3). `groups` = 1..4 groups; a group
- *     is "any of these codes" (Alt = left OR right Alt), codes being Win32 virtual
- *     keys on Windows and X11 keysyms on Linux. `callback(true)` when every group
- *     has a key down, `callback(false)` when that stops being true, on the JS main
- *     thread. Returns false for bad arguments or when the OS cannot be watched.
+ *     is "any of these codes" (Alt = left OR right Alt). `callback(true)` when every
+ *     group has a key down, `callback(false)` when that stops being true, on the JS
+ *     main thread. Returns false for bad arguments or when the OS cannot be watched.
+ *     A code is (electron/global-ptt.ts builds them from KeyboardEvent.code):
+ *       Windows  a virtual key (1..0xFF; VK_MBUTTON / VK_XBUTTON1 / VK_XBUTTON2 are
+ *                the middle / back / forward mouse buttons, GetAsyncKeyState reads
+ *                them like keys), or kWinScanCode | scan code (0xE0xx = extended):
+ *                a PHYSICAL key, turned into this keyboard layout's virtual key with
+ *                MapVirtualKeyEx when the watch starts (letters, digits and the OEM
+ *                punctuation keys, whose virtual key depends on the layout).
+ *       X11      a keysym (resolved with XKeysymToKeycode, as before), or
+ *                kX11KeyCode | X keycode: a PHYSICAL key (Chromium's
+ *                KeyboardEvent.code comes from that same keycode, evdev + 8), or
+ *                kX11Button | pointer button (2 = middle, 8 = back, 9 = forward).
+ *                Buttons 1-5 come from XQueryPointer; 6+ need XInput 2
+ *                (XIQueryPointer on the client's master pointer, libXi dlopen()ed);
+ *                without it a watch of such a button returns false.
+ *     Mouse buttons are read the same way as keys: a poll of the state, never a
+ *     hook, so the click still reaches whatever window is under the pointer.
  *   stopWatchingKeys(slot?: number): void
  *     Stops one slot (or all when omitted). No callback is delivered afterwards.
+ *   getForegroundElevation() -> { foreground, selfIntegrity, selfElevated }   (Windows only)
+ *     Whether the window that has focus belongs to a process at a HIGHER integrity
+ *     level than ours (a game started "as administrator" while Cipherline was not).
+ *     Windows' UIPI then hides the key state from us: GetAsyncKeyState reads nothing
+ *     while that window is focused, which no poll can work around - the only fix is
+ *     running Cipherline elevated too. `foreground` is one of
+ *       'none'    no foreground window
+ *       'self'    one of our windows
+ *       'higher'  its token's integrity level is above ours
+ *       'same'    at or below ours
+ *       'denied'  the process opened (PROCESS_QUERY_LIMITED_INFORMATION) but its
+ *                 token did not (ERROR_ACCESS_DENIED). Could be elevated, could be
+ *                 anti-cheat hiding it: the JS side treats it as UNKNOWN (never as
+ *                 admin) and only reports it in diagnostics
+ *       'unknown' anything else (a protected process, a race with the window closing)
+ *     Nothing about the window (no title, no executable) is returned.
  */
 
 #include <node_api.h>
@@ -44,6 +76,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+// OpenProcessToken / GetTokenInformation / IsValidSid / GetSidSubAuthority* (also listed in binding.gyp).
+#pragma comment(lib, "advapi32.lib")
+#ifndef MAPVK_VSC_TO_VK_EX
+#define MAPVK_VSC_TO_VK_EX 3   // winuser.h; guarded only in case an old SDK hides it behind WINVER
+#endif
 #else
 #include <dlfcn.h>
 #include <unistd.h>
@@ -63,24 +100,50 @@ constexpr uint32_t kMaxAlternatives = 4;
 constexpr int kPollMs = 8;
 
 #ifdef _WIN32
-// Windows: a code is a virtual key.
+// Windows: a code is a virtual key, or a scan code to turn into one under this keyboard layout.
+constexpr int kWinScanCode = 0x10000;
 struct Probe {
-    bool Open() { return true; }
+    HKL layout = nullptr;
+    bool Open() { layout = GetKeyboardLayout(0); return true; }
     void Close() {}
-    int Resolve(int code) { return code; }
+    int Resolve(int code) {
+        if (code & kWinScanCode) {
+            // 0 = no such key on this layout: never down.
+            return static_cast<int>(MapVirtualKeyExW(static_cast<UINT>(code & 0xFFFF), MAPVK_VSC_TO_VK_EX, layout));
+        }
+        return code;
+    }
     bool Sample() { return true; }
-    bool Down(int resolved) { return (GetAsyncKeyState(resolved) & 0x8000) != 0; }
+    bool Down(int resolved) { return resolved > 0 && (GetAsyncKeyState(resolved) & 0x8000) != 0; }
 };
 #else
-// X11: a code is a keysym; libX11 is loaded at run time (no headers needed: Display* is opaque).
+// X11: a code is a keysym, a raw keycode or a pointer button. libX11 (and libXi, only for
+// buttons 6+) are loaded at run time: no headers needed (Display* is opaque), and the addon
+// loads on a machine without them.
+constexpr int kX11KeyCode = 0x40000000;
+constexpr int kX11Button = 0x20000000;
+struct XIButtonStateLite { int mask_len; unsigned char* mask; };
+struct XIModifierStateLite { int base; int latched; int locked; int effective; };
 struct X11Api {
     void* lib = nullptr;
     void* (*XOpenDisplay)(const char*) = nullptr;
     int (*XCloseDisplay)(void*) = nullptr;
     int (*XQueryKeymap)(void*, char[32]) = nullptr;
     unsigned char (*XKeysymToKeycode)(void*, unsigned long) = nullptr;
+    unsigned long (*XDefaultRootWindow)(void*) = nullptr;
+    int (*XQueryPointer)(void*, unsigned long, unsigned long*, unsigned long*, int*, int*, int*, int*, unsigned int*) = nullptr;
+    int (*XQueryExtension)(void*, const char*, int*, int*, int*) = nullptr;
+    int (*XFree)(void*) = nullptr;
     bool ok = false;
+    // libXi (XInput 2): only to read pointer buttons above 5 (back / forward).
+    void* xi = nullptr;
+    int (*XIQueryVersion)(void*, int*, int*) = nullptr;
+    int (*XIGetClientPointer)(void*, unsigned long, int*) = nullptr;
+    int (*XIQueryPointer)(void*, int, unsigned long, unsigned long*, unsigned long*, double*, double*, double*, double*,
+                          XIButtonStateLite*, XIModifierStateLite*, XIModifierStateLite*) = nullptr;
+    bool xiOk = false;
 };
+template <typename T> void Sym(void* lib, T& fn, const char* name) { fn = reinterpret_cast<T>(dlsym(lib, name)); }
 X11Api* LoadX11() {
     static X11Api api;
     static bool tried = false;
@@ -88,27 +151,102 @@ X11Api* LoadX11() {
     tried = true;
     api.lib = dlopen("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
     if (!api.lib) return &api;
-    api.XOpenDisplay = reinterpret_cast<void* (*)(const char*)>(dlsym(api.lib, "XOpenDisplay"));
-    api.XCloseDisplay = reinterpret_cast<int (*)(void*)>(dlsym(api.lib, "XCloseDisplay"));
-    api.XQueryKeymap = reinterpret_cast<int (*)(void*, char[32])>(dlsym(api.lib, "XQueryKeymap"));
-    api.XKeysymToKeycode = reinterpret_cast<unsigned char (*)(void*, unsigned long)>(dlsym(api.lib, "XKeysymToKeycode"));
+    Sym(api.lib, api.XOpenDisplay, "XOpenDisplay");
+    Sym(api.lib, api.XCloseDisplay, "XCloseDisplay");
+    Sym(api.lib, api.XQueryKeymap, "XQueryKeymap");
+    Sym(api.lib, api.XKeysymToKeycode, "XKeysymToKeycode");
+    Sym(api.lib, api.XDefaultRootWindow, "XDefaultRootWindow");
+    Sym(api.lib, api.XQueryPointer, "XQueryPointer");
+    Sym(api.lib, api.XQueryExtension, "XQueryExtension");
+    Sym(api.lib, api.XFree, "XFree");
     api.ok = api.XOpenDisplay && api.XCloseDisplay && api.XQueryKeymap && api.XKeysymToKeycode;
+    api.xi = dlopen("libXi.so.6", RTLD_LAZY | RTLD_LOCAL);
+    if (api.xi) {
+        Sym(api.xi, api.XIQueryVersion, "XIQueryVersion");
+        Sym(api.xi, api.XIGetClientPointer, "XIGetClientPointer");
+        Sym(api.xi, api.XIQueryPointer, "XIQueryPointer");
+        api.xiOk = api.XIQueryVersion && api.XIGetClientPointer && api.XIQueryPointer && api.XFree && api.XQueryExtension;
+    }
     return &api;
 }
 struct Probe {
+    bool needButtons = false;   // set before Open(): the watch includes a pointer button
+    bool needXi = false;        // ... and one of them is above 5 (back / forward)
     X11Api* api = nullptr;
     void* dpy = nullptr;
+    unsigned long root = 0;
+    int xiDevice = -1;
     char map[32] = {0};
+    uint32_t buttons = 0;       // bit b = pointer button b is down
     bool Open() {
         api = LoadX11();
         if (!api->ok) return false;
         dpy = api->XOpenDisplay(nullptr);
-        return dpy != nullptr;
+        if (!dpy) return false;
+        if (needButtons) {
+            if (!api->XDefaultRootWindow || !api->XQueryPointer) { Close(); return false; }
+            root = api->XDefaultRootWindow(dpy);
+        }
+        if (needXi) {
+            // Guarded so no XInput request is ever sent to a server without the extension
+            // (an X error would go to the process-wide error handler).
+            int op = 0, ev = 0, err = 0;
+            int major = 2, minor = 0;
+            int dev = -1;
+            if (!api->xiOk || !api->XQueryExtension(dpy, "XInputExtension", &op, &ev, &err)
+                || api->XIQueryVersion(dpy, &major, &minor) != 0 || major < 2) {
+                Close();
+                return false;
+            }
+            // Its return value only says whether a client pointer was set EXPLICITLY; the id is
+            // filled in either way (the server's pick). 2 is the Virtual core pointer otherwise.
+            api->XIGetClientPointer(dpy, 0, &dev);
+            xiDevice = dev > 0 ? dev : 2;
+        }
+        return true;
     }
     void Close() { if (dpy && api) api->XCloseDisplay(dpy); dpy = nullptr; }
-    int Resolve(int code) { return dpy ? api->XKeysymToKeycode(dpy, static_cast<unsigned long>(code)) : 0; }
-    bool Sample() { return dpy && api->XQueryKeymap(dpy, map) != 0; }
-    bool Down(int keycode) { return keycode > 0 && (map[keycode >> 3] & (1 << (keycode & 7))) != 0; }
+    int Resolve(int code) {
+        if (!dpy) return 0;
+        if (code & kX11Button) return code;
+        if (code & kX11KeyCode) return code & 0xFF;
+        return api->XKeysymToKeycode(dpy, static_cast<unsigned long>(code));
+    }
+    bool SampleButtons() {
+        buttons = 0;
+        if (xiDevice >= 0) {
+            unsigned long r = 0, c = 0;
+            double rx = 0, ry = 0, wx = 0, wy = 0;
+            XIButtonStateLite bs = {0, nullptr};
+            XIModifierStateLite mods = {0, 0, 0, 0}, group = {0, 0, 0, 0};
+            int ok = api->XIQueryPointer(dpy, xiDevice, root, &r, &c, &rx, &ry, &wx, &wy, &bs, &mods, &group);
+            if (ok && bs.mask) {
+                for (int b = 1; b < 32 && (b >> 3) < bs.mask_len; b++) {
+                    if (bs.mask[b >> 3] & (1 << (b & 7))) buttons |= (1u << b);
+                }
+            }
+            if (bs.mask) api->XFree(bs.mask);
+            return ok != 0;
+        }
+        unsigned long r = 0, c = 0;
+        int rx = 0, ry = 0, wx = 0, wy = 0;
+        unsigned int mask = 0;
+        // Returns False only when the pointer is on another screen; the button mask is valid either way.
+        api->XQueryPointer(dpy, root, &r, &c, &rx, &ry, &wx, &wy, &mask);
+        for (int b = 1; b <= 5; b++) if (mask & (1u << (7 + b))) buttons |= (1u << b);   // Button1Mask = 1 << 8
+        return true;
+    }
+    bool Sample() {
+        if (!dpy || api->XQueryKeymap(dpy, map) == 0) return false;
+        return needButtons ? SampleButtons() : true;
+    }
+    bool Down(int resolved) {
+        if (resolved & kX11Button) {
+            int b = resolved & 0xFF;
+            return b > 0 && b < 32 && (buttons & (1u << b)) != 0;
+        }
+        return resolved > 0 && resolved < 256 && (map[resolved >> 3] & (1 << (resolved & 7))) != 0;
+    }
 };
 #endif
 
@@ -218,6 +356,16 @@ napi_value WatchKeys(napi_env env, napi_callback_info info) {
 
     // Open the OS handle first so an unwatchable session (Wayland: no X display) reports false.
     Probe* probe = new Probe();
+#ifndef _WIN32
+    for (const auto& g : groups) {
+        for (int c : g) {
+            if (c & kX11Button) {
+                probe->needButtons = true;
+                if ((c & 0xFF) > 5) probe->needXi = true;
+            }
+        }
+    }
+#endif
     if (!probe->Open()) { delete probe; return result; }
     std::vector<std::vector<int>> resolved;
     for (const auto& g : groups) {
@@ -261,6 +409,70 @@ napi_value StopWatching(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+#ifdef _WIN32
+// The integrity-level RID of a token (SECURITY_MANDATORY_MEDIUM_RID 0x2000, HIGH 0x3000), -1 when unreadable.
+long TokenIntegrity(HANDLE token) {
+    DWORD len = 0;
+    GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &len);
+    // Pointer-aligned storage: TOKEN_MANDATORY_LABEL starts with a PSID.
+    DWORD_PTR buf[32];
+    if (len == 0 || len > sizeof(buf)) return -1;
+    if (!GetTokenInformation(token, TokenIntegrityLevel, buf, len, &len)) return -1;
+    PSID sid = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf)->Label.Sid;
+    if (!sid || !IsValidSid(sid)) return -1;
+    UCHAR n = *GetSidSubAuthorityCount(sid);
+    if (n == 0) return -1;
+    return static_cast<long>(*GetSidSubAuthority(sid, static_cast<DWORD>(n - 1)));
+}
+
+napi_value GetForegroundElevation(napi_env env, napi_callback_info /*info*/) {
+    long selfIl = -1;
+    bool selfElevated = false;
+    HANDLE selfToken = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &selfToken)) {
+        selfIl = TokenIntegrity(selfToken);
+        TOKEN_ELEVATION e = {0};
+        DWORD len = 0;
+        if (GetTokenInformation(selfToken, TokenElevation, &e, sizeof(e), &len)) selfElevated = e.TokenIsElevated != 0;
+        CloseHandle(selfToken);
+    }
+
+    const char* fg = "unknown";
+    HWND hwnd = GetForegroundWindow();
+    DWORD pid = 0;
+    if (!hwnd) {
+        fg = "none";
+    } else if (GetWindowThreadProcessId(hwnd, &pid) == 0 || pid == 0) {
+        fg = "unknown";
+    } else if (pid == GetCurrentProcessId()) {
+        fg = "self";
+    } else {
+        HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (proc) {
+            HANDLE tok = nullptr;
+            if (OpenProcessToken(proc, TOKEN_QUERY, &tok)) {
+                long il = TokenIntegrity(tok);
+                CloseHandle(tok);
+                if (il >= 0 && selfIl >= 0) fg = il > selfIl ? "higher" : "same";
+            } else if (GetLastError() == ERROR_ACCESS_DENIED) {
+                fg = "denied";
+            }
+            CloseHandle(proc);
+        }
+    }
+
+    napi_value out, v;
+    napi_create_object(env, &out);
+    napi_create_string_utf8(env, fg, NAPI_AUTO_LENGTH, &v);
+    napi_set_named_property(env, out, "foreground", v);
+    napi_create_int32(env, static_cast<int32_t>(selfIl), &v);
+    napi_set_named_property(env, out, "selfIntegrity", v);
+    napi_get_boolean(env, selfElevated, &v);
+    napi_set_named_property(env, out, "selfElevated", v);
+    return out;
+}
+#endif
+
 }  // namespace
 
 void RegisterKeyState(napi_env env, napi_value exports) {
@@ -269,6 +481,10 @@ void RegisterKeyState(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "watchKeys", fn);
     napi_create_function(env, nullptr, 0, StopWatching, nullptr, &fn);
     napi_set_named_property(env, exports, "stopWatchingKeys", fn);
+#ifdef _WIN32
+    napi_create_function(env, nullptr, 0, GetForegroundElevation, nullptr, &fn);
+    napi_set_named_property(env, exports, "getForegroundElevation", fn);
+#endif
     napi_add_env_cleanup_hook(env, CleanupHook, nullptr);
 }
 

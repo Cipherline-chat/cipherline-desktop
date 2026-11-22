@@ -32,7 +32,7 @@ describe('which cropper surfaces keep an animation', () => {
 describe('server icon / banner upload keeps the cropped image\'s own type', () => {
     const modal = read('components/server/ServerSettingsModal.tsx');
     it('the MIME comes from the blob, not a hard-coded JPEG', () => {
-        expect(modal).toContain("blob.type === 'image/webp' ? 'image/webp' : 'image/jpeg'");
+        expect(modal).toContain('const mime = imageUploadType(blob);');
         expect(modal).not.toMatch(/server-icon\.jpg'\s*:\s*'server-banner\.jpg',\s*'image\/jpeg'/);
         expect(modal).not.toMatch(/uploadEncryptedFile\(\s*blob,[^)]*'image\/jpeg'\s*,?\s*\)/);
     });
@@ -68,5 +68,21 @@ describe('the worker', () => {
     });
     it('is constructed in the one form Vite bundles (see workerBundling.test.ts)', () => {
         expect(read('utils/animatedCrop/client.ts')).toMatch(/new Worker\(\s*new URL\('\.\.\/\.\.\/workers\/animatedCrop\.worker\.ts', import\.meta\.url\)/);
+    });
+});
+
+describe('server icons keep a transparent background (owner 2026-11-21)', () => {
+    const modal = read('components/server/ServerSettingsModal.tsx');
+    const create = read('components/server/CreateServerModal.tsx');
+    const discord = read('components/server/DiscordTemplateImport.tsx');
+    it('the settings icon cropper keeps transparency (icon only, not the banner)', () => {
+        expect(modal).toContain("keepTransparency={cropTarget?.kind === 'icon'}");
+    });
+    it('the create-server icon cropper keeps transparency', () => {
+        expect(discord).toMatch(/<ClImageCropper[\s\S]*?keepTransparency[\s\S]*?Position the server icon/);
+    });
+    it('create-server uploads under the blob\'s own type, not a hard-coded JPEG', () => {
+        expect(create).toContain('imageUploadType(blob)');
+        expect(create).not.toContain("'server-icon.jpg', 'image/jpeg'");
     });
 });

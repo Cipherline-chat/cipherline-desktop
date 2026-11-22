@@ -22,7 +22,7 @@
  * Privacy: only integers about frame sizes are ever reported; no pixels, no
  * names.
  */
-import { sliceRect, type CropRect, type ShareLayout } from './shareLayout';
+import { cropRectFor, type CropLayout, type CropRect } from './shareLayout';
 
 /** The slice of a WebCodecs VideoFrame this needs. */
 export interface CropFrame {
@@ -52,7 +52,7 @@ export interface CropSize {
 
 export interface CropDeps<F extends CropFrame> {
     /** The CURRENT layout; read for every frame, so a switch takes effect on the next one. */
-    getLayout(): ShareLayout;
+    getLayout(): CropLayout;
     /** Make the cropped frame: `new VideoFrame(frame, { visibleRect: rect, ... })`. The input is NOT closed here. */
     cropFrame(frame: F, rect: CropRect): F;
     /** Called when the source or output size changes (and for the first frame). */
@@ -87,14 +87,14 @@ export function createCropTransformer<F extends CropFrame>(deps: CropDeps<F>): C
                 const srcW = vr?.width ?? frame.codedWidth;
                 const srcH = vr?.height ?? frame.codedHeight;
                 const layout = deps.getLayout();
-                if (layout.kind !== 'slice') {
+                const r = cropRectFor(layout, srcW, srcH);
+                if (!r) {
                     report({ sourceWidth: srcW, sourceHeight: srcH, outWidth: srcW, outHeight: srcH });
                     controller.enqueue(frame);
                     passedOn = true;
                     stats.framesOut++;
                     return;
                 }
-                const r = sliceRect(srcW, srcH, layout.count, layout.index);
                 // The rect is relative to the frame's own visible area; VideoFrame
                 // wants it in coded coordinates.
                 const rect: CropRect = { x: r.x + (vr?.x ?? 0), y: r.y + (vr?.y ?? 0), width: r.width, height: r.height };

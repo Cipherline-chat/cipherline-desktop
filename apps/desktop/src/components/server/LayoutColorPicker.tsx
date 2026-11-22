@@ -54,7 +54,7 @@ export const LayoutColorPicker: React.FC<Props> = ({ value, onChange, label }) =
                 {custom ? undefined : <span aria-hidden="true">+</span>}
             </ColourSwatchButton>
             {value && (
-                <button type="button" className="text-[11px] text-cl-faint hover:text-cl-lume inline-flex items-center gap-1" onClick={() => onChange(null)}>
+                <button type="button" className="text-[11px] text-cl-faint hover:text-cl-lume-text inline-flex items-center gap-1" onClick={() => onChange(null)}>
                     <RotateCcw size={11} /> Default
                 </button>
             )}

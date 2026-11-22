@@ -47,7 +47,13 @@ import { clearShareRefs } from './shareRef';
 import { STEADY_KINDS, STEADY_MAX_REPEAT, STEADY_WINDOW_MS, isSteady } from './shareSteady';
 
 export const CALL_EVENT_KINDS = [
-    'call_join', 'call_leave', 'participants', 'ice_route', 'reconnecting', 'reconnected',
+    'call_join', 'call_leave', 'participants',
+    // The "alone in call" auto-leave (utils/aloneLeave.ts): counts from the hook, the live Room and server presence when they disagree, an action enum, the setting in minutes.
+    'alone_timer',
+    // Alone in the call: the audio upstream was paused / resumed (utils/aloneUpstream.ts). A reason enum only
+    // (alone | join | uncertain | reconnect | device | publish | stop) - no ids, no durations, no counts.
+    'upstream_paused', 'upstream_resumed',
+    'ice_route', 'reconnecting', 'reconnected',
     'camera_capture', 'camera_codec', 'camera_start_check', 'camera_fallback', 'camera_ladder',
     'camera_layering', 'camera_tier', 'camera_encoder_stall',
     // The camera's top layer was held to 720p30 / released while a software share ran (cameraShareCap.ts): to = capped|restored, height, fps.
@@ -75,6 +81,13 @@ export const CALL_EVENT_KINDS = [
     // A share start: stage timings (codec probe, acquire + publish), or the
     // DOMException type when it failed (SidebarConference.startScreenShareFrom).
     'share_start',
+    // A WINDOW share Windows would not capture (windowShareFallback.ts): one row per
+    // step of the fallback ladder, from = the step that failed, to = what is tried next
+    // (safe = retry at <= 1080p30, monitor_crop = the window's monitor cropped to it,
+    // offer_screen = "share the whole screen instead", give_up; screen_accepted = the
+    // offer was taken), with the DOMException type, a failure class, and the window's
+    // state as booleans (minimised / visible / cloaked / covers its monitor). Never a title.
+    'share_window_fallback',
     // The share's SYSTEM-AUDIO side, one row per step (shareAudioEvent.ts): step = skipped
     // (why: off / no_native / no_pid / no_api), starting, refused (main said no), first_chunk,
     // no_chunks (3 s of nothing), failed (reason enum), exited, stopped (cause enum), picked
@@ -88,6 +101,13 @@ export const CALL_EVENT_KINDS = [
     // (libwebrtc's encoder fallback; the SFU forwards none of it): codec names,
     // the encoder implementation name, a layer count (shareCodecDrift.ts).
     'share_codec_drift',
+    // A share left its HARDWARE encoder because of something the app did (a viewer who cannot decode H.265,
+    // a failed hardware encoder) and what it sends instead: cause word, codec names, hardware yes/no, the
+    // capture size and the size held to keep the frame rate (shareQualityPlan.ts).
+    'share_quality',
+    // What the share's sender is really encoding, logged when it changes: published + sent codec names,
+    // the encoder implementation name, hardware yes/no (powerEfficientEncoder), active layer count.
+    'share_encoder',
     // Linux hardware (VA-API) video encode failed this session (linuxHwEncode.ts): a fixed reason word
     // (hw_lost | high_start | stall | drift), the published codec, the encoder implementation name.
     'linux_hw_encode',
@@ -321,6 +341,18 @@ export const CALL_EVENT_KINDS = [
     // booleans, the gate threshold and the mic-volume percent; mic_capture: the raw capture's rate / channels / latency,
     // the browser processing flags it really got, and a device-kind enum (voiceDiagLog.ts; never a device name or id).
     'voice_settings', 'mic_capture',
+    // The new audio engine's ('v2') own counters for a mic_level window (micLevelLog.ts): bad input samples, resets, idle
+    // (digital-silence) share, output underruns, muted-at-device; and its fall-back to the legacy chain (reason=fallback).
+    // Numbers and enums only.
+    'mic_engine',
+    // Native Strong (utils/clAudioNative.ts) for a mic_level window: frames the page needed from the utility process, frames that were not
+    // there in time, watchdog frames, hand-off milliseconds p50/p95/p99/max. Numbers only.
+    'mic_native',
+    // What one participant's microphone track carried over a minute, split by whether their speaking ring was lit
+    // (speakingAnalyser.ts): lit_pct, the level while lit (lit_db), the level and the loudest moment while NOT lit
+    // (quiet_db, quiet_max_db) and the ring's threshold (thr_db). `slot` is self-mic or the remote-av-N placeholder.
+    // quiet_max_db under thr_db = nothing audible went without a ring. Levels only, never audio.
+    'ring_level',
 ] as const;
 export type CallEventKind = (typeof CALL_EVENT_KINDS)[number];
 
@@ -343,7 +375,7 @@ const NOISY: ReadonlySet<string> = new Set(['dynacast_layers', 'quality_limitati
  * with the log (sign-out) and at the next call start - NOT at call end, so a
  * report filed right after leaving still explains the share.
  */
-const SHARE_PINNED_KINDS = ['share_start', 'share_codec', 'share_clamp', 'share_display', 'share_crop', 'share_rx_start'] as const;
+const SHARE_PINNED_KINDS = ['share_start', 'share_window_fallback', 'share_codec', 'share_clamp', 'share_display', 'share_crop', 'share_rx_start'] as const;
 /** The call's voice settings and capture format (voiceDiagLog.ts): a long call would rotate the join-time entries out, and
  *  they are what makes every later mic_level window readable. Pinned and kept through size trimming like the share context. */
 export const VOICE_CONTEXT_KINDS: ReadonlySet<string> = new Set(['voice_settings', 'mic_capture']);

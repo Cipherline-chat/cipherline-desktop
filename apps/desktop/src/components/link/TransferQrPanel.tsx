@@ -104,7 +104,7 @@ export const TransferQrPanel: React.FC = () => {
 
                 {phase === 'starting' && (
                     <div className="flex items-center gap-2.5 py-2">
-                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume)' }} />
+                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume-text)' }} />
                         <span className="text-[13px]" style={{ color: 'var(--cl-faint)' }}>Preparing your code…</span>
                     </div>
                 )}

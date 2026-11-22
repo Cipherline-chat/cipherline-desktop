@@ -32,4 +32,4 @@
   top: 40px; font-size: 22px; padding: 10px 24px;
   animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 1.3s both;
 }
-.mo-vc-pill b { color: var(--cl-glow, #FFC94D); }
+.mo-vc-pill b { color: var(--cl-glow, var(--cl-glow-text)); }

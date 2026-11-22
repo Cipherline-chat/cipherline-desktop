@@ -41,7 +41,8 @@ import { useOverrideEditor } from './channelPerms/useOverrideEditor';
 import { computeGuard } from './channelPerms/editorGuard';
 import { roleFromWire } from './channelPerms/effectivePermissions';
 import { countTargets, draftFromRows, draftsEqual, type DraftMap } from './channelPerms/overrideDraft';
-import { describeFailures, saveOverrideDiff } from './channelPerms/saveOverrides';
+import { describeFailures, saveOverrideDiff, type SaveResult } from './channelPerms/saveOverrides';
+import { createWithOverrides } from './channelPerms/createWithOverrides';
 import { channelNameDraftError, CHANNEL_NAME_INPUT_MAX_UNITS } from '../../utils/displayName';
 import { DIVIDER_LABEL_STYLES, isLabelDividerStyle, normalizeDividerColor, type DividerStyle } from '@cipherline/shared';
 import { ChannelDividerVisual } from './ChannelDividerRow';
@@ -201,17 +202,23 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const overridesBase = (id: string) => apiUrl`/servers/${serverId}/categories/${id}/overrides`;
 
     const handleCreate = async () => {
-        const res = await axios.post(
-            apiUrl`/servers/${serverId}/categories`,
-            {
+        // Overrides ride WITH the create (one transaction, announced only to
+        // members who can see it): a private category is never listed to
+        // anyone half-restricted. An API that predates the field falls back
+        // to the old create-then-PATCH inside createWithOverrides.
+        const made = await createWithOverrides<CategoryInfo>({
+            post: b => axios.post(apiUrl`/servers/${serverId}/categories`, b, auth),
+            body: {
                 name: name.trim(), kind: effectiveKind, icon_name: hasIcon ? (iconName || null) : null,
                 ...(isSub ? { parent_category_id: pickedParent } : {}),
                 ...(effectiveHeaderStyle ? { header_style: effectiveHeaderStyle, header_color: effectiveHeaderColor } : {}),
             },
-            auth,
-        );
-        const created: CategoryInfo = res.data;
-        const result = await saveOverrideDiff({ http, base: overridesBase(created.category_id), baseline: {}, draft: editor.draft, everyoneRoleId, resolveMine: guard.resolveMine });
+            draft: editor.draft, everyoneRoleId,
+        });
+        const created: CategoryInfo = made.data;
+        const result: SaveResult = made.overridesSent
+            ? { applied: 0, failed: [] }
+            : await saveOverrideDiff({ http, base: overridesBase(created.category_id), baseline: {}, draft: editor.draft, everyoneRoleId, resolveMine: guard.resolveMine });
         const failure = describeFailures(result);
         if (failure) {
             setLoadedFor(created.category_id);
@@ -285,7 +292,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
         if (data.rolesState === 'error' || data.ownError) {
             return (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 py-16">
-                    <div className="text-[12.5px] text-cl-flash">{data.rolesError ?? data.ownError}</div>
+                    <div className="text-[12.5px] text-cl-flash-text">{data.rolesError ?? data.ownError}</div>
                     <ClButton size="sm" variant="ghost" onClick={data.retry}>Retry</ClButton>
                 </div>
             );
@@ -331,7 +338,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                     onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void submit(); } }}
                 >
                     <div className="flex items-center gap-3 px-5 py-3 border-b border-cl-border/40 shrink-0">
-                        <div className="w-8 h-8 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume border border-solid border-cl-lume/20 shrink-0">
+                        <div className="w-8 h-8 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume-text border border-solid border-cl-lume/20 shrink-0">
                             {(hasIcon && iconName) ? <ChannelIconRenderer name={iconName} size={15} />
                                 : isHuddle ? <Radio size={15} />
                                     : isSub ? <CornerDownRight size={15} /> : <Folder size={15} />}
@@ -466,12 +473,12 @@ export const CategoryFormDialog: React.FC<Props> = ({
                                 <div>
                                     <div className="flex items-center justify-between">
                                         <div className={sectionLabel}>Who can access</div>
-                                        <button type="button" onClick={() => setTab('permissions')} className="text-[11px] text-cl-faint hover:text-cl-lume inline-flex items-center gap-1 mb-1.5">
+                                        <button type="button" onClick={() => setTab('permissions')} className="text-[11px] text-cl-faint hover:text-cl-lume-text inline-flex items-center gap-1 mb-1.5">
                                             <SlidersHorizontal size={11} /> Fine-tune per role
                                         </button>
                                     </div>
                                     {data.rolesState === 'error' ? (
-                                        <div className="text-[12px] text-cl-flash">
+                                        <div className="text-[12px] text-cl-flash-text">
                                             {data.rolesError} <button type="button" className="underline" onClick={data.retry}>Retry</button>
                                         </div>
                                     ) : !permsReady ? (
@@ -518,8 +525,8 @@ export const CategoryFormDialog: React.FC<Props> = ({
                             )}
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
-                            {error && <span className="text-[11.5px] text-cl-flash truncate max-w-[340px]" role="alert" title={error}>{error}</span>}
-                            {isEdit && dirty && !error && <span className="text-[11px] text-cl-glow">Unsaved changes</span>}
+                            {error && <span className="text-[11.5px] text-cl-flash-text truncate max-w-[340px]" role="alert" title={error}>{error}</span>}
+                            {isEdit && dirty && !error && <span className="text-[11px] text-cl-glow-text">Unsaved changes</span>}
                             <ClButton variant="ghost" onClick={requestClose}>Cancel</ClButton>
                             <ClButton onClick={() => { void submit(); }} disabled={!canSubmit} loading={saving} tooltip={isEdit ? 'Save (Ctrl+Enter)' : 'Create (Enter)'}>
                                 {isEdit ? <Save size={14} /> : <Plus size={14} />}

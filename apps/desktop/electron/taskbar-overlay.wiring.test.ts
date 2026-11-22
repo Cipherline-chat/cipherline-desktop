@@ -53,7 +53,10 @@ describe('mention flag: renderer -> main', () => {
 
 describe('call state: renderer -> main', () => {
     it('SidebarConference pushes in-call / speaking / muted / deafened, and clears on unmount', () => {
-        expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(true, localIsSpeaking, localIsMuted, isDeafenedForUi\)/);
+        // Speaking = the SFU's speaker flag, or (only while the alone-upstream pause has stopped our RTP, so the SFU
+        // computes nothing) the local analyser - utils/aloneUpstream.ts.
+        expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(true, localSpeakingShown, localIsMuted, isDeafenedForUi\)/);
+        expect(CONFERENCE).toContain('const localSpeakingShown = localIsSpeaking || (upstreamPaused && localFastSpeaking);');
         expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(false, false, false, false\)/);
     });
 

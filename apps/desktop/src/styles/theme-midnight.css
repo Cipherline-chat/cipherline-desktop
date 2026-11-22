@@ -1,0 +1,49 @@
+/* ============================================================
+   Midnight: the places where Midnight differs in KIND from Dark (its colours
+   are theme data, src/theme/themes.ts MIDNIGHT_THEME). Every rule is scoped to
+   :root[data-theme="midnight"], so nothing here reaches another theme or the
+   website.
+
+   The idea: a true black page for OLED screens that still reads as
+   Cipherline. The page is pure black (no navy haze in the water between the
+   cards); the panels are a hair above it and the hairline borders do the
+   separating; the brand teal is the accent; glows are cut to a whisper
+   because a glow on pure black reads cheap.
+
+   Dark islands (profile cards, celebrations, the Firewall, the call stage)
+   keep Dark's navy, as in every theme (themes.ts DARK_ISLAND_SELECTORS).
+   Token-only: no colour literals (colorLiteralRatchet.test.ts).
+   ============================================================ */
+
+/* The water between the cards: pure black, without Dark's faint teal haze. */
+:root[data-theme="midnight"] [data-layout="drift"] .app-mainrow { background: var(--cl-abyss); }
+
+/* The loading screen follows the boot backdrop (index.html) into black. */
+:root[data-theme="midnight"] .lo-root { background: linear-gradient(180deg, var(--cl-deep) 0%, var(--cl-sink) 45%, var(--cl-abyss) 100%); }
+
+/* Settings' sea backdrop: black water, not navy. */
+:root[data-theme="midnight"] .sd-sea-grad { background: linear-gradient(180deg, var(--cl-deep) 0%, var(--cl-abyss) 70%); }
+:root[data-theme="midnight"] .sd-sea-vignette { display: none; }
+
+/* The active-server indicator on the rail: keep the teal ring, drop the bloom. */
+:root[data-theme="midnight"] .cl-rail-indicator { box-shadow: 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .5); }
+
+/* Panels and decks: the hairline separates them from the black, not a shadow. */
+:root[data-theme="midnight"] .cl-rail-track { box-shadow: inset 0 0 0 1px var(--cl-border); }
+
+/* Scrollbars: a quiet grey thumb that does not glow on black. */
+:root[data-theme="midnight"] ::-webkit-scrollbar-thumb { background: rgb(var(--cl-bright-rgb) / .14); }
+:root[data-theme="midnight"] ::-webkit-scrollbar-thumb:hover { background: rgb(var(--cl-bright-rgb) / .24); }
+
+/* Offline members: dim, still >= 4.5:1 on the panel (Dark's .30 is ~2.4:1). */
+:root[data-theme="midnight"] { --cl-offline-name-alpha: .55; }
+
+/* Unread-mention counts: Dark's white on coral is 2.6:1; the dark coral ink is 6:1. */
+:root[data-theme="midnight"] .bg-cl-flash.text-cl-text,
+:root[data-theme="midnight"] .bg-cl-flash.text-white,
+:root[data-theme="midnight"] .hd-pill--named { color: var(--cl-on-flash); }
+
+/* Emoji and GIF pickers: the panel's near-black, not Dark's slate (emoji-mart takes comma-separated channels). */
+:root[data-theme="midnight"] [data-cl-emoji-picker],
+:root[data-theme="midnight"] [aria-label="GIF picker"] { background: var(--cl-deep) !important; border-color: var(--cl-border) !important; }
+:root[data-theme="midnight"] em-emoji-picker { --rgb-background: 10, 12, 18; }

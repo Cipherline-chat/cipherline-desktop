@@ -33,7 +33,7 @@
   font-family: var(--cl-font-body); font-size: 13px; color: var(--cl-muted);
   font-variant-numeric: tabular-nums;
 }
-.fp-summary b { color: var(--cl-ok); font-weight: 800; }
+.fp-summary b { color: var(--cl-ok-text); font-weight: 800; }
 .fp-headacts { display: flex; align-items: center; gap: 8px; }
 
 .fp-toolbar {
@@ -107,7 +107,7 @@
   position: absolute; right: -3px; bottom: -3px; z-index: 1;
   display: flex; align-items: center; justify-content: center;
   padding: 2.5px; border-radius: 99px;
-  background: var(--fp-ring);
+  background: var(--fp-ring); --status-backing: var(--fp-ring);
   transition: background-color 140ms ease-out;
 }
 .fp-presence--game { right: -6px; bottom: -5px; padding: 1.5px 2px; border-radius: 7px; }
@@ -147,7 +147,7 @@
   white-space: normal; overflow: visible; text-overflow: clip;
 }
 .fp-subtext { min-width: 0; overflow-wrap: anywhere; }
-.fp-sub--game { color: var(--cl-lume); font-weight: 700; }
+.fp-sub--game { color: var(--cl-lume-text); font-weight: 700; }
 
 /* Offline rows recede: same row, lower contrast, picture dimmed. */
 .fp-row--offline .fp-avimg { opacity: .45; }
@@ -160,7 +160,7 @@
   display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
   padding: 1px 7px; border-radius: 99px;
   font-family: var(--cl-font-body); font-size: 11px; font-weight: 700;
-  background: color-mix(in srgb, var(--cl-glow) 13%, transparent); color: var(--cl-glow);
+  background: color-mix(in srgb, var(--cl-glow) 13%, transparent); color: var(--cl-glow-text);
   white-space: nowrap;
 }
 
@@ -185,7 +185,7 @@
 }
 .fp-row:hover .fp-act, .fp-row:focus-within .fp-act { background-color: var(--cl-deep); color: var(--cl-muted); }
 .fp-act:hover { color: var(--cl-text); background-color: var(--cl-raise) !important; }
-.fp-act--msg:hover { color: var(--cl-lume); }
+.fp-act--msg:hover { color: var(--cl-lume-text); }
 .fp-act:active { transform: scale(.94); }
 .fp-act:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
 .fp-act:disabled { opacity: .4; cursor: default; }
@@ -202,7 +202,7 @@
   display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
   border-radius: 99px;
   background: color-mix(in srgb, var(--fp-accent, var(--cl-lume)) 13%, transparent);
-  color: var(--fp-accent, var(--cl-lume));
+  color: var(--fp-accent, var(--cl-lume-text));
 }
 .fp-callout-ic { width: 36px; height: 36px; }
 .fp-callout-text { flex: 1 1 220px; min-width: 0; }

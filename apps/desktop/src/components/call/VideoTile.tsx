@@ -149,7 +149,7 @@ export function subscribeFastSpeaking(p: Participant, onChange: (speaking: boole
         tokenCur = acquireSpeakingAnalyser(p.identity, mst, (speaking) => {
             fastSpeaking = speaking;
             emit();
-        });
+        }, p.isLocal);
     };
 
     tryAcquire();
@@ -208,7 +208,7 @@ export function useFastIsSpeaking(p: Participant): boolean {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const mst: MediaStreamTrack | undefined = (pub?.track as any)?.mediaStreamTrack;
             if (!mst || mst.readyState !== 'live') return;
-            const token = acquireSpeakingAnalyser(p.identity, mst, (speaking) => setFastSpeaking(speaking));
+            const token = acquireSpeakingAnalyser(p.identity, mst, (speaking) => setFastSpeaking(speaking), p.isLocal);
             tokenRef.current = token;
         };
 
@@ -999,7 +999,7 @@ export const VideoTile = ({
     // className below): the wrapper's box and the video's own aspect ratio
     // can genuinely disagree, and contain never crops to compensate, so the
     // picture can end up smaller than its box on one axis — a letterbox.
-    // The wrapper's own `ring-1 ring-white/5` (and its idle-state
+    // The wrapper's own `ring-1 ring-pure-white/5` (and its idle-state
     // `bg-cl-abyss`) are drawn on that FULL box regardless, which is exactly
     // what made the border look wrong: it traced empty letterboxed space
     // instead of framing the picture. Reuses the SAME contentRect() math the
@@ -1238,7 +1238,7 @@ export const VideoTile = ({
                       below, sized to fitRect) draws the SAME ring but around the actual
                       picture rather than the full box, so this one would otherwise double up
                       — or worse, visibly disagree with it whenever contain leaves a gap. */ ''}
-                ${hasPreciseFitBorder ? '' : 'ring-inset ring-1 ring-white/5'}`}
+                ${hasPreciseFitBorder ? '' : 'ring-inset ring-1 ring-pure-white/5'}`}
             // A sidebar share tile takes its height from the video. While it holds, the
             // frame has to give it that height.
             style={heldFrame && !usesContainFit ? { ...style, aspectRatio: `${heldFrame.width} / ${heldFrame.height}` } : style}
@@ -1262,7 +1262,7 @@ export const VideoTile = ({
                         top: pictureRect.y,
                         width: pictureRect.width,
                         height: pictureRect.height,
-                        boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.05)',
+                        boxShadow: 'inset 0 0 0 1px rgb(var(--cl-bright-rgb) / 0.05)',
                     }}
                 />
             )}
@@ -1286,7 +1286,7 @@ export const VideoTile = ({
                 <div
                     className="absolute inset-0 rounded-xl pointer-events-none z-[5]"
                     style={{
-                        boxShadow: 'inset 0 0 0 2px rgba(37, 224, 200, 0.6)',
+                        boxShadow: 'inset 0 0 0 2px rgb(var(--cl-lume-rgb) / 0.6)',
                     }}
                 />
             )}
@@ -1327,7 +1327,7 @@ export const VideoTile = ({
                             } ${
                                 showAvatarSpeaking
                                     ? ''
-                                    : 'ring-2 ring-white/10 shadow-2xl'
+                                    : 'ring-2 ring-pure-white/10 shadow-2xl'
                             }`}
                             style={showAvatarSpeaking ? { boxShadow: speakingShadow(ringColor, { glow: 24, alpha: 0.5 }) } : undefined}
                         >
@@ -1517,11 +1517,11 @@ export const VideoTile = ({
             )}
             {!hudEnabled && isFocusedView && videoRes && !chromeHidden && !hold.placeholder && (
                 <TileStatsReadout insets={chrome} corner={slots.stats} className={fillChromeClass}>
-                    <span className="text-white text-[10px] font-mono font-medium">{videoRes}</span>
+                    <span className="text-pure-white text-[10px] font-mono font-medium">{videoRes}</span>
                     {videoFps > 0 && (
                         <>
-                            <span className="text-white/30 text-[10px]">·</span>
-                            <span className="text-cl-lume/90 text-[10px] font-mono">{videoFps} fps</span>
+                            <span className="text-pure-white/30 text-[10px]">·</span>
+                            <span className="text-cl-lume-text/90 text-[10px] font-mono">{videoFps} fps</span>
                         </>
                     )}
                 </TileStatsReadout>
@@ -1564,7 +1564,7 @@ export const VideoTile = ({
                     )}
                     {annotSurface && !isLocal && annotGranted && overlayDesktopState && (
                         <span
-                            className="pointer-events-auto inline-flex items-center rounded-md bg-black/55 px-2 py-1 text-[11px] text-white/85"
+                            className="pointer-events-auto inline-flex items-center rounded-md bg-pure-black/55 px-2 py-1 text-[11px] text-pure-white/85"
                             role="status"
                             data-testid="annot-desktop-state"
                             title={overlayStateNote(overlayDesktopState, displayName).long}
@@ -1611,11 +1611,11 @@ export const VideoTile = ({
                     {/* Status badges */}
                     {isDeafened ? (
                         <div className="absolute inset-x-0 bottom-0 top-0 bg-red-500/80 flex items-center justify-center pointer-events-none">
-                            <Headphones className="w-3 h-3 text-white" />
+                            <Headphones className="w-3 h-3 text-pure-white" />
                         </div>
                     ) : isMuted ? (
                         <div className="absolute inset-x-0 bottom-0 top-0 bg-red-500/80 flex items-center justify-center pointer-events-none">
-                            <MicOff className="w-3 h-3 text-white" />
+                            <MicOff className="w-3 h-3 text-pure-white" />
                         </div>
                     ) : isLocalMuted ? (
                         <div className="absolute inset-x-0 bottom-0 top-0 bg-cl-raise/80 flex items-center justify-center pointer-events-none">
@@ -1628,9 +1628,9 @@ export const VideoTile = ({
                     `min-width: auto`, so without this the name refuses to
                     shrink below its content and the pill overflows a narrow
                     picture back into the bar it was moved off. */}
-                <span className={`text-white ${isFocusedView ? 'text-xs' : 'text-[10px]'} font-semibold truncate min-w-0 max-w-[80px]`}>{displayName}</span>
+                <span className={`text-pure-white ${isFocusedView ? 'text-xs' : 'text-[10px]'} font-semibold truncate min-w-0 max-w-[80px]`}>{displayName}</span>
                 <AnnotationGrantBadge identity={p.identity} size={isFocusedView ? 12 : 10} />
-                {isScreenShare && <Monitor className="w-3 h-3 text-cl-lume shrink-0" />}
+                {isScreenShare && <Monitor className="w-3 h-3 text-cl-lume-text shrink-0" />}
                 {/* Watcher count. `showZero` only on your own share: on your
                     tile the number is feedback about something you started, so
                     "0" is information; on someone else's it would just be a

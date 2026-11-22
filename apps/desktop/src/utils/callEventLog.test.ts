@@ -177,9 +177,15 @@ const ALLOWED_KEYS = new Set([
     // clipped-sample count - never audio; lvl_src = rtp|stats, where the level came from (rxStatsLevel.ts). (`slot` above is the remote-av-N placeholder.)
     'raw_db', 'ns_db', 'out_db', 'peak_db', 'clip', 'lim_pct', 'talk_pct', 'gate_pct', 'mic_gain_db', 'wire_db', 'rx_gain_db', 'heard_db', 'src_pct', 'fresh_pct', 'lvl_src', 'vf_fps', 'pres_fps', 'gap_p95_ms', 'gap_max_ms', 'late_pct',
     'after_s',
+    // alone_timer (aloneLeave.ts): participant counts per source (hook / live Room / server presence), the minutes setting.
+    'hook', 'live', 'presence', 'minutes',
+    // mic_noise on the new engine (pause levels) / mic_engine.ns / ring_level (speakingAnalyser.ts): percentages and dBFS levels, an enum.
+    'pause_pct', 'pause_in_db', 'pause_out_db', 'pause_max_db', 'loud_pct', 'ns', 'lit_pct', 'lit_db', 'quiet_db', 'quiet_max_db',
     // voice_settings / mic_capture (voiceDiagLog.ts): setting enums and booleans, the gate threshold, the mic-volume
     // percent; the capture's channel count, latency, a device-kind enum and the browser flags it applied (on|off|na).
-    'gate', 'agc', 'ec_auto', 'mic_pct', 'eq', 'ptt', 'channels', 'lat_ms', 'bus', 'os_ec', 'os_agc', 'os_ns',
+    'gate', 'agc', 'ec_auto', 'mic_pct', 'eq', 'ptt',
+    // mic_level / voice_settings / mic_engine under the new audio engine: an enum and counters.
+    'engine', 'bad', 'resets', 'idle', 'under', 'muted_dev', 'engine_native', 'native_reason', 'watchdog', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'channels', 'lat_ms', 'bus', 'os_ec', 'os_agc', 'os_ns',
     // camera_stop / camera_track / share_end / share_start retry (mediaSelfStop.ts, LocalMediaStopGuard): reason enum
     // (`reason`, above), the capture track's readyState enum, ms since a track `ended`, a state enum, a retry count, a boolean.
     'ready', 'ended_ms', 'state', 'n', 'camera', 'kept_old',
@@ -304,6 +310,12 @@ const ALLOWED_KEYS = new Set([
     // share_audio step "picked" (shareAudioEvent.ts, Wayland window share): how many apps were on
     // offer - a COUNT, never their names - next to `how` (an enum, allowed above) and mode=app.
     'apps',
+    // share_quality (shareQualityPlan.ts): a share left its hardware encoder - the capture's pixel rate in
+    // Mpx/s, the size held to keep the frame rate, its scale factor, whether that size fits the budget.
+    'cap_mpx_s', 'hold_res', 'hold_scale', 'holds',
+    // share_codec: whether the codec a move off H.265 lands on is hardware, and whether this publish is
+    // such a frame-rate hold (booleans).
+    'base_hw', 'hold',
 ]);
 const FORBIDDEN = /[iI]dentity|^sid$|Sid|[nN]ame|[lL]abel|[dD]evice|[rR]oom|[uU]ser|[eE]mail|^ip$|^ip[A-Z]|IP|[aA]ddr|[tT]ext|[tT]itle|[mM]essage|[mM]etadata/;
 

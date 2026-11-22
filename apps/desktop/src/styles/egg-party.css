@@ -29,7 +29,7 @@
 }
 .egg-party-bubble {
   position: absolute; bottom: -24px; border-radius: 50%;
-  border: 1.5px solid rgba(37, 224, 200, .55);
+  border: 1.5px solid rgb(var(--cl-lume-rgb) / .55);
   opacity: 0;
   animation: egg-party-rise var(--dur, 4s) ease-in var(--delay, 0s) forwards;
 }

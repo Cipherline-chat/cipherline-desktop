@@ -1,3 +1,6 @@
+import { DEFAULT_THEME_ID, TAILWIND_COLORS, THEMES, themeRgbVariables } from './src/theme/themes.ts';
+import { tailwindPaletteBase, tailwindPaletteColors } from './src/theme/tailwindPalette.ts';
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -7,55 +10,23 @@ export default {
   darkMode: "class",
   theme: {
     extend: {
+      // ── Cipherline design system "glow in the deep" ──────────────────
+      // Every colour is a CSS variable from the theme data (src/theme/themes.ts,
+      // TAILWIND_COLORS — the same class names as always, legacy aliases
+      // included), so `bg-cl-deep`, `text-cl-muted/80`, `from-primary/20`
+      // follow the active theme. `<alpha-value>` keeps opacity modifiers
+      // working: `bg-cl-deep` -> rgb(var(--cl-deep-rgb) / 1) and
+      // `bg-cl-deep/20` -> rgb(var(--cl-deep-rgb) / 0.2), the same computed
+      // colours the literal hex compiled to (theme-engine worklog: compiled-CSS
+      // comparison). The `--cl-*-rgb` channels come from the base layer below
+      // (default theme) and are re-written by the engine (src/theme/engine.ts).
       colors: {
-        // ── Cipherline design system "glow in the deep" ──────────────────
-        // Surfaces (dark → light)
-        "cl-abyss":   "#0B0F1E",   // page background
-        "cl-deep":    "#131A30",   // panels, cards, modals
-        "cl-surface": "#1C2542",   // inputs, tracks, controls
-        "cl-raise":   "#243056",   // hover fills, skeleton highlight
-        "cl-border":  "#2A3558",   // hairline borders
-        "cl-sink":    "#0A1120",   // sheets beneath controls
-
-        // Lume — you & secure (primary)
-        primary:       "#25E0C8",
-        "cl-lume":     "#25E0C8",
-        "cl-lume-hi":  "#3BEAD6",
-        "cl-lume-press":"#12B79F",
-        "cl-lume-deep": "#0E8F7C",
-        "cl-on-lume":  "#06251F",
-
-        // Flash — others & careful
-        "cl-flash":       "#FF6B5E",
-        "cl-flash-press": "#D14A3F",
-        "cl-flash-deep":  "#B23A30",
-        "cl-on-flash":    "#3A0E0A",
-
-        // Status & warmth
-        "cl-glow":   "#FFC94D",
-        "cl-ok":     "#4ADE80",
-        "cl-danger": "#FF5C7A",
-
-        // Text
-        "cl-text":  "#F4F7FF",
-        "cl-muted": "#A7B3D4",
-        "cl-faint": "#5E6B8F",
-
-        // Legacy aliases (for classes still referencing old names)
-        "page-bg":          "#0B0F1E",
-        "panel-bg":         "#131A30",
-        "surface-raised":   "#1C2542",
-        "surface-elevated": "#243056",
-        "bubble-recv":      "#1C2542",   // --cl-surface (others)
-        // PORTING-PLAN Layer 1: the send bubble is now Lume aqua — its TEXT must
-        // render dark (--cl-on-lume #06251F), handled at the bubble in ChatPane.
-        "bubble-send":      "#25E0C8",   // --cl-lume (you)
-
-        // Short reachable aliases (PORTING-PLAN handoff tailwind.config.js)
-        flash:        "#FF6B5E",         // --cl-flash  (others & careful / danger)
-        glow:         "#FFC94D",         // --cl-glow   (idle / warmth / "loud")
-        online:       "#4ADE80",         // --cl-ok
-        "text-body":  "#F4F7FF",         // --cl-text
+        // Tailwind's stock scale (red-400, gray-500 ...) follows the theme too:
+        // Dark = Tailwind's own values, Light = a readable shade (src/theme/tailwindPalette.ts).
+        ...tailwindPaletteColors(),
+        ...Object.fromEntries(
+          Object.entries(TAILWIND_COLORS).map(([name, token]) => [name, `rgb(var(--cl-${token}-rgb) / <alpha-value>)`]),
+        ),
       },
       fontFamily: {
         sans:    ["Nunito", "system-ui", "sans-serif"],
@@ -84,6 +55,14 @@ export default {
     },
   },
   plugins: [
+    // The default theme's `--cl-*-rgb` channel variables, so every Tailwind
+    // colour class resolves before (and without) the engine's script: the
+    // pre-script paint and the harness pages. The engine writes the same
+    // values (and other themes' values) under :root[data-theme=...].
+    function clThemeChannels({ addBase }) {
+      addBase({ ':root': themeRgbVariables(THEMES[DEFAULT_THEME_ID]) });
+      addBase(tailwindPaletteBase());
+    },
     require('@tailwindcss/typography'),
     require('@tailwindcss/forms'),
     require('@tailwindcss/container-queries'),

@@ -90,7 +90,7 @@ declare global {
         onOsResume: (callback: () => void) => () => void;
         /** Per-display refresh rate. Screen capture cannot exceed it — a
          *  `displayFrequency` of 0 means the platform didn't report one. */
-        getDisplayRefreshRates?: () => Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>>;
+        getDisplayRefreshRates?: () => Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; hostsWindow?: boolean; captureFpsCeiling?: number | null }>>;
         /** True when a capture goes through the desktop's xdg-desktop-portal chooser (a native
          *  Wayland client), so asking for one can open a dialog. `restoreListed`: that portal re-opens a source
          *  the share listed with no dialog, so the capture may be re-opened by a quality change. Optional: an older main lacks it. */
@@ -100,6 +100,9 @@ declare global {
          *  it field by field (parseMainDiagnostics), so an older/newer main
          *  process can never feed the overlay a shape it trusts blindly. */
         getScreenShareDiagnostics?: (sourceId: string, sharedRect?: { x: number; y: number; width: number; height: number } | null) => Promise<unknown>;
+        /** Windows: where a shared window is and which screens hold it (geometry + booleans, never a
+         *  title), for the window-capture fallback. `unknown`: windowShareFallback.parseWindowGeometry narrows it. */
+        getWindowShareGeometry?: (sourceId: string, windowOnly?: boolean) => Promise<unknown>;
         /** HDR screen shares (Windows, electron/hdr-share.ts). Results are
          *  `unknown` on purpose: src/utils/hdrSharePipeline.ts narrows them. */
         hdrShare?: {
@@ -445,19 +448,28 @@ declare global {
             degraded: boolean;
         }>;
         retryKeyringUnlock?: () => Promise<boolean>;
+        /** "Import from Discord" bridge into electron/discord-import (the bot token never crosses back). */
+        discordImport?: import('./utils/discordImport/types').DiscordImportApi;
         fetchBinary: (url: string) => Promise<{ b64: string; mimeType: string }>;
         openExternal: (url: string) => Promise<void>;
         configureDesktopShortcuts?: () => Promise<boolean>;
         syncGlobalShortcuts: (map: Record<string, string>, portalMap?: Record<string, string>) => Promise<{ failed: string[]; status?: { mode: 'native' | 'portal' | 'unavailable'; reason: string; desktop: string; portal?: { bound: string[]; notBound: string[] }; appId?: string } }>;
         onGlobalShortcut: (callback: (actionId: string) => void) => () => void;
-        setGlobalHoldKey?: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null) => Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed' }>;
+        setGlobalHoldKey?: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null) => Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed'; detail?: string }>;
         onGlobalHoldState?: (callback: (slot: 'push-to-talk' | 'push-to-mute', down: boolean) => void) => () => void;
+        /** Dry run of a hold key (utils/holdKeys.ts parseHoldKeySupport reads the reply). */
+        checkGlobalHoldKey?: (combo: string) => Promise<unknown>;
+        onHoldKeyElevation?: (callback: (blocked: boolean) => void) => () => void;
+        getHoldKeyDiagnostics?: () => Promise<unknown>;
         getUserDataPath: () => Promise<string>;
         setContentProtection: (enabled: boolean) => void;
         onDeepLinkInvite: (cb: (code: string) => void) => (() => void);
         getPendingDeepLinkCode: () => Promise<string | null>;
         onDeepLinkRef: (cb: (code: string) => void) => (() => void);
         getPendingDeepLinkRef: () => Promise<string | null>;
+        /** `cipherline://theme#clth1.…` (the website's "Open in Cipherline"): the share code, shape-checked in main only. */
+        onDeepLinkTheme?: (cb: (code: string) => void) => (() => void);
+        getPendingDeepLinkTheme?: () => Promise<string | null>;
         /** First-launch install hand-off: one of OUR landing-page links on the
          *  clipboard (`{kind, code}`), else null. Never raw clipboard text. */
         peekAttributionClipboard: () => Promise<{ kind: 'ref' | 'invite'; code: string } | null>;
@@ -480,8 +492,25 @@ declare global {
         getLoginItemState?: () => Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean }>;
         /** Resolves with the state re-read from the OS after the write (older builds: void). */
         setStartWithWindows: (enabled: boolean) => Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean } | void>;
+        /** Interface size (electron/ui-scale.ts). Optional: older mains and other hosts may lack it. Results are validated by src/utils/a11y/uiScale.ts toUiScaleState. */
+        getUiScale?: () => Promise<unknown>;
+        setUiScale?: (percent: number) => Promise<unknown>;
+        onUiScaleChanged?: (cb: (state: { percent: number; effective: number; max: number; source: string }) => void) => () => void;
         getStartMinimized: () => Promise<boolean>;
         setStartMinimized: (enabled: boolean) => Promise<void>;
+        /** The device's theme (electron/theme-boot.ts): id shown + preference picked. Absent on an older preload. */
+        bootThemeId?: string;
+        getTheme?: () => Promise<{ id: string; pref?: string }>;
+        setTheme?: (pref: string) => Promise<{ id: string; pref?: string }>;
+        onThemeChanged?: (cb: (state: { id: string; pref?: string; custom?: unknown }) => void) => () => void;
+        /** The device's active custom theme (electron/theme-custom-boot.ts payload), read before the page loaded. */
+        bootCustomTheme?: unknown;
+        /** Store + paint a custom theme device-level (src/theme/customTheme.ts customBootPayload). */
+        setCustomTheme?: (payload: unknown) => Promise<unknown>;
+        /** Live theme preview: paint the window from a custom theme payload, storing nothing (theme:preview). */
+        previewTheme?: (payload: unknown) => Promise<unknown>;
+        /** End a live theme preview: main repaints the stored theme (theme:preview-end). */
+        endThemePreview?: () => Promise<unknown>;
         getMinimizeToTray: () => Promise<boolean>;
         setMinimizeToTray: (enabled: boolean) => Promise<void>;
         readClipboard: () => Promise<string>;
@@ -591,6 +620,8 @@ declare global {
         electronAPI?: ElectronAPI;
         /** Linux hardware screen share bridge (electron/preload.ts); absent elsewhere. Off unless switched on (utils/nativeSharePrefs.ts). */
         nativeShare?: import('./utils/nativeShareApi').NativeShareApi;
+        /** Native Strong noise suppression bridge (electron/preload.ts); the utility-process engine is optional (utils/clAudioNative.ts). */
+        audioEngine?: import('./utils/clAudioNativeApi').AudioEngineApi;
     }
 
     /**

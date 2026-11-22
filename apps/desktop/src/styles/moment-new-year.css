@@ -27,12 +27,12 @@
 }
 .mo-ny-flash {
   position: absolute; left: -40px; top: -40px; width: 80px; height: 80px; border-radius: 50%;
-  background: radial-gradient(circle, var(--c), rgba(0, 0, 0, 0) 70%); opacity: 0;
+  background: radial-gradient(circle, var(--c), rgb(var(--cl-shade-rgb) / 0) 70%); opacity: 0;
   animation: mo-ny-flash .8s ease-out both;
 }
 @keyframes mo-ny-flash { 0% { transform: scale(.3); opacity: 0; } 20% { opacity: .55; } 100% { transform: scale(2.2); opacity: 0; } }
 .mo-ny .mo-ny-title {
-  position: absolute; left: 0; top: 30px; font-size: 60px; color: var(--cl-glow, #FFC94D);
+  position: absolute; left: 0; top: 30px; font-size: 60px; color: var(--cl-glow, var(--cl-glow-text));
   animation: mo-ny-up .7s cubic-bezier(.2, .8, .3, 1.1) 1.6s both;
 }
 .mo-ny .mo-ny-sub {

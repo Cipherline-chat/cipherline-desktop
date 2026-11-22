@@ -1,18 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useReducedMotionSetting } from '../utils/a11y/motionPrefs';
 
-/** Live `prefers-reduced-motion: reduce`. */
+/**
+ * Effective reduced motion: Settings → Accessibility → Reduce motion
+ * (System follows the OS `prefers-reduced-motion`; On / Off override it).
+ * See utils/a11y/motionPrefs.ts.
+ */
 export function usePrefersReducedMotion(): boolean {
-    const query = '(prefers-reduced-motion: reduce)';
-    const [reduced, setReduced] = useState(() => {
-        try { return window.matchMedia?.(query).matches ?? false; } catch { return false; }
-    });
-    useEffect(() => {
-        let mql: MediaQueryList | undefined;
-        try { mql = window.matchMedia?.(query); } catch { mql = undefined; }
-        if (!mql) return;
-        const onChange = () => setReduced(mql!.matches);
-        mql.addEventListener?.('change', onChange);
-        return () => mql!.removeEventListener?.('change', onChange);
-    }, []);
-    return reduced;
+    return useReducedMotionSetting();
 }

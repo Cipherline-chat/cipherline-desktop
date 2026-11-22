@@ -122,14 +122,25 @@ describe('CreateServerModal', () => {
         expect(primary().disabled).toBe(false);
         await submit();
         expect(onCreateServer).not.toHaveBeenCalled();
-        expect(alertText()).toBe('Server name must be at least 2 characters');
+        expect(alertText()).toBe('Use at least 2 characters');
     });
 
-    it('the plain-text rule strips symbols as you type and the counter follows', async () => {
+    it('symbols and emoji are kept as typed (never stripped) and the counter counts characters', async () => {
         await mount();
         type(field(), "Game! night@ #1_.'-");
-        expect(field().value).toBe("Game night 1_.'-");
-        expect(text()).toContain('16/50');
+        expect(field().value).toBe("Game! night@ #1_.'-");
+        type(field(), '✦ 🌙 Moon ✦');
+        expect(field().value).toBe('✦ 🌙 Moon ✦');
+        expect(text()).toContain('10/50');
+    });
+
+    it('a hidden direction-override character is reported inline and blocks creating', async () => {
+        await mount();
+        type(field(), 'Moon\u202EClub');
+        expect(primary().disabled).toBe(false);
+        await submit();
+        expect(onCreateServer).not.toHaveBeenCalled();
+        expect(alertText()).toMatch(/hidden|direction/i);
     });
 
     it('creates once with the trimmed name, then closes', async () => {

@@ -201,7 +201,7 @@ const QrSignInPanel: React.FC = () => {
     if (phase === 'starting') {
         return (
             <div className="flex flex-col items-center gap-3" style={{ padding: '48px 0' }}>
-                <Loader2 className="animate-spin" size={26} style={{ color: 'var(--cl-lume)' }} />
+                <Loader2 className="animate-spin" size={26} style={{ color: 'var(--cl-lume-text)' }} />
                 <p className="text-cl-faint text-sm m-0">Preparing your code…</p>
             </div>
         );
@@ -213,7 +213,7 @@ const QrSignInPanel: React.FC = () => {
     if (phase === 'scanned') {
         return (
             <div className="flex flex-col items-center gap-3 py-2">
-                <Smartphone size={30} style={{ color: 'var(--cl-lume)' }} />
+                <Smartphone size={30} style={{ color: 'var(--cl-lume-text)' }} />
                 <p className="text-cl-text text-sm font-semibold text-center m-0">Enter this code on your phone</p>
                 <code
                     className="font-mono font-bold text-cl-text"
@@ -286,7 +286,7 @@ const QrSignInPanel: React.FC = () => {
                     </p>
                 </div>
                 <div className="flex items-start gap-2 text-cl-faint text-xs max-w-[300px]">
-                    <ShieldCheck size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-lume)' }} />
+                    <ShieldCheck size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-lume-text)' }} />
                     <p className="m-0 text-left">
                         Only continue if this is <b>your</b> account and <b>your</b> phone. If either looks wrong, stop here and show a new code.
                     </p>
@@ -306,7 +306,7 @@ const QrSignInPanel: React.FC = () => {
     if (phase === 'expired' || phase === 'denied' || phase === 'error') {
         const locked = phase === 'denied' && snap.deniedReason === 'locked';
         const icon = phase === 'denied'
-            ? <XIcon size={40} style={{ color: 'var(--cl-flash)' }} />
+            ? <XIcon size={40} style={{ color: 'var(--cl-flash-text)' }} />
             : <AlertTriangle size={40} style={{ color: phase === 'error' ? 'var(--cl-flash)' : 'var(--cl-faint)' }} />;
         const heading = locked ? 'Too many wrong codes'
             : phase === 'denied' ? 'Declined on your other device'
@@ -340,9 +340,9 @@ const QrSignInPanel: React.FC = () => {
                 {isBusy && (
                     <div
                         className="absolute inset-0 flex flex-col items-center justify-center gap-2"
-                        style={{ background: 'rgba(11,15,30,0.82)' }}
+                        style={{ background: 'rgb(var(--cl-abyss-rgb) / 0.82)' }}
                     >
-                        <Loader2 className="animate-spin" size={24} style={{ color: 'var(--cl-lume)' }} />
+                        <Loader2 className="animate-spin" size={24} style={{ color: 'var(--cl-lume-text)' }} />
                         <span className="text-[12px] font-medium text-center px-3" style={{ color: 'var(--cl-text)' }}>
                             {phase === 'approving' ? 'Approved — finishing up' : 'Finishing sign-in…'}
                         </span>

@@ -16,7 +16,7 @@
 [data-layout="drift"] .app-mainrow {
   padding: 6px 10px 10px 2px;
   background:
-    radial-gradient(120% 90% at 18% 0%, rgba(37, 224, 200, 0.05), transparent 55%),
+    radial-gradient(120% 90% at 18% 0%, rgb(var(--cl-lume-rgb) / 0.05), transparent 55%),
     var(--cl-abyss);
 }
 
@@ -26,28 +26,76 @@
   border-right: none !important;
 }
 
+/* Shadows on the panes: a pane's shadow must be cast by the OUTERMOST box
+   of the card. The channel list and the chat are each a rounded sheet inside
+   a same-size wrapper that clips (overflow:hidden, for the resizable width),
+   so a shadow on the SHEET can only ever paint in the gap between the
+   sheet's rounded corner and the wrapper's edge. With a square wrapper
+   (.app-pane2, until 2026-11-20) that gap is a square of shadow tint behind
+   each rounded corner -- the "squared-off edge" the owner saw on all four
+   corners of the channel / DM list in Light (in Dark too, just darker than
+   anyone could see). So: the wrappers are rounded like their sheets, the
+   sheets cast nothing, and the wrappers cast the elevation (--cl-elev-3:
+   the website's warm shadow in Light, nothing in Dark, where these two
+   panes never showed a shadow). harness/light-theme-corner-probe.mjs finds
+   this class of bug. */
+
+/* ...and nothing further out may cut that shadow at the pane's edge either.
+   Every pane sits flush against boxes that clip: the content column (beside
+   the rail, under the banners), the panels row, the list + chat grid, the
+   chat's column and row (Dashboard.tsx; inline overflow:hidden). A clip
+   flush with a pane's edge stops its shadow dead along that edge, so the
+   shadow still shows in the small gap between each rounded corner and the
+   cut and nowhere beyond it: a square of shadow behind the corner. That was
+   all four corners of the right panel, Home and Friends in Dark
+   (--cl-shadow-panel), and of every pane in Light (2026-11-20, owner: "the
+   bottom side of the channel list and the context panel";
+   harness/panel-corners-probe.mjs measures it in pixels).
+   overflow:clip keeps the clip (and, unlike hidden, nothing can scroll these
+   boxes) but overflow-clip-margin lets paint run 10px past them -- the
+   .app-mainrow padding -- so a shadow fades out on its own and only the
+   window edge (.app-mainrow) cuts it. On the left the 10px lies over the
+   rail, which is transparent here; its decks are positioned and paint above.
+   A box that clips without being a scroll container gets an automatic flex /
+   grid minimum size, hence the explicit zero minimums. */
+[data-layout="drift"] .app-contentcol,
+[data-layout="drift"] .app-contentrow,
+[data-layout="drift"] .app-callgroup,
+[data-layout="drift"] .app-pane3-col,
+[data-layout="drift"] .app-pane3-row {
+  overflow: clip !important;
+  overflow-clip-margin: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* Conversation / channel list: full card. */
+[data-layout="drift"] .app-pane2 {
+  border-radius: 18px;
+  box-shadow: var(--cl-elev-3);
+}
 [data-layout="drift"] .app-pane2-sheet {
   border-radius: 18px !important;
   border: 1px solid var(--cl-border) !important;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35) !important;
+  box-shadow: none !important;
 }
 
 /* Chat: its own card (the classic sheet is edge-to-edge abyss). */
 [data-layout="drift"] .app-pane3 {
   border-radius: 18px !important;
+  box-shadow: var(--cl-elev-3);
 }
 [data-layout="drift"] .app-pane3-sheet {
   border-radius: 18px;
   border: 1px solid var(--cl-border);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  box-shadow: none;
 }
 
 /* Call/context panel (pane 4): card. */
 [data-layout="drift"] .app-pane4 {
   border-radius: 18px !important;
   border: 1px solid var(--cl-border);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--cl-shadow-panel);
 }
 
 /* Full-width panes (Friends, Home): card. */
@@ -55,7 +103,7 @@
   border-radius: 18px;
   border: 1px solid var(--cl-border);
   overflow: hidden;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--cl-shadow-panel);
 }
 
 /* Dividers become the water between cards — wider hit target, no hairline.

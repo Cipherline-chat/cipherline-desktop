@@ -5,14 +5,16 @@
  * Why: the common launch-time update path (update-install.ts "startup" /
  * "reopen", plus the Settings "Restart to update" and "Restart to apply"
  * buttons) used to hide the window and call quitAndInstall one tick later, so
- * to the user the app simply opened and vanished. This holds the hand-over for
- * APPLYING_UPDATE_MS while a tiny card says what is happening. The bar is
- * cosmetic: the real install starts when the hold ends.
+ * to the user the app simply opened and vanished. A tiny card now says what is
+ * happening, up until the installer takes the app down. It does NOT delay the
+ * install (owner 2026-11-19: no fake waits; it used to hold the hand-over for
+ * 1.8 s): the install starts on the next tick either way. The bar and status
+ * lines are cosmetic, paced over APPLYING_UPDATE_MS in case the hand-over is slow.
  *
  * Safety rules, enforced here (unit-tested in update-applying.test.ts):
  *   - never under the CI smoke test (the smoke harness must see the renderer paint);
  *   - if the window cannot be created, the install runs immediately, as before;
- *   - the install callback runs exactly once, and never later than the hold;
+ *   - the install callback runs exactly once, on the next tick (never held back);
  *   - nothing is shown when there is no version to apply.
  *
  * The page is self-contained: no script, no network, no fonts from a CDN, no
@@ -25,8 +27,9 @@ import {
     SPLASH_TOKENS_CSS, SPLASH_KEYFRAMES_CSS, SPLASH_CARD_CSS, SPLASH_MARK_CSS, SPLASH_FOOTER_CSS,
     SPLASH_HEADLINE_CSS, SPLASH_TITLEBAR_MARK_SVG, SPLASH_WORKING_MARK_HTML,
 } from './splash-style';
+import { bootPalette } from './theme-boot';
 
-/** How long the install is held back while the popup is up. */
+/** The card's animation pacing only. The install is never held back for it. */
 export const APPLYING_UPDATE_MS = 1800;
 /** The bar's fill animation; slightly shorter than the hold so it reads 100% before the quit. */
 export const APPLYING_BAR_MS = 1500;
@@ -48,8 +51,8 @@ export const APPLYING_CARD_H = 310;
  * card, so anything less clips it in a visible straight line.
  */
 export const APPLYING_SHADOW_MARGIN = 88;
-/** The card's colour (--cl-deep). The opaque window paints it before the page does. */
-export const APPLYING_CARD_BG = '#131A30';
+/** The card's colour (--cl-deep, theme-boot.ts). The opaque window paints it before the page does. */
+export const APPLYING_CARD_BG = bootPalette().card;
 
 const VERSION_RE = /[^0-9A-Za-z.+-]/g;
 
@@ -263,13 +266,13 @@ export class ApplyingUpdatePopup {
     }
 
     /**
-     * Run the install: after the hold when the popup is up, on the next tick
-     * when it is not (today's behaviour). `run` is called exactly once.
+     * Run the install on the next tick, popup or not: the card is there to say
+     * what is happening, never to make the user wait. `run` is called exactly once.
      */
     install(run: () => void): void {
         let ran = false;
         const once = () => { if (ran) return; ran = true; run(); };
-        this.d.setTimer(once, this.closer ? APPLYING_UPDATE_MS : 0);
+        this.d.setTimer(once, 0);
     }
 
     /** The install failed / was cancelled: take the popup down. */

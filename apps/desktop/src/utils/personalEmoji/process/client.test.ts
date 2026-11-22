@@ -20,7 +20,7 @@ describe('processEmojiImage client', () => {
         const file = new Blob(['x']);
         const seen: number[] = [];
         const h = processEmojiImage(file, 'fit', f => seen.push(f), () => w);
-        expect(w.postMessage).toHaveBeenCalledWith({ type: 'process', file, mode: 'fit' });
+        expect(w.postMessage).toHaveBeenCalledWith({ type: 'process', file, mode: 'fit', profile: 'emoji' });
         w.reply({ type: 'progress', fraction: 0.5 });
         w.reply(done);
         await expect(h.result).resolves.toMatchObject({ animated: true, frames: 3 });

@@ -20,7 +20,7 @@ export const FounderStatusPanel: React.FC<{ panel: FounderPanel }> = ({ panel })
             style={{
                 marginTop: 14,
                 background: 'var(--cl-surface)',
-                border: `1px solid ${accent ? 'rgba(37,224,200,.30)' : 'var(--cl-border)'}`,
+                border: `1px solid ${accent ? 'rgb(var(--cl-lume-rgb) / .30)' : 'var(--cl-border)'}`,
                 borderRadius: 14,
                 padding: '14px 16px',
             }}
@@ -61,7 +61,7 @@ export const FounderStatusPanel: React.FC<{ panel: FounderPanel }> = ({ panel })
 
             {panel.badge && (
                 <div className="flex items-start gap-2" data-testid="founder-panel-badge" style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--cl-border)', fontSize: 12.5, fontWeight: 700, color: 'var(--cl-text)' }}>
-                    <Award size={14} aria-hidden style={{ color: 'var(--cl-glow)', flexShrink: 0, marginTop: 2 }} />
+                    <Award size={14} aria-hidden style={{ color: 'var(--cl-glow-text)', flexShrink: 0, marginTop: 2 }} />
                     <span>{panel.badge}</span>
                 </div>
             )}

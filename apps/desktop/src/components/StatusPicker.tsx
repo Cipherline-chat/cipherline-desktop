@@ -162,7 +162,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                 </AvatarDecoration>
                 <span
                     className={`absolute bottom-0 right-0 z-10 flex items-center justify-center pointer-events-none${
-                        currentGame && myStatus !== 'offline' ? '' : ' rounded-full border-[2px] border-cl-abyss'
+                        currentGame && myStatus !== 'offline' ? '' : ' rounded-full border-[2px] border-[color:var(--status-backing)] [--status-backing:var(--cl-abyss)]'
                     }`}
                 >
                     <StatusIcon status={myStatus} currentGame={currentGame} size={currentGame && myStatus !== 'offline' ? 12 : 10} />
@@ -213,14 +213,15 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                                     type="button"
                                     onClick={() => handleSetStatus(s)}
                                     style={active ? {
+                                        '--status-backing': `color-mix(in srgb, var(--cl-sink), ${color} 15%)`,
                                         backgroundColor: withAlpha(color, '26'),
                                         boxShadow: `inset 0 0 0 1.5px ${withAlpha(color, '80')}`,
                                         color,
-                                    } : undefined}
+                                    } as React.CSSProperties : undefined}
                                     className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-[12.5px] font-bold transition-all ${
                                         active
                                             ? ''
-                                            : 'bg-cl-sink text-cl-faint hover:text-cl-text'
+                                            : 'bg-cl-sink [--status-backing:var(--cl-sink)] text-cl-faint hover:text-cl-text'
                                     }`}
                                 >
                                     <StatusDot status={s} size={8} />

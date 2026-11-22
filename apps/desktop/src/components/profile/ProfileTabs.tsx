@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { serverInitial } from '../../utils/serverAbbreviation';
 import { ChevronRight } from 'lucide-react';
 import { padDiscriminator } from '@cipherline/shared';
 import { EncryptedAvatar } from '../EncryptedAvatar';
@@ -96,7 +97,7 @@ export const MutualsPanel: React.FC<{
                         onClick={(e) => { e.stopPropagation(); onOpenServer?.(sv.server_id); }}
                     >
                         <span className="pcd-row-av pcd-row-av--server">
-                            {renderServerIcon?.(sv.server_id, sv.name) ?? <span className="pcd-row-initial" aria-hidden="true">{sv.name.trim().charAt(0).toUpperCase() || '?'}</span>}
+                            {renderServerIcon?.(sv.server_id, sv.name) ?? <span className="pcd-row-initial" aria-hidden="true">{serverInitial(sv.name)}</span>}
                         </span>
                         <span className="pcd-row-txt"><b>{sv.name}</b></span>
                         <ChevronRight size={15} className="pcd-row-go" aria-hidden="true" />

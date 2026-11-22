@@ -30,4 +30,4 @@
   top: -40px; font-size: 22px; padding: 10px 24px;
   animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.2s both;
 }
-.mo-coffee-pill b { color: var(--cl-glow, #FFC94D); }
+.mo-coffee-pill b { color: var(--cl-glow, var(--cl-glow-text)); }

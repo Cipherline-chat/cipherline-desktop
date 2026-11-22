@@ -13,6 +13,8 @@ import type { SendResult } from '../../utils/diagnostics/sendPolicy';
 import { sendDiagnosticReport, saveDiagnosticReport, type SaveResult } from '../../utils/diagnostics/send';
 import { ReportPreview, RawJson } from './ReportPreview';
 import './reportProblem.css';
+import { formatFullDateTime } from '../../utils/a11y/timeFormat';
+import { copyText } from '../../utils/clipboard';
 
 /**
  * "Report a problem" — category → details → preview → send.
@@ -207,7 +209,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
 
     const copyRef = async () => {
         if (!reference) return;
-        try { await navigator.clipboard.writeText(reference); setRefCopied(true); setTimeout(() => setRefCopied(false), 1800); } catch { /* visible anyway */ }
+        if (await copyText(reference)) { setRefCopied(true); setTimeout(() => setRefCopied(false), 1800); } // reference is displayed beside the button either way
     };
 
     const stepIndex = step === 'category' ? 0 : step === 'details' ? 1 : 2;
@@ -308,7 +310,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
                                     crashEntry
                                         ? <div className="rp-notice rp-notice--warn" style={{ marginBottom: 16 }}>
                                             <AlertTriangle size={15} aria-hidden />
-                                            <span>We’ll include the most recent crash we recorded on this device ({new Date(crashEntry.crash.occurred_at).toLocaleString()}).</span>
+                                            <span>We’ll include the most recent crash we recorded on this device ({formatFullDateTime(new Date(crashEntry.crash.occurred_at))}).</span>
                                         </div>
                                         : <div className="rp-notice" style={{ marginBottom: 16 }}>
                                             <Info size={15} aria-hidden />
@@ -366,7 +368,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
 
                                 <div className="rp-collected" data-open={collectedOpen}>
                                     <button type="button" aria-expanded={collectedOpen} aria-controls="rp-collected-list" onClick={() => setCollectedOpen(v => !v)}>
-                                        <ShieldCheck size={15} style={{ color: 'var(--cl-lume)' }} aria-hidden />
+                                        <ShieldCheck size={15} style={{ color: 'var(--cl-lume-text)' }} aria-hidden />
                                         What’s collected for this report
                                         <ChevronDown size={15} className="rp-chev" aria-hidden />
                                     </button>
@@ -438,8 +440,8 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
                             <>
                                 <ClButton variant="ghost" onClick={() => setStep('details')} disabled={phase === 'sending'}><ArrowLeft size={15} aria-hidden /> Back</ClButton>
                                 <span className="rp-spacer" />
-                                {saveState === 'saved' && <span className="rp-foot-note" role="status"><Check size={14} style={{ color: 'var(--cl-ok)' }} aria-hidden /> Saved</span>}
-                                {saveState === 'failed' && <span className="rp-foot-note" role="alert" style={{ color: 'var(--cl-flash)' }}>Couldn’t save the file</span>}
+                                {saveState === 'saved' && <span className="rp-foot-note" role="status"><Check size={14} style={{ color: 'var(--cl-ok-text)' }} aria-hidden /> Saved</span>}
+                                {saveState === 'failed' && <span className="rp-foot-note" role="alert" style={{ color: 'var(--cl-flash-text)' }}>Couldn’t save the file</span>}
                                 <ClButton variant="ghost" onClick={doSave} disabled={!built || phase === 'sending' || saveState === 'saving'} loading={saveState === 'saving'}>
                                     <Download size={15} aria-hidden /> Save to file
                                 </ClButton>

@@ -53,6 +53,10 @@ export interface SentCodecs {
     layers: number;
     /** encoderImplementation of the largest active layer, if reported. */
     encoder?: string;
+    /** powerEfficientEncoder of the largest active layer (true = hardware), if reported. */
+    hardware?: boolean;
+    /** The largest active layer's encoded size, "WxH", if reported. */
+    topRes?: string;
 }
 
 /** 'video/H265' -> 'h265'; anything unparseable -> undefined. */
@@ -83,6 +87,8 @@ export function readSentCodecs(report: StatsLike | null | undefined): SentCodecs
     }
     const out: SentCodecs = { codecs: [...codecs], layers: outs.length };
     if (top && typeof top.encoderImplementation === 'string' && top.encoderImplementation) out.encoder = top.encoderImplementation;
+    if (top && typeof top.powerEfficientEncoder === 'boolean') out.hardware = top.powerEfficientEncoder;
+    if (topArea > 0 && top) out.topRes = `${Number(top.frameWidth)}x${Number(top.frameHeight)}`;
     return out;
 }
 
@@ -116,6 +122,8 @@ export interface CodecDriftWatchDeps {
     paused?(): boolean;
     /** Called once per watch, when the drift is confirmed. */
     onDrift(d: CodecDrift): void;
+    /** Every poll's reading (judged or not): the caller logs what the encoder really is when it changes (share_encoder). */
+    onSample?(sent: SentCodecs): void;
     pollMs?: number;
     confirm?: number;
     sleep?(ms: number): Promise<void>;
@@ -148,6 +156,7 @@ export class ShareCodecDriftWatch {
             let sent: SentCodecs;
             try { sent = readSentCodecs(await this.deps.getStats()); } catch { return; /* sender gone */ }
             if (this.disposed) return;
+            try { this.deps.onSample?.(sent); } catch { /* diagnostics never stop the watch */ }
             if (this.deps.paused?.()) {
                 seen = 0; last = null;
                 await sleep(this.deps.pollMs ?? DRIFT_POLL_MS);
@@ -174,6 +183,32 @@ export { ShareCodecDriftWatch as CodecDriftWatch };
 
 /** Once per share source per this long, at most: a codec that drifts again after a republish is not retried in a loop. */
 export const DRIFT_REPUBLISH_COOLDOWN_MS = 60_000;
+
+/**
+ * May this drift republish the share? Once per source and PUBLISHED codec per cooldown. The cooldown used to be
+ * per source only, so a chain like H.265 drifts -> republished as H.264 High -> High drifts too (seconds later)
+ * left the second drift with only a notice: the sender stayed on libwebrtc's software VP8 while the SFU forwarded
+ * the published H.264 - nothing - to every viewer. The chain cannot loop: every drift marks the codec it
+ * drifted from as failed (markHevcFailed / markH264HighFailed) before republishing, so each step lands on a
+ * different codec, ending at one with a software encoder (VP8), which cannot drift; and the SAME codec drifting
+ * again inside the cooldown is still held.
+ */
+export function driftRepublishAllowed(
+    last: { sourceId: string; at: number; codec?: string } | null | undefined,
+    sourceId: string,
+    published: string,
+    now: number,
+    cooldownMs: number = DRIFT_REPUBLISH_COOLDOWN_MS,
+): boolean {
+    if (!last || last.sourceId !== sourceId) return true;
+    if (last.codec !== undefined && last.codec !== published) return true;
+    return now - last.at >= cooldownMs;
+}
+
+/** A change key for share_encoder: logged only when what the sender is really doing changes. */
+export function sentEncoderKey(published: string, sent: SentCodecs): string {
+    return `${published}|${[...sent.codecs].sort().join('+')}|${sent.encoder ?? ''}|${sent.hardware ?? ''}|${sent.layers}`;
+}
 
 /** The user-facing notice for a drift recovery. */
 export function codecDriftNotice(published: string): string {

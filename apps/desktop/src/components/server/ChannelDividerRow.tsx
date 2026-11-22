@@ -24,9 +24,19 @@
 import React from 'react';
 import { EyeOff } from 'lucide-react';
 import { DIVIDER_DEFAULT_COLOR, isLabelDividerStyle, normalizeDividerColor } from '@cipherline/shared';
+import { readableNameColor, readableOnLightHex } from '../../utils/roleColor';
+import { getTheme } from '../../theme/engine';
+import { mixHex } from '../../theme/customTheme';
 import type { DividerInfo } from '../../hooks/useServers';
 
-const dividerColor = (d: Pick<DividerInfo, 'color'>): string => normalizeDividerColor(d.color) ?? DIVIDER_DEFAULT_COLOR;
+// User-picked: shown as picked in Dark, darkened to stay readable on Light's white panels (utils/roleColor.ts).
+const dividerColor = (d: Pick<DividerInfo, 'color'>): string => { const c = normalizeDividerColor(d.color) ?? DIVIDER_DEFAULT_COLOR; return readableNameColor(c) ?? c; };
+
+/** The pill's label sits on a 14% tint of its own colour: on a light theme, darken it until it reads THERE (Dark unchanged). */
+const pillTextColor = (color: string): string => {
+    const t = getTheme();
+    return t.scheme === 'light' && /^#[0-9a-f]{6}$/i.test(color) ? readableOnLightHex(color, 4.5, mixHex(t.palette.deep, color, 0.14)) : color;
+};
 
 /** `#rrggbb` -> `rgba(r, g, b, a)`. Input is already validated. */
 function rgba(hex: string, alpha: number): string {
@@ -73,8 +83,8 @@ export const ChannelDividerVisual: React.FC<Props> = ({ divider, compact }) => {
                     <span className="flex-1 h-px min-w-[10px]" style={{ background: rgba(color, 0.35) }} aria-hidden="true" />
                     {label && (
                         <span
-                            className="truncate max-w-[78%] text-[10.5px] font-semibold rounded-full px-2.5 py-[2px] border border-solid"
-                            style={{ ...MONO, background: rgba(color, 0.14), borderColor: rgba(color, 0.45) }}
+                            className="cl-divider-pill truncate max-w-[78%] text-[10.5px] font-semibold rounded-full px-2.5 py-[2px] border border-solid"
+                            style={{ ...MONO, color: pillTextColor(color), background: rgba(color, 0.14), borderColor: rgba(color, 0.45) }}
                         >
                             {label}
                         </span>

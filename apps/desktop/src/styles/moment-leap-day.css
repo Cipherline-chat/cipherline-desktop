@@ -12,14 +12,14 @@
 @keyframes mo-ld-in { from { transform: translateY(18px) scale(.85); opacity: 0; } to { transform: none; opacity: 1; } }
 .mo-ld-page {
   position: absolute; inset: 0; border-radius: 16px; overflow: hidden;
-  background: #F4F7FF; border: 1px solid #C9D2EA;
+  background: var(--cl-text); border: 1px solid #C9D2EA;
 }
 .mo-ld-month {
-  height: 56px; background: #FF6B5E; color: #fff; text-align: center; line-height: 58px; padding-top: 6px; box-sizing: border-box;
+  height: 56px; background: var(--cl-flash); color: #fff; text-align: center; line-height: 58px; padding-top: 6px; box-sizing: border-box;
   font: 700 18px var(--cl-font-sans, 'Nunito', sans-serif); letter-spacing: .14em;
 }
 .mo-ld-num {
-  height: 170px; text-align: center; line-height: 160px; color: #1C2542;
+  height: 170px; text-align: center; line-height: 160px; color: var(--cl-surface);
   font: 600 112px/170px var(--cl-font-display, 'Fredoka', sans-serif);
 }
 .mo-ld-num-29 { color: #0E9C8B; }

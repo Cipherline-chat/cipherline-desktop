@@ -57,7 +57,8 @@ describe('the long-message preview clips the bottom only', () => {
         expect(r).toContain('padding-top:var(--lm-ink)');
         expect(r).toContain('margin-top:calc(-1*var(--lm-ink))');
         // border-box (Tailwind preflight): the padding is added to the cap, so 11.5em of text still shows.
-        expect(r).toContain('max-height:calc(11.5em+var(--lm-ink))');
+        // Relaxed line spacing scales the 11.5em with --cl-msg-leading-mult (1 by default).
+        expect(r).toContain('max-height:calc(11.5em*var(--cl-msg-leading-mult,1)+var(--lm-ink))');
     });
     it('the room is at least as tall as an inline emoji rises (~0.4em with a tall face)', () => {
         const ink = parseFloat(/--lm-ink:([\d.]+)em/.exec(r)?.[1] ?? '0');

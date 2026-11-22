@@ -156,3 +156,58 @@ export function sliceRect(frameWidth: number, frameHeight: number, count: number
     const x1 = i === n - 1 ? w - (w % 2) : evenRound(((i + 1) * w) / n);
     return { x: x0, y: 0, width: Math.max(2, x1 - x0), height: h };
 }
+
+/**
+ * A crop that is not one of the picker's layouts: a sub-rectangle of the
+ * captured frame, as FRACTIONS of it (0..1), so it holds whatever size the
+ * capturer delivers the display at (a 2560x1440 monitor captured into a
+ * 1920x1080 box is the same region). Used when a window cannot be captured
+ * directly and its monitor is captured and cropped to the window instead
+ * (windowShareFallback.ts). Never stored, never offered in the picker.
+ */
+export interface RegionLayout { kind: 'region'; x: number; y: number; w: number; h: number }
+/** What the crop pipeline accepts: the picker's layouts, or a region. */
+export type CropLayout = ShareLayout | RegionLayout;
+
+/** Smallest region side the crop produces, in pixels of the frame (or the whole frame, if that is smaller). */
+export const MIN_REGION_PX = 64;
+
+/**
+ * The source rectangle of a region in a `frameWidth` x `frameHeight` frame:
+ * even offsets and sizes (4:2:0), inside the frame, at least MIN_REGION_PX
+ * on each side. Out-of-range fractions are clamped, never thrown.
+ */
+export function regionRect(frameWidth: number, frameHeight: number, r: RegionLayout): CropRect {
+    const even = (n: number) => n - (n % 2);
+    const fw = Math.max(2, even(Math.floor(frameWidth)));
+    const fh = Math.max(2, even(Math.floor(frameHeight)));
+    const c01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
+    const minW = even(Math.min(fw, MIN_REGION_PX));
+    const minH = even(Math.min(fh, MIN_REGION_PX));
+    const x = even(Math.max(0, Math.min(evenRound(c01(r.x) * fw), fw - minW)));
+    const y = even(Math.max(0, Math.min(evenRound(c01(r.y) * fh), fh - minH)));
+    const w = even(Math.max(minW, Math.min(evenRound(c01(r.w) * fw), fw - x)));
+    const h = even(Math.max(minH, Math.min(evenRound(c01(r.h) * fh), fh - y)));
+    return { x, y, width: w, height: h };
+}
+
+/** The crop rectangle for any crop layout; null = the frame passes through whole. */
+export function cropRectFor(layout: CropLayout, frameWidth: number, frameHeight: number): CropRect | null {
+    if (layout.kind === 'slice') return sliceRect(frameWidth, frameHeight, layout.count, layout.index);
+    if (layout.kind === 'region') return regionRect(frameWidth, frameHeight, layout);
+    return null;
+}
+
+/** Validates an untrusted crop layout (a message to the crop worker). */
+export function parseCropLayout(v: unknown): CropLayout | null {
+    const base = parseLayout(v);
+    if (base) return base;
+    if (!v || typeof v !== 'object') return null;
+    const o = v as Record<string, unknown>;
+    if (o.kind !== 'region') return null;
+    const f = (k: string) => (typeof o[k] === 'number' && Number.isFinite(o[k]) ? o[k] as number : NaN);
+    const x = f('x'), y = f('y'), w = f('w'), h = f('h');
+    if ([x, y, w, h].some(Number.isNaN)) return null;
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 1.0001 || y + h > 1.0001) return null;
+    return { kind: 'region', x, y, w, h };
+}

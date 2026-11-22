@@ -10,6 +10,7 @@
  * theme, decoration, effect and the egg showcase. Custom status / current game keep their existing presence gating and
  * are not part of these settings.
  */
+import { formatDateTime } from './a11y/timeFormat';
 
 export const VISIBILITY_FIELDS = ['bio', 'banner', 'local_time', 'widgets', 'links'] as const;
 export type VisibilityField = (typeof VISIBILITY_FIELDS)[number];
@@ -111,7 +112,7 @@ export function isFriendsOnly(friendsOnlyFields: readonly string[] | null | unde
 export function isValidTimeZone(tz: string): boolean {
     if (!tz || tz.length > 64) return false;
     try {
-        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+        new Intl.DateTimeFormat('en-US', { timeZone: tz }); // time-format-ok: date-only / validity / parse
         return true;
     } catch {
         return false;
@@ -136,7 +137,7 @@ export function deviceTimeZone(): string | null {
 export function formatLocalTime(timeZone: string | null | undefined, now: Date = new Date()): string | null {
     if (!timeZone || !isValidTimeZone(timeZone)) return null;
     try {
-        const t = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone }).format(now);
+        const t = formatDateTime(now, undefined, { hour: 'numeric', minute: '2-digit', timeZone });
         return `${t} local time`;
     } catch {
         return null;

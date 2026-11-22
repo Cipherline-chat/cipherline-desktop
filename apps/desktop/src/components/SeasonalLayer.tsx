@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useEffectsEnabled, useMotionSnapshot } from '../utils/a11y/motionPrefs';
 import { activeSeason, flakeCount, makeFlakes } from '../utils/seasonal';
 
 /**
@@ -18,6 +19,9 @@ import { activeSeason, flakeCount, makeFlakes } from '../utils/seasonal';
 const HOUR_MS = 60 * 60 * 1000;
 
 export const SeasonalLayer: React.FC<{ enabled: boolean }> = ({ enabled }) => {
+    // Settings → Accessibility → Celebrations and effects (also re-renders on reduce-motion changes).
+    const effectsOn = useEffectsEnabled();
+    useMotionSnapshot();
     const [season, setSeason] = useState(() => activeSeason(new Date()));
     const [flakes, setFlakes] = useState(() => makeFlakes(flakeCount(window.innerWidth)));
 
@@ -39,7 +43,7 @@ export const SeasonalLayer: React.FC<{ enabled: boolean }> = ({ enabled }) => {
         return () => window.removeEventListener('resize', onResize);
     }, [season, enabled]);
 
-    if (!enabled || !season) return null;
+    if (!enabled || !season || !effectsOn) return null;
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return null;
 
     return (

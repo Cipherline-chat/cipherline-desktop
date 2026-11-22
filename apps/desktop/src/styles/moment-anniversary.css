@@ -23,7 +23,7 @@
 /* Wobbles 1.5–6.5 (an even count: it ends where it started), then still. */
 .mo-anv-flame {
   position: absolute; left: 70px; top: -4px; width: 20px; height: 24px; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
-  border: 2.5px solid #FFC94D; background: rgba(255, 201, 77, .25);
+  border: 2.5px solid var(--cl-glow); background: rgb(var(--cl-glow-rgb) / .25);
   animation: mo-anv-flame .5s ease-in-out 1.5s 10 alternate both;
 }
 @keyframes mo-anv-flame { from { transform: scale(.95, 1.02) rotate(-4deg); } to { transform: scale(1.08, .92) rotate(6deg); } }
@@ -42,7 +42,7 @@
   100% { transform: translate(var(--dx, 6px), -120px) scale(1.4); opacity: 0; }
 }
 .mo-anv .mo-anv-title {
-  position: absolute; left: 0; top: -150px; font-size: 52px; color: var(--cl-lume, #25E0C8);
+  position: absolute; left: 0; top: -150px; font-size: 52px; color: var(--cl-lume, var(--cl-lume-text));
   animation: mo-anv-up .6s cubic-bezier(.2, .8, .3, 1.1) 1.7s both;
 }
 .mo-anv .mo-anv-sub {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { describeSystem, glClass, heapHint, hitchCadence, hitchProbeEnabled, loafPhases, probeRows } from './firewallHitchProbe';
+import { BLOCKED_MS, describeSystem, displayTopology, glClass, heapHint, hitchBlock, hitchCadence, hitchProbeEnabled, loafPhases, probeRows } from './firewallHitchProbe';
 import type { SystemInfo } from '../utils/diagnostics/reportTypes';
 
-// The probe must reach testers on
-// staging builds and never appear in a stable one.
+// hitchProbeEnabled picks the FULL probe (dev + staging); every other build runs the light one
+// (the overlay always starts a probe, see FirewallOverlay.probe.test.ts).
 describe('hitchProbeEnabled', () => {
     it('is on in a dev build whatever the version says', () => {
         expect(hitchProbeEnabled('1.0.23', true)).toBe(true);
@@ -111,16 +111,82 @@ describe('probeRows', () => {
         expect(rows[0].activity).toContain('fw:split:render');
         expect(rows[0].activity).toMatch(/fw:cadence:30\d\d/);
         expect(rows[0].ms).toBe(73);
-        expect(rows[3].activity).toBe('firewall:hitch, fw:p:4, fw:score:3, fw:loaf:70, fw:scripts:0, fw:tasks:4, fw:raf:1, fw:render:66');
+        expect(rows[3].activity).toBe('firewall:hitch, fw:p:4, fw:score:3, fw:loaf:70, fw:scripts:0, fw:tasks:4, fw:raf:1, fw:render:66, fw:block:0');
+        expect(rows[0].activity).toContain('fw:main-blocked:0');
     });
     it('caps the per-hitch rows', () => {
         const many = Array.from({ length: 40 }, (_, i) => hitch(40, i + 1));
         expect(probeRows(many, many.map((_, i) => i * 3000), null, 60, 0)).toHaveLength(13);
+    });
+    it('adds the display topology, log-safe, and says whether the refresh rates are mixed', () => {
+        const topo = displayTopology([
+            { displayFrequency: 165, isPrimary: true, hostsWindow: true },
+            { displayFrequency: 180, isPrimary: false },
+            { displayFrequency: 143.98, isPrimary: false },
+        ]);
+        expect(topo).toEqual({ hz: [165, 180, 144], onHz: 165 });
+        const row = probeRows([hitch(61, 1)], [1000], null, 165, 1, topo, false)[0].activity;
+        expect(row).toContain('fw:disp:3');
+        expect(row).toContain('fw:disp-hz:165-180-144');
+        expect(row).toContain('fw:mixed-hz:1');
+        expect(row).toContain('fw:on-hz:165');
+        expect(row).toContain('fw:build:light');
+        expect(row.length).toBeLessThanOrEqual(300);
+        for (const l of row.split(', ')) expect(l).toMatch(LABEL);
+    });
+    it('one rate across monitors is not mixed; no window display means no on-hz', () => {
+        const topo = displayTopology([{ displayFrequency: 60, isPrimary: true }, { displayFrequency: 60, isPrimary: false }]);
+        const row = probeRows([], [], null, 60, 0, topo)[0].activity;
+        expect(row).toContain('fw:mixed-hz:0');
+        expect(row).not.toContain('fw:on-hz');
+        expect(row).toContain('fw:build:full');
+    });
+    it('displayTopology is null for an empty or bad list (positive control: a real list is not)', () => {
+        expect(displayTopology([])).toBeNull();
+        expect(displayTopology(undefined as never)).toBeNull();
+        expect(displayTopology([{ displayFrequency: 60 }])).not.toBeNull();
     });
     it('a run with no hitches is one summary row', () => {
         const rows = probeRows([], [], null, 60, 0);
         expect(rows).toHaveLength(1);
         expect(rows[0].activity).toContain('fw:cadence:none');
         for (const l of rows[0].activity.split(', ')) expect(l).toMatch(LABEL);
+    });
+});
+
+// A no-script "tasks" long frame is NOT evidence of main-thread work: LoAF counts the time the
+// main thread spent WAITING for its frame too (measured 2026-11-22: 115 of 116 such frames in the
+// real renderer had blockingDuration 0). The rows carry the blocking time so a report can tell.
+describe('probeRows: blocked vs waiting', () => {
+    const LABEL = /^[a-z][a-z0-9_.:-]{0,63}$/i;
+    const waiting = { gap: 61, pillar: 1, score: 0, js: 0.4, loafs: [{ dur: 70, scripts: 0, block: 0, phases: { tasks: 68, raf: 0, render: 2 } }] };
+    const blocked = { gap: 73, pillar: 2, score: 1, js: 0.5, loafs: [{ dur: 80, scripts: 0, block: 30, phases: { tasks: 78, raf: 0, render: 2 } }] };
+    it('counts only frames really held by a long task as blocked, and says so per hitch', () => {
+        const rows = probeRows([waiting, blocked, waiting], [0, 3080, 6160], null, 165, 3, null, false);
+        expect(rows[0].activity).toContain('fw:main-busy:3');
+        expect(rows[0].activity).toContain('fw:main-blocked:1');
+        expect(rows[1].activity).toContain('fw:block:0');
+        expect(rows[2].activity).toContain('fw:block:30');
+        expect(rows[1].activity).toContain('fw:js:0');
+        for (const r of rows) for (const l of r.activity.split(', ')) expect(l).toMatch(LABEL);
+    });
+    it('the threshold is the boundary: BLOCKED_MS counts, one below does not', () => {
+        const at = (block: number) => probeRows([{ ...blocked, loafs: [{ ...blocked.loafs[0], block }] }], [0], null, 60, 1)[0].activity;
+        expect(at(BLOCKED_MS)).toContain('fw:main-blocked:1');
+        expect(at(BLOCKED_MS - 1)).toContain('fw:main-blocked:0');
+    });
+    it('hitchBlock is the largest blocking time of the hitch\'s frames (0 without frames or without the field)', () => {
+        expect(hitchBlock({ gap: 1, pillar: 0, score: 0, loafs: [] })).toBe(0);
+        expect(hitchBlock({ gap: 1, pillar: 0, score: 0, loafs: [{ dur: 60, scripts: 0, phases: null }] })).toBe(0);
+        expect(hitchBlock({ gap: 1, pillar: 0, score: 0, loafs: [{ dur: 60, scripts: 0, phases: null, block: 4 }, { dur: 90, scripts: 1, phases: null, block: 40 }] })).toBe(40);
+    });
+    it('a hitch without a long frame still carries the game\'s own frame time, and no block label', () => {
+        const row = probeRows([{ gap: 40, pillar: 3, score: 2, js: 12.6, loafs: [] }], [0], null, 144, 0)[1].activity;
+        expect(row).toBe('firewall:hitch, fw:p:3, fw:score:2, fw:loaf:none, fw:js:13');
+    });
+    it('the fullest summary row (topology and all) stays under the row length cap', () => {
+        const topo = displayTopology([{ displayFrequency: 165, hostsWindow: true }, { displayFrequency: 180 }, { displayFrequency: 144 }]);
+        const row = probeRows([waiting, blocked], [0, 3080], { r: { frames: 9000, ms: 60000, fps: 164.9, busyAvgMs: 0.4, maxGapMs: 73.2 }, gl: 'NVIDIA GeForce RTX 2080 Ti' }, 165, 2, topo, true)[0].activity;
+        expect(row.length).toBeLessThanOrEqual(300);
     });
 });

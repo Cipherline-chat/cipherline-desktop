@@ -147,7 +147,7 @@ export const DeviceApprovalModal: React.FC<Props> = ({ request, onClose, onResol
                                 <dd>{net}</dd>
                             </>)}
                             <dt>Expires</dt>
-                            <dd style={expired ? { color: 'var(--cl-flash)' } : undefined}>
+                            <dd style={expired ? { color: 'var(--cl-flash-text)' } : undefined}>
                                 <Clock size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: '-1px' }} />
                                 {resetScheduled ? 'in about a day (reset requested)' : expired ? 'expired' : formatCountdown(remaining ?? 0)}
                             </dd>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { secureLocalStore } from '../utils/secureLocalStore';
+import { useMotionSnapshot } from '../utils/a11y/motionPrefs';
 
 /**
  * On/off switch for the home deck's ambient motion (rising motes + the small
@@ -38,4 +39,20 @@ export function useAmbientMotion(): [boolean, (v: boolean) => void] {
     }, []);
 
     return [enabled, set];
+}
+
+/**
+ * Whether the ambient motes should move right now: the Home ambience switch is
+ * on, Settings -> Accessibility -> Celebrations and effects is on (the master
+ * that Home ambience sits under), and motion is not reduced (Reduce motion:
+ * Follow my system / Always reduce / Allow full motion, the EFFECTIVE value).
+ * Live: re-renders when any of the three changes, so a canvas can stop and
+ * clear itself the moment the user flips a switch in the Settings it sits
+ * behind. The home deck, Settings' water column and Server Settings' dock all
+ * read this one answer.
+ */
+export function useAmbientActive(): boolean {
+    const [ambient] = useAmbientMotion();
+    const m = useMotionSnapshot();
+    return ambient && m.effects && !m.reduced;
 }

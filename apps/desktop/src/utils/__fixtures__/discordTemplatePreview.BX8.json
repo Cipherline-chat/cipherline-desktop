@@ -203,7 +203,8 @@
         "category_ref": "k:6:text",
         "member_limit": null,
         "overrides": [],
-        "private": false
+        "private": false,
+        "slowmode_seconds": 21600
       },
       {
         "ref": "c:8",
@@ -312,10 +313,6 @@
       {
         "item": "Server language (en-US)",
         "reason": "Cipherline follows each member’s own language"
-      },
-      {
-        "item": "#self_promotion: slowmode (6h)",
-        "reason": "Cipherline has no slowmode"
       },
       {
         "item": "@everyone permissions",

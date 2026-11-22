@@ -89,7 +89,8 @@ export type FromWorker =
  * frame's own work; `k`: pillars that have entered the screen this run.
  */
 export type ProbeMsg =
-    | { type: 'probe'; kind: 'gap'; at: number; gap: number; js: number; score: number; k: number }
+    /** `iv`: the worker's learned on-time frame interval (ms), i.e. the display's rate: the probe has no main-thread rAF of its own. */
+    | { type: 'probe'; kind: 'gap'; at: number; gap: number; js: number; score: number; k: number; iv?: number }
     | { type: 'probe'; kind: 'pillar'; at: number; k: number; slot: number; score: number }
     /** End of a run: how fast the worker really drew it, and which GL renderer / power preference it got. */
-    | { type: 'probe'; kind: 'rate'; frames: number; ms: number; fps: number; busyAvgMs: number; maxGapMs: number; gl: string };
+    | { type: 'probe'; kind: 'rate'; frames: number; ms: number; fps: number; busyAvgMs: number; maxGapMs: number; gl: string; iv?: number };

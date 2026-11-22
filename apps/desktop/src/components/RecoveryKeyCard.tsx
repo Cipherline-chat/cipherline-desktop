@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { KeyRound, Copy, Check, Eye, AlertTriangle } from 'lucide-react';
 import { ClButton } from './ClButton';
 import { useStepUp } from '../hooks/useStepUp';
+import { copyText } from '../utils/clipboard';
 
 /**
  * Lets the user reveal and copy their device storage recovery key so they can
@@ -41,21 +42,21 @@ const RecoveryKeyCard: React.FC = () => {
     };
 
     const copy = async () => {
-        try {
-            await (window.electronAPI?.writeClipboard?.(revealed) ?? navigator.clipboard.writeText(revealed));
+        // The key is shown on screen while revealed, so a failed copy is still recoverable by selecting it.
+        if (await copyText(revealed)) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1800);
-        } catch { /* clipboard blocked — user can select manually */ }
+        }
     };
 
     return (
-        <div className="rounded-xl p-4 border" style={{ background: 'rgba(37,224,200,.03)', borderColor: 'var(--cl-border)' }}>
+        <div className="rounded-xl p-4 border" style={{ background: 'rgb(var(--cl-lume-rgb) / .03)', borderColor: 'var(--cl-border)' }}>
             <div className="flex items-start gap-3">
                 <div
                     className="flex items-center justify-center flex-shrink-0"
-                    style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(37,224,200,0.1)', border: '1px solid rgba(37,224,200,0.2)' }}
+                    style={{ width: 36, height: 36, borderRadius: 10, background: 'rgb(var(--cl-lume-rgb) / 0.1)', border: '1px solid rgb(var(--cl-lume-rgb) / 0.2)' }}
                 >
-                    <KeyRound size={17} style={{ color: 'var(--cl-lume)' }} />
+                    <KeyRound size={17} style={{ color: 'var(--cl-lume-text)' }} />
                 </div>
                 <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold" style={{ color: 'var(--cl-text)' }}>Storage Recovery Key</p>
@@ -70,7 +71,7 @@ const RecoveryKeyCard: React.FC = () => {
                             <ClButton size="sm" variant="ghost" onClick={reveal} disabled={busy}>
                                 <Eye size={14} /> {busy ? 'Revealing…' : 'Reveal recovery key'}
                             </ClButton>
-                            {error && <p className="text-xs mt-2" style={{ color: 'var(--cl-flash)' }}>{error}</p>}
+                            {error && <p className="text-xs mt-2" style={{ color: 'var(--cl-flash-text)' }}>{error}</p>}
                         </div>
                     ) : (
                         <div className="mt-3">
@@ -92,8 +93,8 @@ const RecoveryKeyCard: React.FC = () => {
                                 </ClButton>
                             </div>
                             <div className="flex items-start gap-1.5 mt-2">
-                                <AlertTriangle size={13} style={{ color: 'var(--cl-glow)', marginTop: 1, flexShrink: 0 }} />
-                                <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow)' }}>
+                                <AlertTriangle size={13} style={{ color: 'var(--cl-glow-text)', marginTop: 1, flexShrink: 0 }} />
+                                <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow-text)' }}>
                                     Anyone with this key can decrypt your local data. Store it somewhere only you control.
                                 </p>
                             </div>

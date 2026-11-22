@@ -45,7 +45,7 @@ export const FounderCancelPrompt: React.FC<{
                 aria-hidden
                 style={{
                     width: 44, height: 44, borderRadius: 14, display: 'grid', placeItems: 'center', marginBottom: 14,
-                    background: 'rgba(255,107,94,.12)', border: '1px solid rgba(255,107,94,.28)', color: 'var(--cl-flash)',
+                    background: 'rgb(var(--cl-flash-rgb) / .12)', border: '1px solid rgb(var(--cl-flash-rgb) / .28)', color: 'var(--cl-flash-text)',
                 }}
             >
                 <AlertTriangle size={20} />
@@ -59,8 +59,8 @@ export const FounderCancelPrompt: React.FC<{
 
             {/* Now vs. coming back later */}
             <div className="flex gap-2.5" style={{ marginBottom: 14 }}>
-                <div data-testid="founder-cancel-now" style={{ flex: 1, minWidth: 0, borderRadius: 14, padding: '11px 13px', background: 'var(--cl-lume-tint)', border: '1px solid rgba(37,224,200,.30)' }}>
-                    <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--cl-lume)' }}>Your founding price</div>
+                <div data-testid="founder-cancel-now" style={{ flex: 1, minWidth: 0, borderRadius: 14, padding: '11px 13px', background: 'var(--cl-lume-tint)', border: '1px solid rgb(var(--cl-lume-rgb) / .30)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--cl-lume-text)' }}>Your founding price</div>
                     <div style={{ marginTop: 3, fontWeight: 800, fontSize: 15.5, color: 'var(--cl-text)' }}>{copy.nowPrice}</div>
                 </div>
                 <div data-testid="founder-cancel-later" style={{ flex: 1, minWidth: 0, borderRadius: 14, padding: '11px 13px', background: 'var(--cl-surface)', border: '1px solid var(--cl-border)' }}>
@@ -74,7 +74,7 @@ export const FounderCancelPrompt: React.FC<{
             </p>
             {children}
             <p data-testid="founder-cancel-reassurance" className="flex items-start gap-2" style={{ fontSize: 13, fontWeight: 700, color: 'var(--cl-text)', margin: '0 0 18px' }}>
-                <Award size={15} aria-hidden style={{ color: 'var(--cl-glow)', flexShrink: 0, marginTop: 1 }} />
+                <Award size={15} aria-hidden style={{ color: 'var(--cl-glow-text)', flexShrink: 0, marginTop: 1 }} />
                 <span>{copy.reassurance}</span>
             </p>
 

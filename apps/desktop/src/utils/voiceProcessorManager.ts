@@ -76,6 +76,10 @@ const stableCallbacks: VoiceProcessorCallbacks = {
     onNoiseFloor: (db, passed) => latestCallbacks.onNoiseFloor?.(db, passed),
     onGateCut: (sec) => latestCallbacks.onGateCut?.(sec),
     onNsLoadFallback: (info) => latestCallbacks.onNsLoadFallback?.(info),
+    // The new audio engine failed at runtime: its worklet already passes audio through, and the processor now wants the
+    // legacy chain - re-attach it (same sender, replaceTrack) rather than leave the call unprocessed.
+    onEngineFallback: (info) => { latestCallbacks.onEngineFallback?.(info); if (bound) void scheduleReconcile(); },
+    onNativeFallback: (info) => latestCallbacks.onNativeFallback?.(info),
     onAudioRender: (w) => latestCallbacks.onAudioRender?.(w),
 };
 
@@ -210,7 +214,15 @@ async function reconcile(): Promise<void> {
     const attached = b.track.getProcessor();
     const need = voiceChainNeedsProcessor(settings);
     if (need) {
-        if (attached) return; // ours (or one we must not replace) is already on
+        if (attached) {
+            // Ours, but built for the other audio engine (the user switched mid-call, or the new engine failed): swap the
+            // processor on the same sender, exactly like a detach followed by an attach.
+            const ours = current?.processor;
+            if (!ours || attached !== ours || !ours.needsEngineRebuild(settings)) return;
+            ours.updateSettings(settings);
+            await b.run(() => b.track.stopProcessor());
+            console.log('[voiceProcessorManager] audio engine changed - rebuilding the voice processor');
+        }
         // LocalAudioTrack.setProcessor() throws without an audioContext on the
         // track; the room's own may not exist yet — see getGuardAudioContext.
         if (!(b.track as unknown as { audioContext?: AudioContext }).audioContext) {

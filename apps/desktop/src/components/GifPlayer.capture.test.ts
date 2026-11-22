@@ -12,8 +12,8 @@ import { createRoot } from 'react-dom/client';
 
 let focused = true;
 vi.mock('../hooks/useWindowFocus', () => ({ useWindowFocus: () => focused }));
-vi.mock('../hooks/useGifSettings', () => ({ useGifSettings: () => ({ settings: { autoPlayGifs: true } }) }));
-vi.mock('../hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => false }));
+// Animated images setting: autoplay on (mode "always"), as this test always assumed.
+vi.mock('../utils/a11y/motionPrefs', async (orig) => ({ ...(await orig<typeof import('../utils/a11y/motionPrefs')>()), useImageMode: () => 'always' }));
 
 import { GifPlayer } from './GifPlayer';
 

@@ -67,7 +67,7 @@ export const WalletLockedView: React.FC<{ status: KeyringStatus }> = ({ status }
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                     >
-                        <ShieldAlert style={{ width: 28, height: 28, color: 'var(--cl-glow)' }} />
+                        <ShieldAlert style={{ width: 28, height: 28, color: 'var(--cl-glow-text)' }} />
                     </div>
                     <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 8 }}>{copy.title}</h1>
                     <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--cl-faint)', marginBottom: 8 }}>{copy.body}</p>
@@ -80,7 +80,7 @@ export const WalletLockedView: React.FC<{ status: KeyringStatus }> = ({ status }
                 <div
                     style={{
                         background: 'var(--cl-deep)', border: '1px solid var(--cl-border)',
-                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgb(var(--cl-shade-rgb) / 0.4)',
                     }}
                 >
                     {retryFailed && (
@@ -89,7 +89,7 @@ export const WalletLockedView: React.FC<{ status: KeyringStatus }> = ({ status }
                             style={{
                                 marginBottom: 14, padding: '10px 12px', borderRadius: 12, fontSize: 12.5,
                                 background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.28)',
-                                color: 'var(--cl-flash)',
+                                color: 'var(--cl-flash-text)',
                             }}
                         >
                             Couldn{'’'}t restart Cipherline. Close it and open it again to be asked for your password.
@@ -116,7 +116,7 @@ export const WalletLockedView: React.FC<{ status: KeyringStatus }> = ({ status }
                                     style={{
                                         marginBottom: 12, padding: '10px 12px', borderRadius: 12, fontSize: 12.5,
                                         background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.28)',
-                                        color: 'var(--cl-flash)',
+                                        color: 'var(--cl-flash-text)',
                                     }}
                                 >
                                     {error}

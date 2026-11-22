@@ -16,54 +16,54 @@
 .dlg-choice{
   display:flex;align-items:center;gap:12px;width:100%;min-width:0;text-align:left;
   padding:11px 13px;border-radius:13px;cursor:pointer;
-  background:var(--cl-surface, #1C2542);color:var(--cl-text, #F4F7FF);
-  box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+  background:var(--cl-surface, var(--cl-surface));color:var(--cl-text, var(--cl-text));
+  box-shadow:inset 0 0 0 1px var(--cl-border, var(--cl-border));
   transition:box-shadow .15s ease, background-color .15s ease;
 }
-.dlg-choice:hover{box-shadow:inset 0 0 0 1px rgba(37,224,200,.4)}
-.dlg-choice:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:2px}
+.dlg-choice:hover{box-shadow:inset 0 0 0 1px rgb(var(--cl-lume-rgb) / .4)}
+.dlg-choice:focus-visible{outline:2px solid var(--cl-lume, var(--cl-lume));outline-offset:2px}
 .dlg-choice-ico{
   flex:none;width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  color:var(--cl-lume, #25E0C8);background:var(--cl-lume-tint, rgba(37,224,200,.12));
+  color:var(--cl-lume, var(--cl-lume-text));background:var(--cl-lume-tint, rgb(var(--cl-lume-rgb) / .12));
 }
 .dlg-choice-text{flex:1;min-width:0}
-.dlg-choice-title{display:block;font-size:13.5px;font-weight:800;color:var(--cl-text, #F4F7FF)}
-.dlg-choice-sub{display:block;margin-top:1px;font-size:12.5px;line-height:1.4;font-weight:600;color:var(--cl-faint, #5E6B8F)}
-.dlg-choice-chev{flex:none;color:var(--cl-faint, #5E6B8F)}
+.dlg-choice-title{display:block;font-size:13.5px;font-weight:800;color:var(--cl-text, var(--cl-text))}
+.dlg-choice-sub{display:block;margin-top:1px;font-size:12.5px;line-height:1.4;font-weight:600;color:var(--cl-faint, var(--cl-faint))}
+.dlg-choice-chev{flex:none;color:var(--cl-faint, var(--cl-faint))}
 
 /* ── the server in an invite ── */
 .dlg-srv{display:flex;align-items:flex-start;gap:16px;min-width:0}
 .dlg-srv-text{flex:1;min-width:0;padding-top:2px}
 .dlg-srv-name{
-  font-size:17px;font-weight:800;line-height:1.25;color:var(--cl-text, #F4F7FF);
+  font-size:17px;font-weight:800;line-height:1.25;color:var(--cl-text, var(--cl-text));
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .dlg-srv-desc{
-  margin-top:4px;font-size:13px;line-height:1.45;font-weight:600;color:var(--cl-muted, #A7B3D4);
+  margin-top:4px;font-size:13px;line-height:1.45;font-weight:600;color:var(--cl-muted, var(--cl-muted));
   overflow-wrap:anywhere;
   display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
 }
-.dlg-srv-meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12.5px;font-weight:700;color:var(--cl-faint, #5E6B8F)}
+.dlg-srv-meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12.5px;font-weight:700;color:var(--cl-faint, var(--cl-faint))}
 .dlg-srv-meta svg{flex:none}
 .dlg-srv-badge{
   flex:none;width:64px;height:64px;border-radius:16px;display:flex;align-items:center;justify-content:center;
-  background:rgba(255,255,255,.05);color:var(--cl-faint, #5E6B8F);
+  background:rgb(var(--cl-bright-rgb) / .05);color:var(--cl-faint, var(--cl-faint));
 }
 
 /* ── the invite link on the Invite People dialog ── */
 .dlg-linkbox{
   padding:11px 13px;border-radius:12px;min-width:0;
-  background:var(--cl-sink, #0A1120);box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+  background:var(--cl-sink, var(--cl-sink));box-shadow:inset 0 0 0 1px var(--cl-border, var(--cl-border));
 }
 .dlg-linkbox-label{
   display:flex;align-items:center;gap:6px;margin-bottom:5px;
-  font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--cl-faint, #5E6B8F);
+  font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--cl-faint, var(--cl-faint));
 }
 .dlg-linkbox-url{
   font-family:var(--cl-font-mono, 'JetBrains Mono', monospace);font-size:13px;line-height:1.45;
-  color:var(--cl-text, #F4F7FF);overflow-wrap:anywhere;user-select:all;-webkit-user-select:all;
+  color:var(--cl-text, var(--cl-text));overflow-wrap:anywhere;user-select:all;-webkit-user-select:all;
 }
-.dlg-linkbox-url--idle{color:var(--cl-faint, #5E6B8F);font-style:italic;user-select:none;-webkit-user-select:none}
+.dlg-linkbox-url--idle{color:var(--cl-faint, var(--cl-faint));font-style:italic;user-select:none;-webkit-user-select:none}
 
 /* ── chip groups (expiry / uses) ── */
 .dlg-chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -71,7 +71,7 @@
 .dlg-pair > :first-child{flex:1;min-width:0}
 
 /* ── skeleton while an invite loads ── */
-.dlg-skel{border-radius:8px;background:rgba(255,255,255,.06);animation:dlg-skel-pulse 1.4s ease-in-out infinite}
+.dlg-skel{border-radius:8px;background:rgb(var(--cl-bright-rgb) / .06);animation:dlg-skel-pulse 1.4s ease-in-out infinite}
 @keyframes dlg-skel-pulse{0%,100%{opacity:1}50%{opacity:.5}}
 @media (prefers-reduced-motion:reduce){.dlg-skel{animation:none}}
 
@@ -93,8 +93,8 @@
    the kit's sea-glass disabled look is teal at 45% on a dark card, which is unreadable. Same flat
    pill as the enabled one, quieter text, no hover. */
 .mcard.dlg-card--srv .clb--ghost.dis .cap{
-  background-color:var(--cl-surface, #1C2542);background-image:none;transform:none;
-  box-shadow:inset 0 0 0 1.5px var(--cl-border, #2A3558);color:#8E9BBF;cursor:not-allowed;
+  background-color:var(--cl-surface, var(--cl-surface));background-image:none;transform:none;
+  box-shadow:inset 0 0 0 1.5px var(--cl-border, var(--cl-border));color:#8E9BBF;cursor:not-allowed;
 }
 
 /* ── Invite People: send it to a friend (components/server/InviteFriendsList.tsx) ── */
@@ -107,26 +107,26 @@
   display:flex;align-items:center;gap:10px;min-width:0;padding:6px 6px 6px 4px;border-radius:12px;
   transition:background-color .15s ease;
 }
-.dlg-fr-row:hover{background:rgba(255,255,255,.04)}
-.dlg-fr-av{flex:none;width:34px;height:34px;border-radius:50%;overflow:hidden;background:var(--cl-surface, #1C2542)}
+.dlg-fr-row:hover{background:rgb(var(--cl-bright-rgb) / .04)}
+.dlg-fr-av{flex:none;width:34px;height:34px;border-radius:50%;overflow:hidden;background:var(--cl-surface, var(--cl-surface))}
 .dlg-fr-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 .dlg-fr-name{display:flex;align-items:baseline;gap:5px;min-width:0}
-.dlg-fr-uname{font-size:14px;font-weight:800;color:var(--cl-text, #F4F7FF);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dlg-fr-tag{flex:none;font-size:12px;font-weight:700;color:var(--cl-faint, #5E6B8F)}
-.dlg-fr-sub{font-size:12px;font-weight:600;color:var(--cl-faint, #5E6B8F);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dlg-fr-uname{font-size:14px;font-weight:800;color:var(--cl-text, var(--cl-text));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dlg-fr-tag{flex:none;font-size:12px;font-weight:700;color:var(--cl-faint, var(--cl-faint))}
+.dlg-fr-sub{font-size:12px;font-weight:600;color:var(--cl-faint, var(--cl-faint));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dlg-fr-sub:empty{display:none}
-.dlg-fr-sub--err{color:var(--cl-flash, #FF6B5E)}
+.dlg-fr-sub--err{color:var(--cl-flash, var(--cl-flash-text))}
 .dlg-fr-row[data-state="member"] .dlg-fr-av,.dlg-fr-row[data-state="member"] .dlg-fr-text{opacity:.6}
 .dlg-fr-member,.dlg-fr-sent{
   flex:none;display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 12px;border-radius:99px;
   font-size:12.5px;font-weight:800;
 }
-.dlg-fr-member{color:var(--cl-faint, #5E6B8F);box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558)}
-.dlg-fr-sent{color:var(--cl-lume, #25E0C8);background:rgba(37,224,200,.10);box-shadow:inset 0 0 0 1px rgba(37,224,200,.28)}
+.dlg-fr-member{color:var(--cl-faint, var(--cl-faint));box-shadow:inset 0 0 0 1px var(--cl-border, var(--cl-border))}
+.dlg-fr-sent{color:var(--cl-lume, var(--cl-lume-text));background:rgb(var(--cl-lume-rgb) / .10);box-shadow:inset 0 0 0 1px rgb(var(--cl-lume-rgb) / .28)}
 .dlg-fr-empty{
   display:flex;align-items:center;justify-content:center;gap:7px;padding:18px 12px;border-radius:12px;
-  font-size:13px;font-weight:600;color:var(--cl-faint, #5E6B8F);
-  background:var(--cl-sink, #0A1120);box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+  font-size:13px;font-weight:600;color:var(--cl-faint, var(--cl-faint));
+  background:var(--cl-sink, var(--cl-sink));box-shadow:inset 0 0 0 1px var(--cl-border, var(--cl-border));
 }
 @media (prefers-reduced-motion:reduce){.dlg-fr-row{transition:none}}
 

@@ -12,6 +12,7 @@
 import { repositionByServerOrder } from './messageOrder';
 import { markDelivered } from './undeliveredSend';
 import { BACKLOG_FULL_REASON, isBacklogFullError } from './backlogFull';
+import { isSlowmodeError, slowmodeRetryMs, isAgeGateError, formatCountdown } from './channelModeration';
 
 export type SendState = 'sending' | 'failed';
 
@@ -157,6 +158,11 @@ export function sendFailureReason(err: unknown): string {
     if (/No channel key|Channel key for epoch/.test(msg)) return "This channel's key hasn't arrived yet";
     if (isStaleEpochError(err)) return "This channel's newest key hasn't arrived yet";
     if (isBacklogFullError(err)) return BACKLOG_FULL_REASON;
+    if (isSlowmodeError(err)) {
+        const ms = slowmodeRetryMs(err);
+        return ms ? `Slowmode: wait ${formatCountdown(ms)}` : 'Slowmode is on in this channel';
+    }
+    if (isAgeGateError(err)) return 'Confirm you are 18 or older to use this channel';
     if (status === 429) return 'Sending too fast';
     if (status === 403) return "You don't have permission to send here";
     if (status === 413) return 'Message too large';

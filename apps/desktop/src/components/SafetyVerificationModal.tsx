@@ -181,7 +181,7 @@ const OwnCoverage: React.FC<{
         ? verdict.unconfirmed
         : verdict.kind === 'own_key_changed' ? verdict.changed : [];
     const answerIds = new Set(needsAnswer.map(d => d.device_id));
-    const danger = { background: 'var(--cl-flash-tint)', border: '1px solid var(--cl-flash)', color: 'var(--cl-flash)' };
+    const danger = { background: 'var(--cl-flash-tint)', border: '1px solid var(--cl-flash)', color: 'var(--cl-flash-text)' };
 
     return (
         <div className="flex flex-col gap-1.5" data-testid="own-coverage" data-verdict={verdict.kind}>
@@ -776,8 +776,8 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                             : 'Copy your code'
                                         }
                                     >
-                                        {copyState === 'ok'   ? <Check size={16} className="text-cl-ok" />
-                                         : copyState === 'fail' ? <X size={16} style={{ color: 'var(--cl-flash)' }} />
+                                        {copyState === 'ok'   ? <Check size={16} className="text-cl-ok-text" />
+                                         : copyState === 'fail' ? <X size={16} style={{ color: 'var(--cl-flash-text)' }} />
                                          : <Copy size={16} />}
                                     </ClButton>
                                 </div>
@@ -795,7 +795,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                 states the failure in the flow, and names the manual
                                 recovery (the code above is selectable text). */}
                             {copyState === 'fail' && (
-                                <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
+                                <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash-text)' }} role="alert">
                                     Could not write to the clipboard. Select the code above and copy it manually.
                                 </span>
                             )}
@@ -821,7 +821,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                             : <><Send size={14} className="ico" /> Send my code to {remoteUsername}</>}
                                     </ClButton>
                                     {sendState === 'error' && (
-                                        <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
+                                        <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash-text)' }} role="alert">
                                             Could not send. Check your connection and try again.
                                         </span>
                                     )}
@@ -880,7 +880,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         aria-expanded={infoOpen}
                         aria-label="What is this?"
                         title="What is this?"
-                        className="inline-flex items-center justify-center rounded-full text-cl-faint hover:text-cl-lume transition-colors"
+                        className="inline-flex items-center justify-center rounded-full text-cl-faint hover:text-cl-lume-text transition-colors"
                         style={{ background: 'none', border: 0, padding: 2, cursor: 'pointer', color: infoOpen ? 'var(--cl-lume)' : undefined }}
                     >
                         <Info size={15} />
@@ -930,7 +930,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
             {infoOpen && (
                 <div
                     className="w-full rounded-xl px-3.5 py-3 text-[12.5px] leading-relaxed text-cl-muted flex flex-col gap-1.5"
-                    style={{ background: 'var(--cl-lume-tint)', border: '1px solid rgba(37,224,200,0.22)' }}
+                    style={{ background: 'var(--cl-lume-tint)', border: '1px solid rgb(var(--cl-lume-rgb) / 0.22)' }}
                     data-testid="verify-info"
                 >
                     <strong className="text-cl-text text-[13px]">What's a verification code?</strong>
@@ -956,7 +956,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 </div>
             ) : error ? (
                 <div className="w-full rounded-xl border border-white/[0.06] bg-black/30 p-5">
-                    <p className="text-center text-cl-danger text-sm m-0">{error}</p>
+                    <p className="text-center text-cl-danger-text text-sm m-0">{error}</p>
                 </div>
             ) : (
                 <>
@@ -1028,13 +1028,13 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                             shield is not green, next to the one action that
                             makes it green. */}
                         {trust.level === 'verified_legacy' && (
-                            <p className="text-[11px] leading-snug m-0" style={{ color: 'var(--cl-lume)' }} role="status">
+                            <p className="text-[11px] leading-snug m-0" style={{ color: 'var(--cl-lume-text)' }} role="status">
                                 You verified {remoteUsername} over a year ago and their devices haven't changed.
                                 Nothing is wrong. Compare codes once more to refresh it.
                             </p>
                         )}
 
-                        <div className="flex items-start gap-1.5" style={{ color: 'var(--cl-glow)' }}>
+                        <div className="flex items-start gap-1.5" style={{ color: 'var(--cl-glow-text)' }}>
                             <AlertTriangle size={13} className="shrink-0 mt-px" />
                             <span className="text-[11.5px] leading-snug">
                                 Get their code <strong>outside Cipherline</strong>: in person, or on a call. A code sent
@@ -1103,8 +1103,8 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                 style={{ background: 'var(--cl-flash-tint)', border: '1px solid var(--cl-flash)' }}
                                 role="alert"
                             >
-                                <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-flash)' }} />
-                                <span className="text-xs leading-snug" style={{ color: 'var(--cl-flash)' }}>
+                                <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-flash-text)' }} />
+                                <span className="text-xs leading-snug" style={{ color: 'var(--cl-flash-text)' }}>
                                     <strong>These do not match.</strong> The keys this app was given for {remoteUsername}
                                     {' '}are not the keys they are looking at. Nothing has been marked verified. Check you
                                     copied the whole code — and if it still fails, do not send anything sensitive and
@@ -1201,19 +1201,19 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                                 {shortDeviceLabel(d.device_id)}
                                             </span>
                                             {d.state === 'verified' && !d.legacy && (
-                                                <span className="cl-verify-badge text-xs text-cl-ok"><VerifyCheck />Verified</span>
+                                                <span className="cl-verify-badge text-xs text-cl-ok-text"><VerifyCheck />Verified</span>
                                             )}
                                             {d.state === 'verified' && d.legacy && (
-                                                <span className="text-xs" style={{ color: 'var(--cl-lume)' }}>Verified (older check)</span>
+                                                <span className="text-xs" style={{ color: 'var(--cl-lume-text)' }}>Verified (older check)</span>
                                             )}
-                                            {d.state === 'key_changed' && <span className="text-xs text-cl-danger">Key changed</span>}
+                                            {d.state === 'key_changed' && <span className="text-xs text-cl-danger-text">Key changed</span>}
                                             {d.state === 'unverified' && <span className="text-xs text-cl-muted">Not verified</span>}
                                         </button>
 
                                         {open && (
                                             <div className="mt-3">
                                                 {d.state === 'key_changed' && (
-                                                    <p className="text-cl-danger text-xs leading-relaxed mb-3">
+                                                    <p className="text-cl-danger-text text-xs leading-relaxed mb-3">
                                                         This device's identity key changed since you last verified it. This could mean
                                                         {' '}{remoteUsername} reinstalled Cipherline on this device, or someone is
                                                         intercepting your messages. Compare the new number out of band before continuing.
@@ -1227,9 +1227,9 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                                                     key={gi}
                                                                     className={`font-mono text-sm px-1.5 py-0.5 rounded transition-colors duration-700 ${
                                                                         d.state === 'key_changed'
-                                                                            ? 'text-cl-danger bg-cl-danger/10'
+                                                                            ? 'text-cl-danger-text bg-cl-danger/10'
                                                                             : d.state === 'verified' && !d.legacy
-                                                                            ? 'text-cl-ok bg-cl-ok/5'
+                                                                            ? 'text-cl-ok-text bg-cl-ok/5'
                                                                             : 'text-cl-text'
                                                                     }`}
                                                                 >

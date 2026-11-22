@@ -1,5 +1,7 @@
+import type { StickerPayload } from './stickers';
 import type { KlipyGifMedia } from './klipy';
 import type { CardStyle } from './card-style';
+import type { ImportedFrom } from './import-history';
 
 /**
  * Embedded mention tokens stored in message text (encrypted):
@@ -150,9 +152,21 @@ export function isMessageSize(v: unknown): v is MessageSize {
  * the result; an unknown version, an oversize object (> CARD_STYLE_MAX_BYTES)
  * or a malformed one renders plain. A client that predates it (desktop
  * <= 0.1.1, mobile) ignores the field and shows the message plain.
+ *
+ * `imported_from` (additive, optional; 2026-11-21) names the ORIGINAL author
+ * of a message imported from another app (import-history.ts). A reader honours
+ * it only on a row the server marked as posted by an import session, with a
+ * matching `author_ref` (`verifiedImportedFrom`); anywhere else it is ignored
+ * and the row shows its real sender. An older client ignores the field and
+ * shows the importer as the author, which is safe (never a wrong real person).
+ *
+ * `sticker` (additive, optional; 2026-11-22) makes the message a STICKER: the
+ * reader draws the sticker image large and ignores `text`, which holds the
+ * fallback `[Sticker: <name>]` (stickerFallbackText) that a client predating
+ * stickers shows instead. Full contract and validation: stickers.ts.
  */
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle; imported_from?: ImportedFrom; sticker?: StickerPayload }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -173,6 +187,8 @@ export type ClientContent =
          * an older reader ignores it.
          */
         content_sha256_b64?: string;
+        /** Imported history only (import-history.ts): the original author. */
+        imported_from?: ImportedFrom;
     }
     | {
         client_msg_id?: string;

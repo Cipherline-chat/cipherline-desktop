@@ -117,7 +117,7 @@ const ApproveForm: React.FC<{
             }}
         >
             <div className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--cl-text)' }}>
-                <Smartphone size={15} style={{ color: 'var(--cl-lume)' }} />
+                <Smartphone size={15} style={{ color: 'var(--cl-lume-text)' }} />
                 <span data-testid="phone-link-joined">
                     A {platformName(joined.platform)} that says it is <b>{joined.deviceLabel}</b> wants to sign in.
                 </span>
@@ -198,7 +198,7 @@ export const PhoneLinkPanel: React.FC = () => {
 
                 {phase === 'starting' && (
                     <div className="flex items-center gap-2.5 py-2">
-                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume)' }} />
+                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume-text)' }} />
                         <span className="text-[13px]" style={{ color: 'var(--cl-faint)' }}>Preparing your code…</span>
                     </div>
                 )}
@@ -233,7 +233,7 @@ export const PhoneLinkPanel: React.FC = () => {
 
                 {phase === 'granted' && (
                     <div className="flex items-center gap-2.5 py-2" role="status" aria-live="polite">
-                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume)' }} />
+                        <Loader2 className="animate-spin" size={18} style={{ color: 'var(--cl-lume-text)' }} />
                         <span className="text-[13px]" style={{ color: 'var(--cl-text)' }}>Approved — finish on your phone. It will confirm which account it is joining.</span>
                     </div>
                 )}
@@ -241,7 +241,7 @@ export const PhoneLinkPanel: React.FC = () => {
                 {phase === 'done' && (
                     <div className="flex flex-col items-start gap-2.5 py-1">
                         <div className="flex items-center gap-2">
-                            <CheckCircle2 size={16} style={{ color: 'var(--cl-lume)' }} />
+                            <CheckCircle2 size={16} style={{ color: 'var(--cl-lume-text)' }} />
                             <span className="text-[13px] font-medium" style={{ color: 'var(--cl-text)' }} data-testid="phone-link-done">
                                 Your phone is signed in. It appears in the device list above.
                             </span>
@@ -254,7 +254,7 @@ export const PhoneLinkPanel: React.FC = () => {
                     <div className="flex flex-col items-start gap-2.5 py-1">
                         <div className="flex items-center gap-2">
                             {phase === 'denied'
-                                ? <XIcon size={16} style={{ color: 'var(--cl-flash)' }} />
+                                ? <XIcon size={16} style={{ color: 'var(--cl-flash-text)' }} />
                                 : <AlertTriangle size={16} style={{ color: phase === 'error' ? 'var(--cl-flash)' : 'var(--cl-faint)' }} />}
                             <span className="text-[13px] font-medium" style={{ color: 'var(--cl-text)' }} role="status">
                                 {phase === 'expired' ? 'This code expired'

@@ -26,7 +26,7 @@ describe('HomeStatusDot', () => {
     });
 
     it('keeps the status colour on the phone (DND = red phone)', () => {
-        expect(html(h(HomeStatusDot, { status: 'dnd', onMobile: true }))).toContain('#FF6B5E');
+        expect(html(h(HomeStatusDot, { status: 'dnd', onMobile: true }))).toContain('var(--cl-dnd-dot)');
     });
 
     it('positive control: without the bit it is the ordinary deck dot, in the status colour', () => {

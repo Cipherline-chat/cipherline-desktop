@@ -41,7 +41,7 @@ function mount(value: number, onChange: (v: number) => void) {
     el.getBoundingClientRect = () => ({ left: 0, right: W, top: 0, bottom: 30, width: W, height: 30, x: 0, y: 0, toJSON() { /* noop */ } });
     return el;
 }
-const readout = () => host.querySelector('.text-cl-lume')!.textContent;
+const readout = () => host.querySelector('.text-cl-lume-text')!.textContent;
 const bubble = () => host.querySelector('.sbub')!.textContent;
 
 describe('formatPerUserVolume', () => {

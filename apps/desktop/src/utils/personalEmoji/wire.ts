@@ -21,6 +21,7 @@ import {
     validateWirePayload, type PersonalEmojiWire,
 } from './token';
 import type { PutMeta } from './store';
+import { attachStickerBytes } from '../stickers/wire';
 
 /** The slice of the store this module needs (the real one is `personalEmojis().store`). */
 export interface EmojiBytesStore {
@@ -55,9 +56,10 @@ export async function attachPersonalEmojis<T>(content: T, store: EmojiBytesStore
     return { ...(content as AnyContent), personal_emojis: payload } as T;
 }
 
-/** JSON for the wire: the content plus its emoji payload. */
+/** JSON for the wire: the content plus its emoji payload, and a personal
+ *  sticker's bytes (utils/stickers/wire.ts; same store, same moment). */
 export async function serializeForSend(content: unknown, store: EmojiBytesStore): Promise<string> {
-    return JSON.stringify(await attachPersonalEmojis(content, store));
+    return JSON.stringify(await attachStickerBytes(await attachPersonalEmojis(content, store), store));
 }
 
 export interface TakeResult<T> {

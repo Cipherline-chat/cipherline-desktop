@@ -61,6 +61,15 @@ const PermissionBits = {
     // (the `mentions_everyone` pattern), and readers render a card only on a
     // row whose flag the server accepted. DMs and groups need no permission.
     STYLE_MESSAGES:       1n << 14n,
+    // IMPORT_HISTORY — run a message-history import into this server (the
+    // Discord importer, docs/plans/discord-import.md B4.3): open an import
+    // session and post its batches, whose rows may show an imported author's
+    // name. Server-wide, checked with requireServerPermission. OFF for
+    // @everyone and never backfilled: nobody has it until a server grants it;
+    // the owner and ADMINISTRATOR hold it implicitly. It does NOT imply
+    // MANAGE_MESSAGES (pinning the imported pins needs that too). Bit 15 was
+    // the last free slot below 32.
+    IMPORT_HISTORY:       1n << 15n,
 
     // Per-channel (bits 16–23) — resolved against ChannelOverride allow/deny
     VIEW_CHANNEL:         1n << 16n,

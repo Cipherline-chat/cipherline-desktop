@@ -47,4 +47,20 @@ describe('HydrationProvider post-boot bump', () => {
         act(() => { vi.advanceTimersByTime(2_500); });
         expect(latest!.generation).toBe(1);
     });
+
+    it('a cache-opened gate does NOT start the retry pass: only the network loads end the burst', () => {
+        vi.useFakeTimers();
+        mount();
+        act(() => {
+            latest!.markSettled('conversations', 'cache');
+            latest!.markSettled('friends', 'cache');
+            latest!.markSettled('servers', 'cache');
+        });
+        expect(latest!.ready).toBe(true);             // the app opens at once from the cache
+        act(() => { vi.advanceTimersByTime(10_000); });
+        expect(latest!.generation).toBe(0);           // but no retry pass yet: the burst is still running
+        act(() => { latest!.markSettled('conversations'); latest!.markSettled('friends'); latest!.markSettled('servers'); });
+        act(() => { vi.advanceTimersByTime(2_500); });
+        expect(latest!.generation).toBe(1);           // one pass after the real loads
+    });
 });

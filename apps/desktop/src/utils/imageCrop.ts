@@ -188,9 +188,49 @@ export function cropSourceRect(
     };
 }
 
+/** True when any pixel in an RGBA buffer is not fully opaque. */
+export function hasTransparentPixel(rgba: ArrayLike<number>): boolean {
+    for (let i = 3; i < rgba.length; i += 4) {
+        if (rgba[i] < 255) return true;
+    }
+    return false;
+}
+
+/**
+ * The format a still crop is encoded in. JPEG (smaller) unless the caller asked
+ * to keep transparency AND the cropped region really has some: then PNG, so a
+ * logo with a see-through background is not flattened onto white. PNG rather
+ * than WebP because callers read `image/webp` as "may be animated".
+ */
+export function croppedStillType(keepTransparency: boolean, transparent: boolean): 'image/png' | 'image/jpeg' {
+    return keepTransparency && transparent ? 'image/png' : 'image/jpeg';
+}
+
+/** The MIME to upload a cropped image under: the blob's own when it is one the
+ *  cropper produces (animated WebP, transparent PNG), else JPEG. */
+export function imageUploadType(blob: Blob): 'image/webp' | 'image/png' | 'image/jpeg' {
+    if (blob.type === 'image/webp') return 'image/webp';
+    if (blob.type === 'image/png') return 'image/png';
+    return 'image/jpeg';
+}
+
+/** File extension for {@link imageUploadType}. */
+export function imageUploadExt(mime: 'image/webp' | 'image/png' | 'image/jpeg'): 'webp' | 'png' | 'jpg' {
+    return mime === 'image/webp' ? 'webp' : mime === 'image/png' ? 'png' : 'jpg';
+}
+
+/** Options for {@link renderCroppedBlob}. */
+export interface RenderCropOptions {
+    /** Keep a transparent background (PNG output) instead of flattening onto
+     *  white. Only for surfaces that render on their own background - server
+     *  icons. An opaque pick still comes back as JPEG. */
+    keepTransparency?: boolean;
+}
+
 /**
  * Render the framed region to a JPEG blob at the output preset's exact pixel
- * size. The frame and the output share an aspect ratio by construction (the
+ * size (or a PNG when `keepTransparency` is set and the crop has transparent
+ * pixels). The frame and the output share an aspect ratio by construction (the
  * cropper derives its frame from these dimensions), so this is a straight
  * source-rect blit with no letterboxing.
  *
@@ -203,6 +243,7 @@ export function renderCroppedBlob(
     frameW: number, frameH: number,
     outW: number, outH: number,
     quality = CROP_JPEG_QUALITY,
+    opts: RenderCropOptions = {},
 ): Promise<Blob> {
     return new Promise((resolve, reject) => {
         const rect = cropSourceRect(img.naturalWidth, img.naturalHeight, t, frameW, frameH);
@@ -216,16 +257,30 @@ export function renderCroppedBlob(
         if (!ctx) { reject(new Error('Canvas unavailable')); return; }
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        // Flatten onto white: JPEG has no alpha, and an unpainted canvas would
-        // encode transparent PNG pixels as black.
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, outW, outH);
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+        let type: 'image/png' | 'image/jpeg' = 'image/jpeg';
+        if (opts.keepTransparency) {
+            // Draw onto the clear canvas first and look at the result: only a
+            // crop that really has see-through pixels is kept as PNG.
+            ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+            let transparent = false;
+            try {
+                transparent = hasTransparentPixel(ctx.getImageData(0, 0, outW, outH).data);
+            } catch { /* unreadable canvas: fall back to the JPEG path */ }
+            type = croppedStillType(true, transparent);
+            if (type === 'image/jpeg') ctx.clearRect(0, 0, outW, outH);
+        }
+        if (type === 'image/jpeg') {
+            // Flatten onto white: JPEG has no alpha, and an unpainted canvas would
+            // encode transparent PNG pixels as black.
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, outW, outH);
+            ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+        }
 
         canvas.toBlob(
             (blob) => blob ? resolve(blob) : reject(new Error('Failed to encode image')),
-            'image/jpeg',
-            quality,
+            type,
+            type === 'image/jpeg' ? quality : undefined,
         );
     });
 }

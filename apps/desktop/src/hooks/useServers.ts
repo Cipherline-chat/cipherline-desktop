@@ -2,6 +2,7 @@ import { shareInflight } from '../utils/inflightShare';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { takeBootFetch } from '../utils/bootFetch';
 import { apiUrl } from '../utils/apiPath';
 import { secureLocalStore } from '../utils/secureLocalStore';
 import type { CallNamingSettings, CallMediaByUser, DividerStyle } from '@cipherline/shared';
@@ -13,6 +14,7 @@ import { removeParticipantFromCall, addSpawnedCall } from '../utils/joinView';
 import { keepGuestCallInSnapshot, mergeGuestCallRoster, dropGuestCall, type GuestCallRef } from '../utils/guestCallRoster';
 import { leaveRequestBody } from '../utils/endCallOnLeave';
 import type { DiscordTemplatePreview, DiscordTemplateImportRequest } from '../utils/discordTemplate';
+import type { GuildImportRequest, GuildPreview } from '../utils/discordImport/types';
 
 /**
  * Local cache for the server list and each server's channels/categories.
@@ -99,6 +101,16 @@ export interface ChannelInfo {
      *  Calls channel settings). Server-owned; absent from an older API = off.
      *  Read it through `endsWhenStarterLeaves` (utils/endCallOnLeave). */
     end_call_when_starter_leaves?: boolean;
+    /** Text channels: seconds a member must wait between messages (0 / absent =
+     *  off). Server-enforced; this is for display. Read it through
+     *  `slowmodeSecondsOf` (utils/channelModeration). */
+    slowmode_seconds?: number;
+    /** Text channels: age-restricted (NSFW). The API refuses the channel's
+     *  history until the account confirmed 18+. */
+    age_restricted?: boolean;
+    /** Present on an age-restricted channel: has THIS account confirmed 18+?
+     *  Read it through `isChannelAgeGated`. */
+    age_gate_confirmed?: boolean;
     /** Resolved effective permissions for the current user in this channel.
      *  Serialised as a decimal BigInt string by the API — parse with BigInt(ch.my_permissions).
      *  Present only for server channels; undefined for locally-constructed channel objects. */
@@ -219,9 +231,10 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         setLoading(true);
         setServersError(null);
         try {
-            const res = await axios.get(`${API_BASE}/servers`, {
+            // The first call takes the request started at session restore (utils/bootFetch.ts).
+            const res = await takeBootFetch('servers', token, () => axios.get(`${API_BASE}/servers`, {
                 headers: { Authorization: `Bearer ${token}` },
-            });
+            }));
             const fetched = res.data ?? [];
             setServers(fetched);
             if (userId) {
@@ -615,10 +628,14 @@ export function useServers(token: string | null, userId?: string | null, deviceI
             // (an undone join, a failed connect) sends the body-less leave it
             // always did. Idempotent, so the retry cannot end a call twice.
             const body = leaveRequestBody(opts?.deliberate);
+            // x-device-id makes the leave device-scoped server-side: a leave
+            // is only trusted from the device that joined (or once LiveKit no
+            // longer lists the account), so a late leave from another device
+            // of ours cannot remove the one still in the call.
             const res = await fetchWithRetry(() => axios.post(
                 apiUrl`/huddles/calls/${callId}/leave`,
                 body,
-                { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
+                { headers: huddleJoinHeaders(token, deviceId), timeout: 15000 },
             ), { attempts: 4, baseDelayMs: 1000 });
             // Eagerly remove the call card when the server confirms it was
             // destroyed (last participant left). The WS event will also come
@@ -637,7 +654,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
                 });
             }
         } catch { /* non-fatal */ }
-    }, [token, userId]);
+    }, [token, userId, deviceId]);
 
     /** PATCH a rename. */
     const renameHuddleCall = useCallback(async (callId: string, name: string) => {
@@ -732,6 +749,30 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         return server;
     }, [token, loadServers]);
 
+    /** "Import from Discord" (live guild), step 1: the API maps the snapshot the desktop read with the user's own bot. */
+    const previewDiscordGuild = useCallback(async (guild: Record<string, unknown>): Promise<GuildPreview> => {
+        if (!token) throw new Error('Not signed in');
+        const res = await axios.post(
+            `${API_BASE}/server-templates/discord/preview-guild`,
+            { guild },
+            { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return res.data as GuildPreview;
+    }, [token]);
+
+    /** Step 2: build the NEW server in one server-side transaction. */
+    const importDiscordGuild = useCallback(async (req: GuildImportRequest): Promise<ServerInfo> => {
+        if (!token) throw new Error('Not signed in');
+        const res = await axios.post(
+            `${API_BASE}/server-templates/discord/import-guild`,
+            req,
+            { headers: { Authorization: `Bearer ${token}` } },
+        );
+        const server = res.data as ServerInfo;
+        await loadServers();
+        return server;
+    }, [token, loadServers]);
+
     const joinServer = useCallback(async (code: string): Promise<{ server_id: string } | null> => {
         if (!token) return null;
         try {
@@ -790,6 +831,8 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         createServer,
         previewDiscordTemplate,
         importDiscordTemplate,
+        previewDiscordGuild,
+        importDiscordGuild,
         joinServer,
     };
 }

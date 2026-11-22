@@ -14,6 +14,7 @@ import {
 import type { OnboardingMarker, OnboardingStepId } from '../../utils/onboardingProgress';
 import type { ToastInput } from '../../contexts/ToastContext';
 import { OnboardingFlow } from './OnboardingFlow';
+import { writeToClipboard } from '../../utils/clipboard';
 import type { FriendRequestResult, OnboardingDeps, OnboardingUser } from './types';
 
 export interface OnboardingHostProps {
@@ -99,9 +100,7 @@ export const OnboardingHost: React.FC<OnboardingHostProps> = (p) => {
     }, [joinServerByCode, requestMissingChannelKeys]);
 
     const writeClipboard = useCallback(async (text: string) => {
-        const api = window.electronAPI;
-        if (api?.writeClipboard) await api.writeClipboard(text);
-        else await navigator.clipboard.writeText(text);
+        await writeToClipboard(text);
     }, []);
 
     const deps: OnboardingDeps = useMemo(() => ({

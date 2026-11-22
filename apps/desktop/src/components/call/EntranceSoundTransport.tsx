@@ -8,6 +8,7 @@ import { receivedSounds } from '../../utils/customEntranceSound/receivedCache';
 import { EntranceSoundReceiver } from '../../utils/customEntranceSound/receiver';
 import { EntranceSendPlanner } from '../../utils/customEntranceSound/sendPlanner';
 import { ENTRANCE_SOUND_TOPIC, deriveEntranceKey, sealSound } from '../../utils/customEntranceSound/wire';
+import { isShareAudioHelperIdentity } from '../../utils/shareAudioHelper';
 import { decodeSound } from '../../utils/customEntranceSound/browser';
 
 /** Coalesce a burst of joins into one send. */
@@ -92,7 +93,7 @@ export function EntranceSoundTransport({ keyB64 }: { keyB64: string }): null {
             const self = room.localParticipant.identity;
             // Read at send time, not from the last render: what your profile says NOW.
             const id = self ? customContentId(getCallPersonalization(self).entrance_sound) : null;
-            const peers = [...room.remoteParticipants.values()].map(p => p.identity);
+            const peers = [...room.remoteParticipants.values()].map(p => p.identity).filter(id => !isShareAudioHelperIdentity(id));
             if (!id || !self || peers.length === 0) return;
             const store = ownEntranceSound();
             if (store.current()?.id !== id) return; // this device does not hold the sound you chose

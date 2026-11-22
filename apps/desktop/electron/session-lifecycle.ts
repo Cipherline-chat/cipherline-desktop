@@ -54,7 +54,7 @@
  */
 import {
     clearSessionMarker, crashFromChildGone, crashFromMainError, crashFromRenderGone, crashFromRendererReport,
-    isOsSessionEndExit, isTransientNetError, rotateSessionMarker, writeSessionMarker, type CrashInfoLike, type MarkerFs,
+    isOsSessionEndExit, isRestartableUtilityGone, isTransientNetError, rotateSessionMarker, writeSessionMarker, type CrashInfoLike, type MarkerFs,
 } from './diagnostics';
 import type { Scrubber } from './diagnostics-scrub';
 
@@ -79,7 +79,9 @@ export interface CrashContext {
  *   quitting → never;
  *   process-gone events → only Electron's abnormal reasons (CRASH_REASONS:
  *     crashed / oom / launch-failed / integrity-failure / abnormal-exit —
- *     never clean-exit, killed or memory-eviction), and never the Windows
+ *     never clean-exit, killed or memory-eviction), and never a
+ *     restartable Utility service (UtilWin / data decoder / proxy resolver:
+ *     logged only), and never the Windows
  *     "user is logging off" exit code (STATUS_DLL_INIT_FAILED_LOGOFF), which
  *     can reach main BEFORE the window's session-end does;
  *   main exceptions → always (while running), except a bare Chromium
@@ -94,6 +96,8 @@ export function crashRecordFor(event: CrashEvent, quitting: boolean, ctx: CrashC
             return crashFromRenderGone(event.details, ctx.now, ctx.appVersion);
         case 'child-process-gone':
             if (isOsSessionEndExit(event.details)) return null;
+            // A Utility service Chromium restarts on demand (UtilWin...) is a log line, not a prompt.
+            if (isRestartableUtilityGone(event.details)) return null;
             return crashFromChildGone(event.details, ctx.now, ctx.appVersion);
         case 'main-exception':
             if (event.origin === 'unhandledRejection' && isTransientNetError(event.thrown)) return null;

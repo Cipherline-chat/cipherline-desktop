@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     UserCircle, Sparkles, Monitor, Laptop, Volume2, Bell, Keyboard, Gamepad2,
-    Shield, HardDrive, CreditCard, FlaskConical, AlertTriangle, Search,
+    Shield, HardDrive, CreditCard, FlaskConical, AlertTriangle, Search, Accessibility,
     type LucideIcon,
 } from 'lucide-react';
 import { ClInput } from '../cl';
@@ -44,6 +44,7 @@ export const ZONES: ZoneDef[] = [
             // Connections + Personalize, merged (owner, 2026-10-28). Old ids alias here: paneAliases.ts.
             { id: 'activityStyle', label: 'Activity & Style', Icon: Sparkles },
             { id: 'appearance',    label: 'Appearance',       Icon: Monitor },
+            { id: 'accessibility', label: 'Accessibility',    Icon: Accessibility },
         ],
     },
     {

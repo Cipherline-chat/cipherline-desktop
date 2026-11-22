@@ -201,7 +201,7 @@ export async function recoverChannelMentions<E extends PendingChannelEvent>(
  * keywords, which this path used to ignore).
  */
 export function scanReconcilePage(
-    rows: ReadonlyArray<{ id: string; sender_user_id?: string | null; content?: unknown }>,
+    rows: ReadonlyArray<{ id: string; sender_user_id?: string | null; content?: unknown; import_mark?: unknown }>,
     ctx: {
         userId: string | null | undefined;
         myRoleIds: ReadonlySet<string>;
@@ -211,6 +211,9 @@ export function scanReconcilePage(
 ): { mentionHits: number; missingEpochs: number[] } {
     let mentionHits = 0;
     for (const m of rows) {
+        // Imported history is never a ping: its role mentions / keywords are copies
+        // of old Discord text, and the server marks every row an import posted.
+        if (m.import_mark) continue;
         const decision = decideChannelMessage({
             content: m.content as { type?: string; text?: string } | null | undefined,
             senderUserId: m.sender_user_id,

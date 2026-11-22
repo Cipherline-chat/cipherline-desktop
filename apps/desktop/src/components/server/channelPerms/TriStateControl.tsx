@@ -26,7 +26,7 @@ const META: Record<Tri, { word: string; icon: React.ReactNode; iconSm: React.Rea
         word: 'Deny',
         icon: <X size={13} strokeWidth={2.6} />,
         iconSm: <X size={11} strokeWidth={2.6} />,
-        on: 'bg-cl-flash/20 text-cl-flash shadow-[inset_0_0_0_1px_rgba(255,107,94,0.55)]',
+        on: 'bg-cl-flash/20 text-cl-flash-text shadow-[inset_0_0_0_1px_rgba(255,107,94,0.55)]',
     },
     inherit: {
         word: 'Inherit',
@@ -38,7 +38,7 @@ const META: Record<Tri, { word: string; icon: React.ReactNode; iconSm: React.Rea
         word: 'Allow',
         icon: <Check size={13} strokeWidth={2.6} />,
         iconSm: <Check size={11} strokeWidth={2.6} />,
-        on: 'bg-cl-lume/20 text-cl-lume shadow-[inset_0_0_0_1px_rgba(37,224,200,0.55)]',
+        on: 'bg-cl-lume/20 text-cl-lume-text shadow-[inset_0_0_0_1px_rgba(37,224,200,0.55)]',
     },
 };
 

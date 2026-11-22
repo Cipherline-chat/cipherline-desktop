@@ -71,7 +71,11 @@ function clamp(value, min, max) {
 // scripts/verify-mic-loudness-browser.mjs), UNDER this dead band (-13.5 .. -10), so the
 // listener adds up to +6 dB and everyone is heard near -13.5. A sender on an older build
 // lands about -18 to -20.6 and gets the same lift.
-export const RX_TARGET_DB = -11; // was -17. 2026-11-10 (owner: louder at the listener): the old -14 only matched the new sender level, so the listener left it alone and the net gain was ~0; the sender chain tops out near -15 on the wire, so the listener lifts to the bottom of this band (-13.5) with up to +6 dB
+// 2026-11-21 (owner: "people are too loud", call reports 8fb59469 / 245dd270): the cl-audio engine puts every talker at
+// about -18..-19 on the wire, peaks 1 dB under full scale, so the -11 target below pinned the listener at its +6 dB
+// maximum for everyone (rx_gain_db=6 in every window of 245dd270): speech near -12 with its peaks on the master
+// limiter, and the room between words +6 too. -15 leaves that sender about +1.5 dB.
+export const RX_TARGET_DB = -15; // was -11 (2026-11-10), -17 before that. 2026-11-10 (owner: louder at the listener): the old -14 only matched the new sender level, so the listener left it alone and the net gain was ~0; the sender chain tops out near -15 on the wire, so the listener lifts to the bottom of this band (-13.5) with up to +6 dB
 export const RX_DEADBAND_DB = 2.5;
 // A talker over the target is cut back to within this much of it: loud is the
 // worse error, so a listener lets very little sit above the target.

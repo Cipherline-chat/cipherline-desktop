@@ -35,14 +35,17 @@ describe('share start wiring (SidebarConference)', () => {
         const s = body('startScreenShareFrom');
         const pub = s.indexOf('await publishScreenShareSettled(localParticipant, {');
         const done = s.indexOf('onPublished();');
-        const audio = s.indexOf('startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle)', done);
+        const audio = s.indexOf('startNativeWindowAudio(nativeMode, audioSourceId, options.appAudio?.handle)', done);
         expect(pub).toBeGreaterThan(0);
         expect(done).toBeGreaterThan(pub);
         expect(audio).toBeGreaterThan(done);
     });
     it('a capture/publish error goes to the share notice, not only the console', () => {
         const s = body('startScreenShareFrom');
-        expect(s).toMatch(/\} catch \(err\) \{\s*pendingScreenShareRef\.current = null;\s*return reportShareStartError\(err\);/);
+        // (a Windows WINDOW whose ordinary capture failed first walks the fallback ladder - windowShareFallback.ts -
+        //  which ends in reportShareStartError or its own warn notice; never silent)
+        expect(s).toMatch(/\} catch \(err\) \{\s*pendingScreenShareRef\.current = null;\s*if \(!\(fallbackEligible && defaultCapturePath\)\) return reportShareStartError\(err\);/);
+        expect(s).toContain("if (r.kind === 'give_up') return { ok: false, outcome: reportShareStartError(r.err) };");
         expect(body('reportShareStartError')).toContain("setScreenShareNotice({ tone: 'warn', text: view.text });");
     });
     it('the share ceiling feeds the start bitrate before publishing', () => {

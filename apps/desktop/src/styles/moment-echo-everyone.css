@@ -1,7 +1,7 @@
 /* "@everyone… everyone… one…" — components/moments/views/EchoEveryoneMoment.tsx.
    transform/opacity only. Phases: notice 0–0.5, main 0.5–4.2, read 4.2–6.8,
    then it holds its settled frame until dismissed (the Invite button stays). */
-.mo-echo .mo-echo-word { position: absolute; left: 0; top: 0; color: var(--cl-glow, #FFC94D); }
+.mo-echo .mo-echo-word { position: absolute; left: 0; top: 0; color: var(--cl-glow, var(--cl-glow-text)); }
 .mo-echo-w1 { font-size: 58px; --x: -50%; --y: -230px; animation: mo-echo-call 1.9s ease-out .5s both; }
 .mo-echo-w2 { font-size: 40px; --x: 0%;   --y: -160px; animation: mo-echo-call 1.8s ease-out 1.25s both; }
 .mo-echo-w3 { font-size: 28px; --x: 140%; --y: -112px; animation: mo-echo-call 1.7s ease-out 2s both; }

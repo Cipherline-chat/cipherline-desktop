@@ -39,7 +39,7 @@ describe('Server Settings → Members: Roles', () => {
         expect(tab).toMatch(/rolePicker\.open\(\{\s*serverId: server\.server_id,\s*userId: m\.user_id,/);
     });
     it('shows the member\'s role chips, optimistic via useMemberRoleIds', () => {
-        expect(tab).toContain('<MemberRoleChipRow serverId={server.server_id} userId={m.user_id} />');
+        expect(tab).toContain('<MemberRoleChipRow serverId={server.server_id} userId={m.user_id} token={token} />');
         const row = readFileSync(resolve(__dirname, 'MemberRoleChipRow.tsx'), 'utf8');
         expect(row).toContain('useMemberRoleIds(serverId, userId)');
     });

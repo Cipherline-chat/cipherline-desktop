@@ -14,7 +14,7 @@
 .mo-hundred-panel {
   position: absolute; left: -108px; top: -56px; width: 216px; height: 112px;
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  background: var(--cl-deep, #131A30); border: 1px solid var(--cl-border, #2A3558); border-radius: 22px;
+  background: var(--cl-deep, var(--cl-deep)); border: 1px solid var(--cl-border, var(--cl-border)); border-radius: 22px;
   animation: mo-hundred-in .45s cubic-bezier(.2, .8, .3, 1.15) .1s both;
 }
 @keyframes mo-hundred-in { from { transform: scale(.8); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -22,9 +22,9 @@
 .mo-hundred-strip { display: flex; flex-direction: column; }
 .mo-hundred-strip span {
   flex: 0 0 84px; height: 84px; display: block; text-align: center; line-height: 84px;
-  font: 600 66px/84px var(--cl-font-display, 'Fredoka', sans-serif); color: var(--cl-lume, #25E0C8);
+  font: 600 66px/84px var(--cl-font-display, 'Fredoka', sans-serif); color: var(--cl-lume, var(--cl-lume-text));
 }
-.mo-hundred-strip .mo-hundred-gold { color: var(--cl-glow, #FFC94D); }
+.mo-hundred-strip .mo-hundred-gold { color: var(--cl-glow, var(--cl-glow-text)); }
 /* 097 → 098 → 099 → 100. The ones column ticks three times; on the last tick
    the tens and hundreds roll over with it. */
 .mo-hundred-o { animation: mo-hundred-ones 1.8s cubic-bezier(.3, 0, .2, 1) .7s both; }
@@ -38,7 +38,7 @@
 @keyframes mo-hundred-roll { from { transform: translateY(0); } to { transform: translateY(-84px); } }
 .mo-hundred-ring {
   position: absolute; left: -60px; top: -60px; width: 120px; height: 120px; border-radius: 50%;
-  border: 3px solid var(--cl-glow, #FFC94D); opacity: 0;
+  border: 3px solid var(--cl-glow, var(--cl-glow)); opacity: 0;
   animation: mo-hundred-ring .9s ease-out 2.3s both;
 }
 @keyframes mo-hundred-ring { 0% { transform: scale(.7); opacity: 0; } 20% { opacity: .9; } 100% { transform: scale(2.3); opacity: 0; } }

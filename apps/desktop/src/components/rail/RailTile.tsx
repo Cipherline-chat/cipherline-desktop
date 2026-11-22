@@ -29,7 +29,8 @@ export const RailTile: React.FC<{
      *  the rail's off-screen ping arrows can find this tile. */
     railId?: string;
 }> = ({ icon, label, title, active, accent, badge, onClick, onContextMenu, onKeyDown, 'aria-haspopup': ariaHasPopup, railId }) => {
-    const restColor = active ? 'var(--cl-lume)' : accent ? 'var(--cl-lume)' : 'var(--cl-muted)';
+    // lume-text, not lume: equal in Dark, the readable teal on Light's mint pill and white deck.
+    const restColor = active || accent ? 'var(--cl-lume-text)' : 'var(--cl-muted)';
     return (
         <button
             onClick={onClick}
@@ -49,7 +50,7 @@ export const RailTile: React.FC<{
             onMouseEnter={(e) => {
                 if (!active) {
                     e.currentTarget.style.color = 'var(--cl-text)';
-                    e.currentTarget.style.background = 'rgba(255,255,255,.06)';
+                    e.currentTarget.style.background = 'rgb(var(--cl-bright-rgb) / .06)';
                 }
             }}
             onMouseLeave={(e) => {

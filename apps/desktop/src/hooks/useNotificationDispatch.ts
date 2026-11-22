@@ -84,6 +84,8 @@ export interface NotifyPayload {
      * badge of its own).
      */
     decision?: NotifDecision;
+    /** Body shown under the 'hidden' preview setting; default 'New message'. */
+    hidden_text?: string;
 }
 
 export interface NotificationDispatchOptions {
@@ -186,7 +188,7 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
                     break;
                 default: // 'hidden'
                     title = 'Cipherline';
-                    body  = 'New message';
+                    body  = payload.hidden_text ?? 'New message';
                     break;
             }
             const id = `notif_${payload.conv_id}`;  // stable per-conv → replaces previous toast

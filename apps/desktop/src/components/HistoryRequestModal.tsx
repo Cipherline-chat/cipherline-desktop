@@ -362,8 +362,8 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
                 <div className="flex items-start gap-4 mb-5">
                     <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
                         refused
-                            ? 'bg-cl-glow/10 border border-cl-glow/25 text-cl-glow'
-                            : 'bg-cl-lume/10 border border-cl-lume/20 text-cl-lume'
+                            ? 'bg-cl-glow/10 border border-cl-glow/25 text-cl-glow-text'
+                            : 'bg-cl-lume/10 border border-cl-lume/20 text-cl-lume-text'
                     }`}>
                         {verdict === 'checking' ? <Loader2 size={20} className="animate-spin" /> : <AlertTriangle size={20} />}
                     </div>
@@ -432,7 +432,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
         >
             {/* Header */}
             <div className="flex items-start gap-4 mb-5">
-                <div className="w-12 h-12 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center shrink-0 text-cl-lume">
+                <div className="w-12 h-12 rounded-2xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center shrink-0 text-cl-lume-text">
                     {platformIcon(request.platform)}
                 </div>
                 <div className="flex-1 min-w-0">
@@ -455,7 +455,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
                         `recentTransfers.ts`). Otherwise it renders NOTHING — not a
                         hedged version of the claim, nothing. */}
                     {shouldShowQrAuthorisedLine(request) && (
-                        <p className="text-xs text-cl-lume flex items-center gap-1 mt-1.5 mb-0">
+                        <p className="text-xs text-cl-lume-text flex items-center gap-1 mt-1.5 mb-0">
                             <QrCode size={12} /> Authorised by a code scanned on this device
                         </p>
                     )}
@@ -491,7 +491,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
                                     cursor: working ? 'not-allowed' : 'pointer',
                                     border: `1px solid ${isSelected ? 'var(--cl-lume)' : 'var(--cl-border)'}`,
                                     background: isSelected ? 'rgba(37,224,200,.12)' : 'var(--cl-sink)',
-                                    color: isSelected ? 'var(--cl-lume)' : 'var(--cl-text)',
+                                    color: isSelected ? 'var(--cl-lume-text)' : 'var(--cl-text)',
                                     transition: 'all .15s',
                                 }}
                             >
@@ -545,14 +545,14 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             {status && (
                 <div
                     role="status"
-                    className="text-cl-lume bg-cl-lume/[0.08] border border-cl-lume/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-center gap-2"
+                    className="text-cl-lume-text bg-cl-lume/[0.08] border border-cl-lume/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-center gap-2"
                 >
                     {sent
                         ? <CheckCircle2 size={14} className="shrink-0" />
                         : <Loader2 size={14} className="animate-spin shrink-0" />}
                     <span className="flex-1">{status}</span>
                     {progress && progress.total > 0 && (
-                        <span className="text-[11px] text-cl-lume/70 tabular-nums">
+                        <span className="text-[11px] text-cl-lume-text/70 tabular-nums">
                             {progress.done}/{progress.total} · {formatBytes(progress.bytes)}
                         </span>
                     )}
@@ -560,7 +560,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             )}
 
             {error && (
-                <div className="text-cl-flash bg-cl-flash/10 border border-cl-flash/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-start gap-2">
+                <div className="text-cl-flash-text bg-cl-flash/10 border border-cl-flash/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-start gap-2">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                     <span>{error}</span>
                 </div>

@@ -6,6 +6,7 @@
  * logic, restyled. Status copy unchanged.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../../utils/a11y/motionPrefs';
 import axios from 'axios';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -59,7 +60,7 @@ function openReceipt(url: string): void {
 
 /** Confetti for the one ceremony button. Escalates nowhere — upgrading is the payoff. */
 function celebrate(host: HTMLElement) {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (celebrationReducedNow()) return;
     const cols = ['#25E0C8', '#FF6B5E', '#FFC94D', '#F4F7FF', '#3BEAD6'];
     const r = host.getBoundingClientRect();
     for (let i = 0; i < 12; i++) {
@@ -265,7 +266,7 @@ export const BillingTab: React.FC = () => {
         return (
             <div className="sd-card">
                 <div className="flex items-start gap-3">
-                    <AlertTriangle size={16} className="text-cl-flash shrink-0 mt-0.5" />
+                    <AlertTriangle size={16} className="text-cl-flash-text shrink-0 mt-0.5" />
                     <div className="flex-1">
                         <p className="text-[13.5px] text-cl-text m-0">{statusError}</p>
                         <p className="text-[12px] text-cl-faint mt-1 mb-3">
@@ -439,12 +440,12 @@ export const BillingTab: React.FC = () => {
                 <div className="mt-3 mb-1">
                     {PRO_PERKS.map(([perk, freeNote]) => (
                         <div key={perk} className="flex items-center gap-2.5 py-1 text-[13px] font-semibold" style={{ color: 'var(--cl-muted)' }}>
-                            <Check size={14} style={{ color: 'var(--cl-lume)', flexShrink: 0 }} />
+                            <Check size={14} style={{ color: 'var(--cl-lume-text)', flexShrink: 0 }} />
                             <span>{perk} {freeNote && <span style={{ color: 'var(--cl-faint)', fontWeight: 600 }}>({freeNote})</span>}</span>
                         </div>
                     ))}
                     <div className="flex items-center gap-2.5 py-1 text-[13px] font-semibold" style={{ color: 'var(--cl-muted)' }}>
-                        <Check size={14} style={{ color: 'var(--cl-lume)', flexShrink: 0 }} />
+                        <Check size={14} style={{ color: 'var(--cl-lume-text)', flexShrink: 0 }} />
                         <span>Always: unlimited E2EE messages and no ads — encryption was never the paid part</span>
                     </div>
                 </div>
@@ -655,10 +656,10 @@ export const BillingTab: React.FC = () => {
                         {/* Code row */}
                         <div
                             className="flex items-center gap-2 rounded-lg px-3 py-2 mb-2"
-                            style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--cl-border)' }}
+                            style={{ background: 'rgb(var(--cl-shade-rgb) / 0.3)', border: '1px solid var(--cl-border)' }}
                         >
                             <span
-                                className="flex-1 font-mono font-bold text-cl-lume text-[15px] select-all"
+                                className="flex-1 font-mono font-bold text-cl-lume-text text-[15px] select-all"
                                 style={{ letterSpacing: '0.2em' }}
                             >
                                 {referral.referral_code ?? '—'}
@@ -700,10 +701,10 @@ export const BillingTab: React.FC = () => {
                             <div className="flex justify-between items-center">
                                 <span className="text-[12px]" style={{ color: 'var(--cl-muted)' }}>{refCount} of {maxRef} friends referred</span>
                                 {daysEarned > 0 && (
-                                    <span className="text-[12px] font-medium" style={{ color: 'var(--cl-ok)' }}>+{daysEarned} free trial days earned</span>
+                                    <span className="text-[12px] font-medium" style={{ color: 'var(--cl-ok-text)' }}>+{daysEarned} free trial days earned</span>
                                 )}
                             </div>
-                            <div className="rounded-full overflow-hidden" style={{ height: 5, background: '#0A1120', boxShadow: 'inset 0 1px 2px rgba(0,0,0,.6)' }}>
+                            <div className="rounded-full overflow-hidden" style={{ height: 5, background: 'var(--cl-sink)', boxShadow: 'inset 0 1px 2px rgb(var(--cl-shade-rgb) / .6)' }}>
                                 <motion.div
                                     className="h-full rounded-full"
                                     style={{ background: 'linear-gradient(90deg,var(--cl-lume-deep),var(--cl-lume))' }}

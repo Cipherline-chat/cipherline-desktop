@@ -112,10 +112,10 @@ export const RolePermissionsEditor: React.FC<Props> = ({
             {/* Admin warning banner */}
             {isAdmin && (
                 <div className="mb-6 rounded-[14px] border border-cl-flash/30 bg-cl-flash/10 px-4 py-3 flex items-start gap-3">
-                    <AlertTriangle size={18} className="text-cl-flash shrink-0 mt-0.5" />
+                    <AlertTriangle size={18} className="text-cl-flash-text shrink-0 mt-0.5" />
                     <div>
-                        <p className="text-[13px] font-semibold text-cl-flash">Administrator bypasses every other permission.</p>
-                        <p className="text-[12px] text-cl-flash/70 mt-0.5">Members in this role can do anything in the server. Grant carefully.</p>
+                        <p className="text-[13px] font-semibold text-cl-flash-text">Administrator bypasses every other permission.</p>
+                        <p className="text-[12px] text-cl-flash-text/70 mt-0.5">Members in this role can do anything in the server. Grant carefully.</p>
                     </div>
                 </div>
             )}
@@ -126,7 +126,7 @@ export const RolePermissionsEditor: React.FC<Props> = ({
                 at a glance, which is the whole point of showing inheritance. */}
             {anyInherited && (
                 <div className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: 'var(--cl-faint)' }}>
-                    <Users size={12} className="shrink-0" style={{ color: 'var(--cl-lume)' }} />
+                    <Users size={12} className="shrink-0" style={{ color: 'var(--cl-lume-text)' }} />
                     <span>
                         Marked permissions are already granted to <strong className="font-semibold">@everyone</strong>,
                         so all members have them whether or not this role does. Turning one on here only matters
@@ -147,7 +147,7 @@ export const RolePermissionsEditor: React.FC<Props> = ({
                     <section
                         key={group.title}
                         className="rounded-[14px] border border-cl-border/40 px-4 pt-3.5 pb-3"
-                        style={{ background: 'rgba(28,37,66,.35)' }}
+                        style={{ background: 'rgb(var(--cl-surface-rgb) / .35)' }}
                     >
                         <div className="flex items-baseline justify-between gap-3 mb-3">
                             <p
@@ -196,7 +196,7 @@ export const RolePermissionsEditor: React.FC<Props> = ({
                                                         // Always lume, never the chip's own text colour: the
                                                         // marker states a fact about @everyone, not about
                                                         // whether this role grants the bit.
-                                                        color: 'var(--cl-lume)',
+                                                        color: 'var(--cl-lume-text)',
                                                         opacity: s.own ? 0.9 : 0.75,
                                                     }}
                                                 />
@@ -222,7 +222,7 @@ export const RolePermissionsEditor: React.FC<Props> = ({
                                     <span className="font-semibold" style={{ color: 'var(--cl-muted)' }}>{active.label}</span>
                                     {active.description ? <> — {active.description}</> : null}
                                     {activeState?.viaEveryone && (
-                                        <span style={{ color: 'var(--cl-lume)' }}>
+                                        <span style={{ color: 'var(--cl-lume-text)' }}>
                                             {' · '}already granted to @everyone
                                         </span>
                                     )}

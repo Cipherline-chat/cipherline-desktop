@@ -229,7 +229,7 @@ export const UsernameTagField: React.FC<UsernameTagFieldProps> = ({
                 {fieldInvalid && !held && <p className="cl-fmsg">{field.message}</p>}
                 {!fieldInvalid && errorFor && <p className="cl-fmsg">{errorFor}</p>}
                 {field.kind === 'ok' && !errorFor && !held && (
-                    <p className="ps-note" style={{ marginTop: 6, color: 'var(--cl-glow)' }}>
+                    <p className="ps-note" style={{ marginTop: 6, color: 'var(--cl-glow-text)' }}>
                         You will be {discriminatorPreview(username, field.value)}. Press Enter to save, Esc to undo.
                     </p>
                 )}

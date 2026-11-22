@@ -1,6 +1,7 @@
 import type { ScreenShareOptions } from '../components/ScreenSharePickerModal';
 import { VideoPreset } from 'livekit-client';
 import { clampCaptureBox, planEncode } from './shareEncoderLimits';
+import { planSoftwareHold } from './shareQualityPlan';
 import { UNPROCESSED_TRACK_SETTINGS } from './audioInput';
 import { linuxHwEncodeDistrusted, noteLinuxHwEncodeFailure } from './linuxHwEncode';
 import { portalRetuneTouchesCapture, type CaptureAsk } from './portalCapturePlan';
@@ -887,6 +888,12 @@ export async function applyScreenShareSenderParams(
         /** The user's resolution choice as a box, for a source the capturer did not
          *  fit to it (a cropped screen): the encoding is scaled to fit inside. */
         box?: { width: number; height: number };
+        /**
+         * Hold the frame rate on a SOFTWARE encoder the app fell back to (shareQualityPlan.ts): the full
+         * layer is scaled so its pixel rate fits this many pixels per second (never under a 720 px short
+         * side). Absent = no hold - the person's own setting is encoded as chosen.
+         */
+        pixelRateBudget?: number;
     } = {},
 ): Promise<void> {
     const params = sender.getParameters();
@@ -908,7 +915,12 @@ export async function applyScreenShareSenderParams(
     const boxScale = opts.box && size.width && size.height
         ? Math.max(1, size.width / opts.box.width, size.height / opts.box.height)
         : 1;
-    const plan = { scale: Math.ceil(Math.max(limitPlan.scale, boxScale) * 1e6) / 1e6 };
+    // After an involuntary fallback to a software encoder: frame rate first, from the size the sender
+    // would encode after the limit / box clamps above.
+    const holdScale = opts.pixelRateBudget && size.width && size.height
+        ? planSoftwareHold(size.width / Math.max(limitPlan.scale, boxScale), size.height / Math.max(limitPlan.scale, boxScale), frameRate, opts.pixelRateBudget).scale
+        : 1;
+    const plan = { scale: Math.ceil(Math.max(limitPlan.scale, boxScale) * holdScale * 1e6) / 1e6 };
     const low = n > 1 ? shareLowEncoding(size.width, size.height, frameRate, opts.codec ?? 'vp8') : null;
     params.encodings.forEach((enc, i) => {
         if (low && i < n - 1) {

@@ -156,7 +156,7 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
 const MuteBadge = () => {
     const { badgeSize, badgeIconSize } = tileMetrics('normal', false);
     return (
-        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[3] -ml-2`}>
+        <div className={`bg-red-500 rounded-full ${badgeSize} border-[2px] border-[color:var(--cl-abyss)] shadow-md z-[3] -ml-2`}>
             <MicOff className={`${badgeIconSize} text-white`} />
         </div>
     );
@@ -186,7 +186,7 @@ export const RingingTile = ({ title, avatarId, userId, isGroup, token }: { title
         </div>
         <span className={`flex items-center gap-1.5 text-[10px] font-semibold text-cl-muted px-2 py-0.5 rounded-full bg-white/5 truncate max-w-[150px]`}>
             <span className="truncate max-w-[100px]">{title || 'User'}</span>
-            <span className="text-cl-lume tracking-widest uppercase animate-pulse" style={{ fontSize: '9px' }}>Calling...</span>
+            <span className="text-cl-lume-text tracking-widest uppercase animate-pulse" style={{ fontSize: '9px' }}>Calling...</span>
         </span>
     </div>
 );

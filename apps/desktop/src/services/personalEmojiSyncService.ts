@@ -26,6 +26,11 @@
  * persisted, and an entry whose bytes did not arrive (or do not hash to its id)
  * is left out of the merge entirely, so the library never lists an emoji that
  * cannot render. Best-effort: a throw leaves local state exactly as it was.
+ *
+ * MY STICKERS (2026-11-22) use this same service over their own slot
+ * (`personal_stickers`), container magic ("CLSTK1") and 512 KiB image cap:
+ * the env carries `snapshotMagic` / `maxBytes` (services/personalStickerSyncEnv.ts).
+ * Absent = the emoji values, so the emoji path is unchanged.
  */
 
 import {
@@ -44,6 +49,10 @@ export const EMOJI_SNAPSHOT_MAGIC = 'CLEMJ1';
 export const EMOJI_LIBRARY_SLOT = 'personal_emojis';
 
 export interface EmojiSyncEnv extends OwnSlotEnv {
+    /** Container magic of the snapshot (default EMOJI_SNAPSHOT_MAGIC). */
+    snapshotMagic?: string;
+    /** Largest image an entry may have (default PERSONAL_EMOJI_MAX_BYTES). */
+    maxBytes?: number;
     loadLocalState(): EmojiLibState;
     /** Plaintext bytes of an emoji on this device, or null. */
     readBytes(id: string): Promise<Uint8Array | null>;
@@ -71,7 +80,7 @@ const normalizeUnwrap = (u: string | UnwrappedKey): UnwrappedKey => (typeof u ==
 
 interface SnapshotPayload { v: number; writtenAt: number; state: EmojiLibState; files: Record<string, string>; entranceSound?: unknown }
 
-export function parseEmojiPayload(json: string): SnapshotPayload {
+export function parseEmojiPayload(json: string, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES): SnapshotPayload {
     let raw: unknown;
     try { raw = JSON.parse(json); } catch { throw new Error('emoji snapshot is not valid JSON'); }
     if (!raw || typeof raw !== 'object') throw new Error('emoji snapshot is not an object');
@@ -83,7 +92,7 @@ export function parseEmojiPayload(json: string): SnapshotPayload {
     return {
         v: typeof r.v === 'number' ? r.v : 1,
         writtenAt: typeof r.writtenAt === 'number' ? r.writtenAt : 0,
-        state: sanitizeLibrary({ entries: r.entries, tombstones: r.tombstones }),
+        state: sanitizeLibrary({ entries: r.entries, tombstones: r.tombstones }, maxBytes),
         files,
         ...(r.entranceSound !== undefined ? { entranceSound: r.entranceSound } : {}),
     };
@@ -98,14 +107,16 @@ async function anyLibraryBytesMissing(env: EmojiSyncEnv): Promise<boolean> {
 }
 
 /** Are these bytes really `entry`? (size cap, image magic, content hash.) */
-async function bytesMatch(entry: EmojiEntry, bytes: Uint8Array): Promise<boolean> {
-    if (bytes.length === 0 || bytes.length > PERSONAL_EMOJI_MAX_BYTES) return false;
+async function bytesMatch(entry: EmojiEntry, bytes: Uint8Array, maxBytes: number): Promise<boolean> {
+    if (bytes.length === 0 || bytes.length > maxBytes) return false;
     if (!sniffImageMime(bytes)) return false;
     return (await personalEmojiIdFromBytes(bytes)) === entry.id;
 }
 
 export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState> | null): Promise<EmojiPullResult> {
     const none = (v: SlotView<EmojiLibState> | null): EmojiPullResult => ({ applied: false, view: v, incomplete: [] });
+    const magic = env.snapshotMagic ?? EMOJI_SNAPSHOT_MAGIC;
+    const maxBytes = env.maxBytes ?? PERSONAL_EMOJI_MAX_BYTES;
     const meta = await env.getSlotMeta();
     if (!meta) return none(null);
     // Same revision as last time: nothing new, UNLESS one of our own emojis can
@@ -115,7 +126,7 @@ export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState
     const bytes = await env.downloadSlot();
     if (!bytes || bytes.length === 0) return none(null);
 
-    const { header, body } = parseOwnSlotFrame(EMOJI_SNAPSHOT_MAGIC, bytes);
+    const { header, body } = parseOwnSlotFrame(magic, bytes);
     const recipients = envelopeRecipientIds(header.key_envelope_b64);
     let contentKeyB64: string;
     let publisher: string | null = null;
@@ -131,7 +142,7 @@ export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState
         return none({ updatedAt: meta.updated_at, recipients, publisher: null, state: null });
     }
 
-    const payload = parseEmojiPayload(await env.decryptWithKey(body, contentKeyB64));
+    const payload = parseEmojiPayload(await env.decryptWithKey(body, contentKeyB64), maxBytes);
     const incomplete: string[] = [];
     const usable: EmojiEntry[] = [];
     for (const entry of payload.state.entries) {
@@ -142,7 +153,7 @@ export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState
         if (!b64) { incomplete.push(entry.id); continue; }
         try {
             const img = b64ToBytes(b64);
-            if (!(await bytesMatch(entry, img))) { incomplete.push(entry.id); continue; }
+            if (!(await bytesMatch(entry, img, maxBytes))) { incomplete.push(entry.id); continue; }
             await env.writeBytes(entry, img);
             usable.push(entry);
         } catch (e) {
@@ -169,11 +180,12 @@ export function publishableLibrary(state: EmojiLibState, unpublishable: Readonly
     return { entries: state.entries.filter(e => !unpublishable.has(e.id)), tombstones: state.tombstones };
 }
 
-const libraryShape = (s: EmojiLibState) => {
-    const c = mergeLibraries(emptyLibrary(), s);
+const libraryShape = (s: EmojiLibState, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES) => {
+    const c = mergeLibraries(emptyLibrary(), s, maxBytes);
     return JSON.stringify([c.entries.map(e => [e.id, e.name, e.order, e.at]), Object.entries(c.tombstones).sort(([a], [b]) => (a < b ? -1 : 1))]);
 };
-export const sameLibrary = (a: EmojiLibState, b: EmojiLibState) => libraryShape(a) === libraryShape(b);
+export const sameLibrary = (a: EmojiLibState, b: EmojiLibState, maxBytes: number = PERSONAL_EMOJI_MAX_BYTES) =>
+    libraryShape(a, maxBytes) === libraryShape(b, maxBytes);
 
 export function emojiRepublishReason(
     view: SlotView<EmojiLibState> | null,
@@ -181,13 +193,14 @@ export function emojiRepublishReason(
     ownDeviceIds: readonly string[] | null,
     myDeviceId: string,
     unpublishable: ReadonlySet<string> = new Set(),
+    maxBytes: number = PERSONAL_EMOJI_MAX_BYTES,
 ): RepublishReason {
     return republishReason({
         view,
         local: publishableLibrary(local, unpublishable),
         isEmpty: s => s.entries.length === 0 && Object.keys(s.tombstones).length === 0,
-        merge: mergeLibraries,
-        same: sameLibrary,
+        merge: (a, b) => mergeLibraries(a, b, maxBytes),
+        same: (a, b) => sameLibrary(a, b, maxBytes),
         ownDeviceIds,
         myDeviceId,
     });
@@ -230,7 +243,7 @@ export async function publishEmojis(env: EmojiSyncEnv, myDeviceId?: string): Pro
         contentKeyB64,
     );
     const keyEnvelope = await env.wrapToDevices(JSON.stringify({ k: contentKeyB64 }), devices);
-    await env.uploadSlot(frameOwnSlot(EMOJI_SNAPSHOT_MAGIC, { v: OWN_SLOT_CONTAINER_VERSION, key_envelope_b64: keyEnvelope }, body));
+    await env.uploadSlot(frameOwnSlot(env.snapshotMagic ?? EMOJI_SNAPSHOT_MAGIC, { v: OWN_SLOT_CONTAINER_VERSION, key_envelope_b64: keyEnvelope }, body));
 
     const meta = await env.getSlotMeta();
     return {

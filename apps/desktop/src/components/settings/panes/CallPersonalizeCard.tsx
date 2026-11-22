@@ -211,7 +211,7 @@ export const CallPersonalizeCard: React.FC = () => {
                     </div>
                 </div>
             </div>
-            {customMsg && <p className="text-xs text-cl-flash m-0 pb-3" role="alert">{customMsg}</p>}
+            {customMsg && <p className="text-xs text-cl-flash-text m-0 pb-3" role="alert">{customMsg}</p>}
 
             {/* Entrance sound: a select and a preview button */}
             <div className="su-row">
@@ -278,7 +278,7 @@ export const CallPersonalizeCard: React.FC = () => {
                 </div>
             )}
 
-            {error && <div className="text-xs text-cl-flash mt-3" role="alert">{error}</div>}
+            {error && <div className="text-xs text-cl-flash-text mt-3" role="alert">{error}</div>}
             <div className="sr-only" role="status" aria-live="polite">{announce}</div>
         </SettingsDisclosure>
     );

@@ -55,7 +55,7 @@ export const AnnotationRequestsMenu: React.FC<AnnotationRequestsMenuProps> = ({ 
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={() => setOpen(o => !o)}
-                className={`relative inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-black/35 backdrop-blur-sm text-[11px] font-medium text-white/85 hover:text-white hover:bg-black/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70 ${requests.length ? 'ss-start-flash' : ''}`}
+                className={`relative inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-pure-black/35 backdrop-blur-sm text-[11px] font-medium text-pure-white/85 hover:text-pure-white hover:bg-pure-black/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70 ${requests.length ? 'ss-start-flash' : ''}`}
             >
                 <Users size={12} />
                 <span>{requests.length ? requests.length : grants.length}</span>
@@ -65,25 +65,25 @@ export const AnnotationRequestsMenu: React.FC<AnnotationRequestsMenuProps> = ({ 
                 <div
                     role="menu"
                     aria-label="Annotation access"
-                    className="absolute right-0 mt-1 min-w-[220px] rounded-xl bg-cl-deep/95 backdrop-blur-md border border-white/10 shadow-2xl p-1.5 text-[12px] text-cl-text z-30"
+                    className="absolute right-0 mt-1 min-w-[220px] rounded-xl bg-cl-deep/95 backdrop-blur-md border border-pure-white/10 shadow-2xl p-1.5 text-[12px] text-cl-text z-30"
                 >
                     {requests.length > 0 && (
                         <div className="px-2 pt-1 pb-0.5 text-[10px] uppercase tracking-wide text-cl-faint">Asking to draw</div>
                     )}
                     {requests.map(id => (
-                        <div key={`r-${id}`} role="menuitem" className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-white/5">
+                        <div key={`r-${id}`} role="menuitem" className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-pure-white/5">
                             <span className="flex-1 truncate">{label(id)}</span>
-                            <button type="button" title="Allow" aria-label={`Allow ${label(id)} to draw`} onClick={() => annotationStore.grant(trackKey, id)} className={`${rowBtn} text-cl-lume hover:bg-cl-lume/15`}><Check size={14} /></button>
-                            <button type="button" title="Decline — they cannot ask again for a minute" aria-label={`Decline ${label(id)}`} onClick={() => annotationStore.denyRequest(trackKey, id)} className={`${rowBtn} text-white/70 hover:bg-white/10`}><X size={14} /></button>
+                            <button type="button" title="Allow" aria-label={`Allow ${label(id)} to draw`} onClick={() => annotationStore.grant(trackKey, id)} className={`${rowBtn} text-cl-lume-text hover:bg-cl-lume/15`}><Check size={14} /></button>
+                            <button type="button" title="Decline — they cannot ask again for a minute" aria-label={`Decline ${label(id)}`} onClick={() => annotationStore.denyRequest(trackKey, id)} className={`${rowBtn} text-pure-white/70 hover:bg-pure-white/10`}><X size={14} /></button>
                         </div>
                     ))}
                     {grants.length > 0 && (
                         <div className="px-2 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-cl-faint">Can draw</div>
                     )}
                     {grants.map(id => (
-                        <div key={`g-${id}`} role="menuitem" className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-white/5">
+                        <div key={`g-${id}`} role="menuitem" className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-pure-white/5">
                             <span className="flex-1 truncate">{label(id)}</span>
-                            <button type="button" title="Revoke" aria-label={`Stop ${label(id)} drawing`} onClick={() => annotationStore.revoke(trackKey, id)} className={`${rowBtn} text-cl-flash hover:bg-cl-flash/15`}><UserMinus size={14} /></button>
+                            <button type="button" title="Revoke" aria-label={`Stop ${label(id)} drawing`} onClick={() => annotationStore.revoke(trackKey, id)} className={`${rowBtn} text-cl-flash-text hover:bg-cl-flash/15`}><UserMinus size={14} /></button>
                         </div>
                     ))}
                 </div>

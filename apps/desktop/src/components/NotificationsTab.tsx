@@ -120,7 +120,7 @@ const Row: React.FC<{
     </div>
 );
 
-const Divider = () => <div className="border-t mx-4" style={{ borderColor: 'rgba(42,53,88,.5)' }} />;
+const Divider = () => <div className="border-t mx-4" style={{ borderColor: 'rgb(var(--cl-border-rgb) / .5)' }} />;
 
 const SubLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <p className="px-4 pt-3.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--cl-faint)' }}>{children}</p>
@@ -198,7 +198,7 @@ export const NotificationsTab: React.FC = () => {
                     {prefs.sounds_enabled && (
                         <motion.div {...reveal} className="overflow-hidden">
                             <div className="px-4 pb-3 pt-0.5">
-                                <div className="flex items-center gap-3 rounded-xl px-3.5 py-3" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                                <div className="flex items-center gap-3 rounded-xl px-3.5 py-3" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)' }}>
                                     <VolumeX size={13} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
                                     <div style={{ flex: 1 }}>
                                         <ClSlider
@@ -412,7 +412,7 @@ export const NotificationsTab: React.FC = () => {
                                     {idx > 0 && <Divider />}
                                     <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                                         <div className="flex items-center gap-2.5 min-w-0">
-                                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.04)', color: 'var(--cl-faint)' }}>
+                                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgb(var(--cl-bright-rgb) / .04)', color: 'var(--cl-faint)' }}>
                                                 {icon}
                                             </div>
                                             <span className="text-[13.5px] font-medium" style={{ color: 'var(--cl-text)' }}>{label}</span>
@@ -462,7 +462,7 @@ export const NotificationsTab: React.FC = () => {
                                     exit={{ opacity: 0, scale: 0.85 }}
                                     transition={{ duration: 0.14 }}
                                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium"
-                                    style={{ background: 'rgba(37,224,200,.15)', border: '1px solid rgba(37,224,200,.2)', color: 'var(--cl-lume)' }}
+                                    style={{ background: 'rgb(var(--cl-lume-rgb) / .15)', border: '1px solid rgb(var(--cl-lume-rgb) / .2)', color: 'var(--cl-lume-text)' }}
                                 >
                                     {kw}
                                     <ClButton
@@ -513,7 +513,7 @@ export const NotificationsTab: React.FC = () => {
                             ? 'How loud an incoming call rings. 0% rings silently (you still see the call).'
                             : 'Turn on Notification sounds above to hear incoming calls.'}
                     </p>
-                    <div className="flex items-center gap-3 rounded-xl px-3.5 py-3" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)', opacity: prefs.sounds_enabled ? 1 : 0.5 }}>
+                    <div className="flex items-center gap-3 rounded-xl px-3.5 py-3" style={{ background: 'rgb(var(--cl-shade-rgb) / .2)', border: '1px solid var(--cl-border)', opacity: prefs.sounds_enabled ? 1 : 0.5 }}>
                         <VolumeX size={13} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
                         <div style={{ flex: 1 }}>
                             <ClSlider

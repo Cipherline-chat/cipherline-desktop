@@ -26,6 +26,7 @@ import { getActiveCallSummary, noteBetaPeers } from '../../utils/betaDiagnostics
 import { InboundAudioStallDetector, type InboundAudioReading } from '../../utils/betaDiagnostics/callSummary';
 import { errorNameOf } from '../../utils/betaDiagnostics/sanitize';
 import { logCallEvent } from '../../utils/callEventLog';
+import { realRemoteCount } from '../../utils/shareAudioHelper';
 
 export const FIRST_AUDIO_SLOW_MS = 3_000;
 const STALL_POLL_MS = 5_000;
@@ -66,10 +67,10 @@ export function BetaCallMonitor(): null {
         let slowReported = false;
         const detector = new InboundAudioStallDetector();
 
-        const onConnected = () => { if (connectedAt === null) connectedAt = now(); noteBetaPeers(room.remoteParticipants.size); };
+        const onConnected = () => { if (connectedAt === null) connectedAt = now(); noteBetaPeers(realRemoteCount(room.remoteParticipants)); };
         const onParticipant = (p: RemoteParticipant) => {
             joinedAt.set(p, now());
-            noteBetaPeers(room.remoteParticipants.size);
+            noteBetaPeers(realRemoteCount(room.remoteParticipants));
         };
         const onSubscribed = (track: RemoteTrack, pub: RemoteTrackPublication, p: RemoteParticipant) => {
             try {

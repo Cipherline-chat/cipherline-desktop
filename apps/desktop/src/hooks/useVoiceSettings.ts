@@ -8,6 +8,7 @@ import { migrateVoiceDefaults } from '../utils/voiceDefaultsMigration';
 import { onOutputDeviceChange, refreshOutputDevices } from '../utils/audioOutput';
 import { setIncomingLevelerEnabled } from '../utils/incomingLeveler';
 import { isNoiseSuppressionMode, type NoiseSuppressionMode } from '../utils/nsLatency';
+import { clampGateDb, type AudioEngine } from '../utils/clAudioSettings';
 import { useAudioDeviceProfiles } from './useAudioDeviceProfiles';
 import { effectiveEchoCancellation, resolveEchoAutoFlag, type OutputKind } from '../utils/outputKind';
 import { useOutputKind } from '../utils/outputKindProbe';
@@ -32,12 +33,22 @@ export interface VoiceSettings {
     // only a choice made in the On / Auto / Off setting is kept.
     echoCancellationAuto: boolean;
     volumeNormalization: boolean;
+    /** Which mic pipeline runs. Always 'v2' now: the Rust/WebAssembly call-audio engine is the only engine (owner, 2026-11-20;
+     *  utils/clAudioSettings.ts says how the other settings map onto it). loadVoiceSettings() and the hook force it, whatever was
+     *  saved, so no UI or backup can leave a user on 'legacy'. The legacy in-page chain is kept only as the silent fallback for a
+     *  call whose engine fails to build or start (voiceProcessor.ts). Rides in the voice-settings backup. */
+    audioEngine?: AudioEngine;
     // "Normalize voice volume" (Settings -> Voice & Video -> Output): a gentle
     // per-talker leveler on what you HEAR, behind everyone's own sender-side
     // auto gain control. Default ON; applied live. See utils/incomingLeveler.ts.
     normalizeIncomingVolume: boolean;
     voiceGate: boolean;
     voiceGateThreshold: number; // dBFS, range -60 to -20; the gate's fixed threshold (default -45)
+    /** The new audio engine's MANUAL noise gate (utils/clAudioSettings.ts): off by default, and the legacy voiceGate /
+     *  voiceGateThreshold above are ignored under it. Absent = off. Device-wide, not remembered per microphone. */
+    voiceGateManual?: boolean;
+    /** Its fixed threshold, dBFS of the raw mic input (-80..-20, default -55). */
+    voiceGateManualDb?: number;
     pushToTalk: boolean;
     pushToTalkKey: string | null;
     /** Hold this key to be muted (normal voice-activity mode only; inert while push-to-talk is on). null = off. */
@@ -92,9 +103,12 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     echoCancellation: DEFAULT_ECHO_CANCELLATION,
     echoCancellationAuto: true,
     volumeNormalization: true,
+    audioEngine: 'v2',
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
+    voiceGateManual: false,
+    voiceGateManualDb: -55,
     pushToTalk: false,
     // No default key (owner decision 2026-11-16): the user picks one when they turn push-to-talk on. Until
     // then the mic stays closed. Any key, including a bare modifier such as Alt, can be bound.
@@ -141,6 +155,11 @@ export function loadVoiceSettings(): VoiceSettings {
         // -> Strong, the engine every existing user has been on. NOT the new-install default
         // (Light): that only applies when nothing was ever saved, so no one's audio flips.
         if (!isNoiseSuppressionMode(saved?.noiseSuppressionMode)) merged.noiseSuppressionMode = 'strong';
+        // The new engine is the only engine: a saved 'legacy', no value, or junk all load as 'v2' (owner, 2026-11-20).
+        merged.audioEngine = 'v2';
+        // The manual gate is on only when the saved value is exactly true; its threshold is clamped (a hand edit, an older build).
+        merged.voiceGateManual = saved?.voiceGateManual === true;
+        merged.voiceGateManualDb = clampGateDb(saved?.voiceGateManualDb);
         // Push-to-talk on with no key stays unbound (the UI asks for a key; the mic stays closed). A saved key, Alt included, is kept.
         if (typeof merged.pushToTalkKey !== 'string' || merged.pushToTalkKey === '') merged.pushToTalkKey = null;
         for (const k of RETIRED_VOICE_SETTING_KEYS) delete (merged as Record<string, unknown>)[k];
@@ -196,6 +215,9 @@ export function useVoiceSettings(userId?: string | null) {
     const setNormalizeIncomingVolume = useCallback((v: boolean) => update({ normalizeIncomingVolume: v }), [update]);
     const setVoiceGate           = useCallback((v: boolean) => update({ voiceGate: v }), [update]);
     const setVoiceGateThreshold  = useCallback((v: number) => update({ voiceGateThreshold: Math.max(-60, Math.min(-20, v)) }), [update]);
+    // The manual noise gate: device-wide (not recorded per microphone, so plain setSettings).
+    const setVoiceGateManual     = useCallback((v: boolean) => setSettings(prev => ({ ...prev, voiceGateManual: v === true })), []);
+    const setVoiceGateManualDb   = useCallback((v: number) => setSettings(prev => ({ ...prev, voiceGateManualDb: clampGateDb(v) })), []);
     const setPushToTalk          = useCallback((v: boolean) => update({ pushToTalk: v }), [update]);
     const setPushToTalkKey       = useCallback((v: string | null) => update({ pushToTalkKey: v }), [update]);
     const setPushToMuteKey       = useCallback((v: string | null) => update({ pushToMuteKey: v }), [update]);
@@ -293,7 +315,8 @@ export function useVoiceSettings(userId?: string | null) {
     const { kind: outputKind, source: outputKindSource } = useOutputKind(settings.speakerDeviceId);
     const echoEffective = effectiveEchoCancellation({ auto: settings.echoCancellationAuto, stored: settings.echoCancellation, kind: outputKind });
     const effectiveSettings = useMemo<VoiceSettings>(
-        () => (settings.echoCancellation === echoEffective ? settings : { ...settings, echoCancellation: echoEffective }),
+        // audioEngine is pinned to 'v2' here too (not only at load): an in-memory value from any other path cannot select the legacy chain.
+        () => (settings.echoCancellation === echoEffective && settings.audioEngine === 'v2' ? settings : { ...settings, echoCancellation: echoEffective, audioEngine: 'v2' }),
         [settings, echoEffective],
     );
     const echoAuto = useMemo(
@@ -314,6 +337,8 @@ export function useVoiceSettings(userId?: string | null) {
         setNormalizeIncomingVolume,
         setVoiceGate,
         setVoiceGateThreshold,
+        setVoiceGateManual,
+        setVoiceGateManualDb,
         setPushToTalk,
         setPushToTalkKey,
         setPushToMuteKey,
@@ -339,7 +364,7 @@ export function useVoiceSettings(userId?: string | null) {
         setEchoCancellationAuto,
         setVolumeNormalization,
         setNormalizeIncomingVolume,
-        setVoiceGate, setVoiceGateThreshold,
+        setVoiceGate, setVoiceGateThreshold, setVoiceGateManual, setVoiceGateManualDb,
         setPushToTalk, setPushToTalkKey, setPushToMuteKey,
         setMicDeviceId, setSpeakerDeviceId, setCameraDeviceId,
         setMicVolume, setSpeakerVolume,

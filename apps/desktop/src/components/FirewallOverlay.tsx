@@ -41,7 +41,8 @@ import type { GameMode } from '../utils/loadingGame';
 import { useEscape } from '../hooks/useEscape';
 import { FIREWALL_RAIL_ATTR } from '../hooks/useFirewallGame';
 import { claimKeyCombo } from '../utils/keyClaims';
-import { onMotionChange } from '../utils/idleMotion';
+import { onMotionChange, setGameOpen } from '../utils/idleMotion';
+import { setAnimationsSuspended } from '../utils/animatedImage';
 import { bestFor, onBestChange, recordRun, syncNow } from '../utils/flappyBest';
 import { FlappyLeaderboardPanel } from './FlappyLeaderboardPanel';
 import { hitchProbeEnabled, startHitchProbe, type HitchProbe } from './firewallHitchProbe';
@@ -142,10 +143,10 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
     const panelRef = useRef<HTMLDivElement>(null);
     const motionActive = useRef(true);
     const trophyRef = useRef<HTMLButtonElement>(null);
-    // Dev and staging builds: the hitch probe (firewallHitchProbe.ts). Its game-over "Copy hitch report" button was
+    // The hitch probe (firewallHitchProbe.ts), every channel: full on dev/staging, light on stable. Its game-over "Copy hitch report" button was
     // removed (owner 2026-11-13); on close the probe writes the run to the Performance log (Report a problem → Performance
     // sends it), and in dev builds also to the console and window.__fwHitchReport.
-    const [probeOn] = useState(hitchProbeEnabled);
+    const [probeFull] = useState(hitchProbeEnabled);
     const probeRef = useRef<HitchProbe | null>(null);
 
     // The worker: one per open, terminated on close.
@@ -164,8 +165,8 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
             return;
         }
         let dead = false;
-        // Dev and staging builds only: what the app was doing at each dropped game frame (firewallHitchProbe.ts).
-        const probe = probeOn ? startHitchProbe() : null;
+        // What the app was doing at each dropped game frame (firewallHitchProbe.ts); every channel, light on stable.
+        const probe = startHitchProbe(probeFull);
         probeRef.current = probe;
         const release = () => {
             if (dead) return false;
@@ -322,6 +323,17 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
             el.removeAttribute(FW_COVERED_ATTR);
         };
         // The covered element is fixed for the overlay's life.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // The rail and titlebar stay on screen beside the game: stop their decoration
+    // (mascot sway, pulses, animated server icons) while it is open. Only the shell
+    // placement (the one that covers the content column), never the inline pane.
+    useEffect(() => {
+        if (!coverRef) return;
+        setGameOpen(true);
+        setAnimationsSuspended(true);
+        return () => { setGameOpen(false); setAnimationsSuspended(false); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

@@ -145,6 +145,20 @@ export function decideDisconnectHandling(
 }
 
 /**
+ * Did LiveKit close this connection because the SAME account connected again
+ * (another device or window, or this app's own reconnect landing first)? Then the
+ * account is STILL IN the call, on the other connection: the displaced client
+ * must tear its own room down locally and must NOT tell the server it left. The
+ * leave routes are per user, not per connection, so a leave sent from here
+ * deleted the roster entry of the connection that had just taken over - the
+ * member vanished from the call and from the channel's participant list while
+ * still talking (prod 2026-11-20).
+ */
+export function isDisplacedByOtherConnection(reason: DisconnectReason | undefined): boolean {
+    return reason === DisconnectReason.DUPLICATE_IDENTITY;
+}
+
+/**
  * Should a "the call ended" report from the CallPane of `paneCallId` be acted
  * on? Only while that call is still the active one. A pane that has already been
  * replaced (its key changed, its room was torn down) must not be able to end the

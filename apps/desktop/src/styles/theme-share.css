@@ -1,0 +1,99 @@
+/* ============ Theme sharing: the chat card + the share dialog's link / send step ============
+   components/themeShare/ThemeLinkEmbed.tsx, settings/panes/CustomThemeShareDialog.tsx.
+   The card is FRAMED by the current app theme (these rules read the app's tokens)
+   while its preview is painted from the SHARED theme's own variables
+   (styles/theme-preview.css, set inline by CustomThemePreview). Tokens only. */
+
+/* ── The card (a sibling of the invite card, cl-kit-ext.css .cl-invite-card) ── */
+.tle {
+  position: relative; width: 352px; max-width: 100%;
+  background: var(--cl-surface);
+  border: 1px solid var(--cl-border);
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 2px 10px rgb(var(--cl-shade-rgb) / .28);
+  text-align: left;
+}
+.tle::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: linear-gradient(180deg, var(--cl-lume), var(--cl-lume-deep, var(--cl-lume)));
+}
+.tle-eyebrow {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 13px 0 15px;
+  font-family: var(--cl-font-body); font-size: 10.5px; font-weight: 800;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--cl-lume-text);
+}
+.tle-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 13px 8px 15px; min-width: 0; }
+.tle-name {
+  margin: 0; min-width: 0; flex: 1;
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 15px; line-height: 1.25; color: var(--cl-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tle-base { flex: none; font-size: 11px; font-weight: 700; color: var(--cl-muted); white-space: nowrap; }
+.tle-shot { padding: 0 13px 0 15px; }
+.tle-shot .ctp-thumb { box-shadow: 0 0 0 1px var(--cl-border); }
+.tle-swatches { display: flex; align-items: center; gap: 5px; padding: 9px 13px 0 15px; flex-wrap: wrap; }
+.tle-sw {
+  width: 18px; height: 18px; border-radius: 99px; flex: none;
+  box-shadow: inset 0 0 0 1px rgb(var(--cl-bright-rgb) / .16), 0 0 0 1px var(--cl-border);
+}
+.tle-sw-label { margin-left: 4px; font-size: 11px; color: var(--cl-faint); white-space: nowrap; }
+.tle-note {
+  display: flex; align-items: flex-start; gap: 6px; margin: 8px 13px 0 15px;
+  font-size: 11.5px; font-weight: 700; line-height: 1.4; color: var(--cl-glow-text);
+}
+.tle-note svg { flex: none; margin-top: 1px; }
+.tle-status { margin: 8px 13px 0 15px; font-size: 11.5px; font-weight: 700; color: var(--cl-ok-text); }
+.tle-status--err { color: var(--cl-danger-text); }
+/* Three equal columns, every button full-width in its cell at the kit's small size: same
+   height, top, radius and padding for the ghost pair and the primary (the primary keeps
+   the kit's own depth sheets, exactly as in every dialog footer). Flex-stretching the
+   .clb wrapper without fullWidth left the primary's depth sheets wider than its cap. */
+.tle-foot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 6px; padding: 10px 13px 15px 15px; }
+.tle-foot .clb--sm .cap { padding-left: 8px; padding-right: 8px; white-space: nowrap; }
+/* Saved / In use (disabled) stay level with their neighbours: no pressed-in drop. */
+.tle-foot .clb.dis .cap { transform: none; }
+
+/* Can't be read: keeps the frame, drops the rail (no action is implied). */
+.tle--dead { display: flex; align-items: center; gap: 10px; padding: 12px; width: 288px; }
+.tle--dead::before { display: none; }
+.tle-dead-ic {
+  width: 36px; height: 36px; border-radius: 11px; flex: none; display: grid; place-items: center;
+  background: rgb(var(--cl-bright-rgb) / .05); color: var(--cl-faint);
+}
+.tle-dead-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--cl-muted); line-height: 1.25; }
+.tle-dead-sub { margin: 2px 0 0; font-size: 11px; color: var(--cl-faint); line-height: 1.35; }
+
+@media (prefers-reduced-motion: reduce) { .tle { box-shadow: none; } }
+
+/* ── Share dialog: link row, send step ── */
+.cts-send-cta {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin: 2px 0 8px;
+  border-radius: 12px; background: var(--cl-lume-tint); border: 1px solid var(--cl-border);
+}
+.cts-send-cta-ic {
+  width: 34px; height: 34px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  background: var(--cl-lume); color: var(--cl-on-lume);
+}
+.cts-send-cta-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.cts-send-cta-text b { font-size: 13.5px; color: var(--cl-text); }
+.cts-send-cta-text span { font-size: 12px; color: var(--cl-muted); line-height: 1.35; }
+.cts-row { display: flex; align-items: flex-start; gap: 8px; }
+.cts-row > :first-child { flex: 1; min-width: 0; }
+.cts-row > :last-child { flex: none; }
+.cts-link {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 10px;
+  font-family: var(--cl-font-mono); font-size: 12px; color: var(--cl-text);
+  background: var(--cl-sink); border: 1px solid var(--cl-border);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cts-link:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: 1px; }
+.cts-privacy { margin: 2px 0 0; font-size: 12px; line-height: 1.45; color: var(--cl-faint); }
+.cts-send-sub { margin: 0 0 4px; font-size: 12.5px; color: var(--cl-muted); }
+.cts-note-label { margin-top: 10px; }
+.cts-sent {
+  display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 12px;
+  background: rgb(var(--cl-ok-rgb) / .1); border: 1px solid rgb(var(--cl-ok-rgb) / .3);
+  font-size: 13px; font-weight: 700; color: var(--cl-text);
+}
+.cts-sent svg { color: var(--cl-ok-text); flex: none; }

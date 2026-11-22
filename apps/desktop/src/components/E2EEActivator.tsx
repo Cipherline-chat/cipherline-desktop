@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useRoomContext } from '@livekit/components-react';
 import { RoomEvent, type ExternalE2EEKeyProvider } from 'livekit-client';
 import { activateRoomE2EE, installE2EEKey, type E2EEActivationFailure } from '../utils/e2eeActivation';
+import { isShareAudioHelperIdentity } from '../utils/shareAudioHelper';
 import { KEYRING_ATTR, KEYRING_ATTR_VALUE, RotatingKeyProvider, allRemotesRingCapable } from '../utils/e2eeKeyRing';
 
 /**
@@ -92,7 +93,7 @@ export const E2EEActivator = ({ keyProvider, keyB64, keyEpoch, onFailure, onActi
             if (!ring.ringCapable || room.state !== 'connected') return;
             room.localParticipant.setAttributes({ [KEYRING_ATTR]: KEYRING_ATTR_VALUE }).catch(() => { /* cosmetic: peers just stay on index 0 */ });
         };
-        const roster = () => ring.setPeersCapable(allRemotesRingCapable(room.remoteParticipants?.values() ?? []));
+        const roster = () => ring.setPeersCapable(allRemotesRingCapable([...(room.remoteParticipants?.values() ?? [])].filter(p => !isShareAudioHelperIdentity(p.identity))));
         ring.onRingCapableChange(publish);
         roster();
         publish();

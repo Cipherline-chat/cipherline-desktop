@@ -20,6 +20,10 @@ export interface TemplateRole {
     mentionable: boolean;
     permissions: string;
     position: number;
+    /** Gradient end colour (-1 / absent = solid). Newer APIs only. */
+    secondary_color?: number;
+    /** A unicode emoji role icon. Newer APIs only. */
+    icon_emoji?: string | null;
 }
 
 export interface TemplateCategory {
@@ -43,6 +47,10 @@ export interface TemplateChannel {
     member_limit: number | null;
     overrides: TemplateOverride[];
     private: boolean;
+    /** Text channels: Discord's slowmode, on Cipherline's ladder (absent = off). Newer APIs only. */
+    slowmode_seconds?: number;
+    /** Text channels: Discord's age-restricted (`nsfw`). Newer APIs only. */
+    age_restricted?: boolean;
 }
 
 export interface TemplateBlueprint {

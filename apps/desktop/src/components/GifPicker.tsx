@@ -125,7 +125,7 @@ const cellStyle: React.CSSProperties = {
     aspectRatio:  '1 / 1',
     borderRadius: 6,
     overflow:     'hidden',
-    background:   'rgba(255,255,255,0.04)',
+    background:   'rgb(var(--cl-bright-rgb) / 0.04)',
 };
 const cellBtnStyle: React.CSSProperties = {
     all:        'unset',
@@ -675,7 +675,7 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
             // The opt-in. Nothing has been sent to KLIPY at this point.
             return (
                 <div className="gif-msg gif-optin" role="region" aria-label="Turn on GIF search">
-                    <span style={{ fontSize: 13, lineHeight: 1.5, color: 'rgba(255,255,255,0.7)' }}>{KLIPY_NOTICE_TEXT}</span>
+                    <span style={{ fontSize: 13, lineHeight: 1.5, color: 'rgb(var(--cl-bright-rgb) / 0.7)' }}>{KLIPY_NOTICE_TEXT}</span>
                     <div style={{ display: 'flex', gap: 8 }}>
                         <ClButton variant="primary" size="sm" onClick={handleTurnOn}>
                             Turn on
@@ -745,7 +745,7 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
         if (savedFiltered.length === 0) {
             return search
                 ? renderMessage('🔍', <>No favorites match “{search}”</>)
-                : renderMessage('🎞️', <>No favorite GIFs yet.<br />Click <strong style={{ color: 'rgba(255,255,255,0.4)' }}>+</strong> to add a GIF from your device{configured ? ', or favorite one from KLIPY' : ''}.</>);
+                : renderMessage('🎞️', <>No favorite GIFs yet.<br />Click <strong style={{ color: 'rgb(var(--cl-bright-rgb) / 0.4)' }}>+</strong> to add a GIF from your device{configured ? ', or favorite one from KLIPY' : ''}.</>);
         }
         return (
             <div style={gridStyle} role="grid" aria-label="Your favorite GIFs">
@@ -808,9 +808,9 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
                 width:          352,
                 height:         400,
                 background:     '#1e2024',
-                border:         '1px solid rgba(255,255,255,0.08)',
+                border:         '1px solid rgb(var(--cl-bright-rgb) / 0.08)',
                 borderRadius:   12,
-                boxShadow:      '0 8px 32px rgba(0,0,0,0.6)',
+                boxShadow:      '0 8px 32px rgb(var(--cl-shade-rgb) / 0.6)',
                 display:        'flex',
                 flexDirection:  'column',
                 overflow:       'hidden',
@@ -818,7 +818,7 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
             onClick={e => e.stopPropagation()}
         >
             {/* ── Header: tabs, then search (+ import on Saved) ─────────── */}
-            <div style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
+            <div style={{ padding: '8px 10px', borderBottom: '1px solid rgb(var(--cl-bright-rgb) / 0.07)', flexShrink: 0 }}>
                 <div role="tablist" aria-label="GIF source" className="gif-tabs" onKeyDown={onTabKey}>
                     {([['klipy', 'KLIPY'], ['saved', `Favorites${gifs.length ? ` · ${gifs.length}` : ''}`]] as const).map(([t, label]) => (
                         <button
@@ -906,27 +906,27 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
 
             {/* Local styles — portal content can't use Tailwind here. */}
             <style>{`
-                .gif-cell:hover { background: rgba(255,255,255,0.09) !important; }
-                .gif-cell-btn:focus-visible { outline: 2px solid rgba(37,224,200,0.9); outline-offset: -2px; border-radius: 6px; }
+                .gif-cell:hover { background: rgb(var(--cl-bright-rgb) / 0.09) !important; }
+                .gif-cell-btn:focus-visible { outline: 2px solid rgb(var(--cl-lume-rgb) / 0.9); outline-offset: -2px; border-radius: 6px; }
                 .gif-cell:focus-within .gif-bookmark-btn { opacity: 1; }
                 .gif-remove-btn:hover { background: rgba(220,38,38,0.75) !important; }
-                .gif-save-btn:hover { background: rgba(37,224,200,0.75) !important; color: #0b0d10; }
-                .gif-cell.is-saved .gif-save-btn { opacity: 1; background: rgba(37,224,200,0.85); color: #0b0d10; }
+                .gif-save-btn:hover { background: rgb(var(--cl-lume-rgb) / 0.75) !important; color: #0b0d10; }
+                .gif-cell.is-saved .gif-save-btn { opacity: 1; background: rgb(var(--cl-lume-rgb) / 0.85); color: #0b0d10; }
                 .gif-cell.is-saved .gif-save-btn:hover { background: rgba(220,38,38,0.75) !important; color: #fff; }
                 /* The kit's .inp is navy (--surface); this popover is neutral
                    gray (#1e2024), so the search field matches it instead of
                    standing out as a blue bar. Focus stays neutral too. */
                 .gif-search-input.inp {
-                    background: rgba(255,255,255,0.06) !important;
-                    border-color: rgba(255,255,255,0.10) !important;
+                    background: rgb(var(--cl-bright-rgb) / 0.06) !important;
+                    border-color: rgb(var(--cl-bright-rgb) / 0.10) !important;
                 }
                 .gif-search-input.inp:focus {
-                    background: rgba(255,255,255,0.08) !important;
-                    border-color: rgba(255,255,255,0.32) !important;
-                    box-shadow: 0 0 0 3px rgba(255,255,255,0.07) !important;
+                    background: rgb(var(--cl-bright-rgb) / 0.08) !important;
+                    border-color: rgb(var(--cl-bright-rgb) / 0.32) !important;
+                    box-shadow: 0 0 0 3px rgb(var(--cl-bright-rgb) / 0.07) !important;
                     animation: none !important;
                 }
-                .srch:focus-within > svg { stroke: rgba(255,255,255,0.7) !important; }
+                .srch:focus-within > svg { stroke: rgb(var(--cl-bright-rgb) / 0.7) !important; }
                 /* ClButton's ghost variant defaults to --surface/--border
                    (navy), tuned for the app's navy chrome. This popover is a
                    neutral gray (#1e2024), so match the search input's own
@@ -936,38 +936,38 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
                 .gif-clear-btn .cap {
                     background-color: transparent !important;
                     box-shadow: none !important;
-                    color: rgba(255,255,255,0.5) !important;
+                    color: rgb(var(--cl-bright-rgb) / 0.5) !important;
                 }
                 .gif-clear-btn .cap svg { stroke: currentColor !important; }
                 .gif-clear-btn .cap:hover {
-                    background-color: rgba(255,255,255,0.10) !important;
-                    color: rgba(255,255,255,0.85) !important;
+                    background-color: rgb(var(--cl-bright-rgb) / 0.10) !important;
+                    color: rgb(var(--cl-bright-rgb) / 0.85) !important;
                 }
                 .gif-import-btn .cap {
-                    background-color: rgba(255,255,255,0.07) !important;
-                    box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.10) !important;
+                    background-color: rgb(var(--cl-bright-rgb) / 0.07) !important;
+                    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-bright-rgb) / 0.10) !important;
                 }
                 .gif-import-btn .cap:hover {
-                    box-shadow: inset 0 0 0 1.5px rgba(37,224,200,0.65) !important;
+                    box-shadow: inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / 0.65) !important;
                 }
                 .gif-tabs { display: flex; gap: 4px; }
                 .gif-tab {
                     all: unset; cursor: pointer;
                     padding: 4px 10px; border-radius: 6px;
                     font-size: 12px; font-weight: 700; letter-spacing: 0.01em;
-                    color: rgba(255,255,255,0.45);
+                    color: rgb(var(--cl-bright-rgb) / 0.45);
                 }
-                .gif-tab:hover { color: rgba(255,255,255,0.75); background: rgba(255,255,255,0.05); }
-                .gif-tab.on { color: #fff; background: rgba(255,255,255,0.09); }
-                .gif-tab:focus-visible { outline: 2px solid rgba(37,224,200,0.9); outline-offset: 1px; }
+                .gif-tab:hover { color: rgb(var(--cl-bright-rgb) / 0.75); background: rgb(var(--cl-bright-rgb) / 0.05); }
+                .gif-tab.on { color: var(--cl-bright); background: rgb(var(--cl-bright-rgb) / 0.09); }
+                .gif-tab:focus-visible { outline: 2px solid rgb(var(--cl-lume-rgb) / 0.9); outline-offset: 1px; }
                 .gif-msg {
                     display: flex; flex-direction: column; align-items: center; justify-content: center;
                     height: 100%; gap: 12px; padding: 0 24px; text-align: center;
-                    color: rgba(255,255,255,0.35);
+                    color: rgb(var(--cl-bright-rgb) / 0.35);
                 }
                 .gif-skel {
                     display: block; width: 100%; height: 100%;
-                    background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+                    background: linear-gradient(90deg, rgb(var(--cl-bright-rgb) / 0.03), rgb(var(--cl-bright-rgb) / 0.08), rgb(var(--cl-bright-rgb) / 0.03));
                     background-size: 200% 100%;
                     animation: gif-shimmer 1.2s ease-in-out infinite;
                 }
@@ -975,34 +975,52 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
                 .gif-ref-tile {
                     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
                     width: 100%; height: 100%; padding: 6px; box-sizing: border-box;
-                    color: rgba(255,255,255,0.45); font-size: 10.5px; text-align: center;
+                    color: rgb(var(--cl-bright-rgb) / 0.45); font-size: 10.5px; text-align: center;
                 }
                 .gif-ref-badge {
                     font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em;
-                    padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.08);
+                    padding: 1px 5px; border-radius: 4px; background: rgb(var(--cl-bright-rgb) / 0.08);
                 }
                 .gif-ref-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 @keyframes gif-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
                 .gif-spinner {
                     width: 20px; height: 20px; border-radius: 50%;
-                    border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff;
+                    border: 2px solid rgb(var(--cl-bright-rgb) / 0.25); border-top-color: var(--cl-bright);
                     animation: spin 0.8s linear infinite; display: inline-block;
                 }
                 .gif-spinner--sm { width: 11px; height: 11px; border-width: 1.5px; }
                 .gif-more {
                     display: flex; align-items: center; justify-content: center; gap: 6px;
-                    padding: 8px 0 2px; font-size: 11.5px; color: rgba(255,255,255,0.35);
+                    padding: 8px 0 2px; font-size: 11.5px; color: rgb(var(--cl-bright-rgb) / 0.35);
                 }
-                .gif-link { all: unset; cursor: pointer; color: rgba(37,224,200,0.9); text-decoration: underline; }
+                .gif-link { all: unset; cursor: pointer; color: rgb(var(--cl-lume-rgb) / 0.9); text-decoration: underline; }
                 .gif-footer {
-                    flex-shrink: 0; border-top: 1px solid rgba(255,255,255,0.07);
-                    padding: 5px 12px; font-size: 11px; color: rgba(255,255,255,0.25);
+                    flex-shrink: 0; border-top: 1px solid rgb(var(--cl-bright-rgb) / 0.07);
+                    padding: 5px 12px; font-size: 11px; color: rgb(var(--cl-bright-rgb) / 0.25);
                     text-align: center; user-select: none;
                 }
-                .gif-footer strong { color: rgba(255,255,255,0.45); font-weight: 800; letter-spacing: 0.02em; }
+                .gif-footer strong { color: rgb(var(--cl-bright-rgb) / 0.45); font-weight: 800; letter-spacing: 0.02em; }
                 @media (prefers-reduced-motion: reduce) {
                     .gif-skel, .gif-spinner { animation: none; }
                 }
+                /* Light: the popover is a white card; faint ink-alpha text needs more weight to stay legible. */
+                :root[data-scheme="light"] [aria-label="GIF picker"] { background: var(--cl-deep) !important; border-color: var(--cl-border) !important; box-shadow: var(--cl-shadow-pop) !important; }
+                :root[data-scheme="light"] .gif-msg, :root[data-scheme="light"] .gif-more { color: var(--cl-faint); }
+                :root[data-scheme="light"] .gif-footer { color: var(--cl-faint); border-top-color: var(--cl-border); }
+                :root[data-scheme="light"] .gif-footer strong { color: var(--cl-muted); }
+                :root[data-scheme="light"] .gif-tab { color: var(--cl-muted); }
+                :root[data-scheme="light"] .gif-tab:hover { color: var(--cl-text); }
+                :root[data-scheme="light"] .gif-tab.on { color: var(--cl-text); background: var(--cl-surface); }
+                :root[data-scheme="light"] .gif-clear-btn .cap { color: var(--cl-muted) !important; }
+                :root[data-scheme="light"] .gif-clear-btn .cap:hover { color: var(--cl-text) !important; }
+                :root[data-scheme="light"] .gif-search-input.inp { background: var(--cl-surface) !important; border-color: var(--cl-border-strong) !important; }
+                :root[data-scheme="light"] .gif-search-input.inp:focus { border-color: var(--cl-lume-text) !important; box-shadow: 0 0 0 3px rgb(var(--cl-lume-rgb) / 0.25) !important; }
+                :root[data-scheme="light"] .srch:focus-within > svg { stroke: var(--cl-lume-text) !important; }
+                :root[data-scheme="light"] .gif-import-btn .cap { background-color: var(--cl-surface) !important; box-shadow: inset 0 0 0 1.5px var(--cl-border-strong) !important; }
+                :root[data-scheme="light"] .gif-link { color: var(--cl-lume-text); }
+                :root[data-scheme="light"] .gif-cell-btn:focus-visible, :root[data-scheme="light"] .gif-tab:focus-visible { outline-color: var(--cl-lume-text); }
+                :root[data-scheme="light"] .gif-skel { background: linear-gradient(90deg, rgb(var(--cl-bright-rgb) / 0.04), rgb(var(--cl-bright-rgb) / 0.10), rgb(var(--cl-bright-rgb) / 0.04)); background-size: 200% 100%; }
+                :root[data-scheme="light"] .gif-spinner { border-color: rgb(var(--cl-bright-rgb) / 0.2); border-top-color: var(--cl-lume-text); }
                 @keyframes spin { to { transform: rotate(360deg); } }
             `}</style>
         </div>,

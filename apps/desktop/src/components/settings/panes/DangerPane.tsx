@@ -175,7 +175,7 @@ export const DangerPane: React.FC<DangerPaneProps> = ({ onLogout, onCloseSetting
                                 {/* 2FA */}
                                 {deleteTotpEnabled === null ? (
                                     <div className="h-12 flex items-center justify-center">
-                                        <div className="w-4 h-4 rounded-full border-2 border-t-white/60 animate-spin" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: 'rgba(255,255,255,.6)' }} />
+                                        <div className="w-4 h-4 rounded-full border-2 border-t-white/60 animate-spin" style={{ borderColor: 'rgb(var(--cl-bright-rgb) / .2)', borderTopColor: 'rgb(var(--cl-bright-rgb) / .6)' }} />
                                     </div>
                                 ) : deleteTotpEnabled ? (
                                     <ClInput

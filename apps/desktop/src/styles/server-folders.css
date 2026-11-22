@@ -12,8 +12,8 @@
 .cl-rail-merge{
   position:absolute;inset:-3px;z-index:0;pointer-events:none;
   border-radius:15px;
-  background:rgba(37,224,200,.16);
-  box-shadow:0 0 0 2px var(--cl-lume),0 0 18px rgba(37,224,200,.35);
+  background:rgb(var(--cl-lume-rgb) / .16);
+  box-shadow:0 0 0 2px var(--cl-lume),0 0 18px rgb(var(--cl-lume-rgb) / .35);
   animation:cl-rail-merge-in .16s ease-out both;
 }
 @keyframes cl-rail-merge-in{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
@@ -26,16 +26,16 @@
 .cl-folder-box{
   position:relative;width:40px;height:40px;border-radius:10px;box-sizing:border-box;
   padding:5px;display:grid;grid-template-columns:14px 14px;grid-template-rows:14px 14px;gap:2px;
-  background:var(--cl-folder-tint, rgba(255,255,255,.07));
-  box-shadow:inset 0 0 0 1px var(--cl-folder-ring, rgba(255,255,255,.10));
+  background:var(--cl-folder-tint, rgb(var(--cl-bright-rgb) / .07));
+  box-shadow:inset 0 0 0 1px var(--cl-folder-ring, rgb(var(--cl-bright-rgb) / .10));
   transition:box-shadow .16s ease,background-color .16s ease,transform .18s cubic-bezier(.22,1.22,.36,1);
 }
 /* Open: the tile reads as pressed — sunk a little, darker, lume-ringed —
    while its contents are "out" in the popover. */
 .cl-folder-box[data-open="true"]{
   transform:scale(.9);
-  background:color-mix(in srgb, var(--cl-folder-tint, rgba(255,255,255,.07)) 60%, rgba(0,0,0,.35));
-  box-shadow:inset 0 0 0 1.5px rgba(37,224,200,.6),inset 0 2px 5px rgba(0,0,0,.45);
+  background:color-mix(in srgb, var(--cl-folder-tint, rgb(var(--cl-bright-rgb) / .07)) 60%, rgb(var(--cl-shade-rgb) / .35));
+  box-shadow:inset 0 0 0 1.5px rgb(var(--cl-lume-rgb) / .6),inset 0 2px 5px rgb(var(--cl-shade-rgb) / .45);
 }
 .cl-folder-cell{width:14px;height:14px;border-radius:4px;overflow:hidden;display:block}
 .cl-folder-cell > *{width:14px!important;height:14px!important;border-radius:4px!important;font-size:6px!important;line-height:1}
@@ -49,7 +49,7 @@
   background:color-mix(in srgb, var(--cl-deep) 68%, var(--cl-surface));
   border:1.5px solid var(--cl-raise);
   border-radius:18px;
-  box-shadow:0 18px 44px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
+  box-shadow:0 18px 44px rgb(var(--cl-shade-rgb) / .55),0 2px 8px rgb(var(--cl-shade-rgb) / .35);
   padding:10px 10px 12px;
   font-family:var(--cl-font-body);
   color:var(--cl-text);
@@ -86,7 +86,7 @@
 .cl-folder-pop-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px;color:var(--cl-text)}
 .cl-folder-pop-btn[data-active="true"]{color:var(--cl-text)}
 .cl-folder-pop-icon{position:relative;width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center}
-.cl-folder-pop-btn[data-active="true"] .cl-folder-pop-icon{box-shadow:0 0 0 2px var(--cl-lume),0 0 14px rgba(37,224,200,.25)}
+.cl-folder-pop-btn[data-active="true"] .cl-folder-pop-icon{box-shadow:0 0 0 2px var(--cl-lume),0 0 14px rgb(var(--cl-lume-rgb) / .25)}
 .cl-folder-pop-label{
   font-size:11px;font-weight:700;line-height:1.25;max-width:68px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -94,7 +94,7 @@
 .cl-folder-pop-drop{position:absolute;top:8px;bottom:22px;width:2px;border-radius:2px;background:var(--cl-lume);pointer-events:none;z-index:3}
 .cl-folder-pop-drop[data-side="left"]{left:-3px}
 .cl-folder-pop-drop[data-side="right"]{right:-3px}
-.cl-folder-pop[data-drop-target="true"]{box-shadow:0 18px 44px rgba(0,0,0,.55),0 0 0 2px rgba(37,224,200,.45)}
+.cl-folder-pop[data-drop-target="true"]{box-shadow:0 18px 44px rgb(var(--cl-shade-rgb) / .55),0 0 0 2px rgb(var(--cl-lume-rgb) / .45)}
 .cl-folder-pop-hint{font-size:11px;color:var(--cl-faint);padding:0 6px;font-weight:600}
 
 @media (prefers-reduced-motion: reduce){

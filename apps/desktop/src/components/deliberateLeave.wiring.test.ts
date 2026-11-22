@@ -140,20 +140,23 @@ describe('inventory: every leave entry point and what it sends', () => {
     });
 
     it('everything that reaches the shared chain without the user choosing stays non-deliberate', () => {
-        // inactivity auto-leave: bare handleLeave() (defaults to false)
-        expect(conf).toContain('if (inactivityCountdown <= 0) { handleLeave(); return; }');
+        // alone-in-call auto-leave: AloneGuard's onLeave -> handleLeaveRef, pinned to handleLeave(false)
+        expect(conf).toContain('onLeave: () => handleLeaveRef.current(),');
+        expect(conf).toContain('handleLeaveRef.current = () => handleLeave(false);');
+        expect(conf).not.toMatch(/handleLeaveRef\.current = \(\) => handleLeave\((?!false\))/);
         expect(conf).toContain('const handleLeave = (deliberate: boolean = false) => {');
         // LiveKit onDisconnected (drop / kicked / server removal): onDisconnect() with NO args
         const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={(err) => {');
-        expect(disc).toContain('if (handling.teardown) onDisconnect();');
-        expect(disc).not.toMatch(/onDisconnect\([^)]/);
+        expect(disc).toContain('if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));');
+        // never deliberate, never 'last person': the only argument it may pass is the third (displaced by this account's other connection)
+        expect(disc).not.toMatch(/onDisconnect\((?!undefined, undefined, )[^)]/);
         // connection / encryption failures route through stableOnLeave() with no args
         expect(pane.slice(pane.indexOf('const failConnection'), pane.indexOf('const failEncryption'))).toContain('stableOnLeave()');
         // the Dashboard callers other than the CallPane forwarder pass at most wasLastPerson (never `deliberate`)
         const args = [...dash.matchAll(/handleDisconnectCall(?:Ref\.current\?)?\.?\(([^)]*)\)/g)]
             .map(m => m[1].trim())
             .filter(a => !a.startsWith('wasLastPerson: boolean'));
-        expect(args.filter(a => a.includes('deliberate'))).toEqual(['wasLastPerson, deliberate === true']);
+        expect(args.filter(a => a.includes('deliberate'))).toEqual(['wasLastPerson, deliberate === true, displaced === true']);
     });
 
     it('quitting the app sends no leave at all (non-deliberate by construction): no unload / quit hook posts one', () => {

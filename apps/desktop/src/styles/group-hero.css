@@ -56,10 +56,10 @@
 
 /* Text over a loaded picture: near-white + a soft shadow, regardless of image. */
 .cl-group-backdrop[data-loaded="true"] ~ .cl-group-hero-copy .cl-group-hero-title{
-  color:#fff;text-shadow:0 1px 10px rgba(0,0,0,.5);
+  color:#fff;text-shadow:0 1px 10px rgb(var(--cl-shade-rgb) / .5);
 }
 .cl-group-backdrop[data-loaded="true"] ~ .cl-group-hero-copy .cl-group-hero-count{
-  color:rgba(255,255,255,.92);text-shadow:0 1px 8px rgba(0,0,0,.5);
+  color:rgb(var(--cl-bright-rgb) / .92);text-shadow:0 1px 8px rgb(var(--cl-shade-rgb) / .5);
 }
 
 @media (prefers-reduced-motion: reduce){

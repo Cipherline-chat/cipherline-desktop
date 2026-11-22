@@ -1,0 +1,53 @@
+/* Settings → Appearance → Theme (components/settings/panes/ThemePicker.tsx).
+   The option chrome uses the ACTIVE theme's tokens; each picture uses its own
+   theme's colours (--tp-*, set inline from the theme data). */
+.tp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.tp-opt {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0;
+  padding: 8px 8px 12px; border-radius: 16px; text-align: left; cursor: pointer;
+  background: var(--cl-surface); color: var(--cl-text);
+  border: 1.5px solid var(--cl-border);
+  transition: border-color .15s ease, background-color .15s ease, transform .15s var(--cl-spring);
+}
+.tp-opt:hover { border-color: var(--cl-border-strong); }
+.tp-opt:active { transform: scale(.985); }
+.tp-opt:focus-visible { outline: 3px solid var(--cl-lume-text); outline-offset: 2px; }
+.tp-opt--on, .tp-opt--on:hover { border-color: var(--cl-lume-ui); box-shadow: 0 0 0 1.5px var(--cl-lume-ui); }
+.tp-pic { position: relative; display: block; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; margin-bottom: 6px; }
+.tp-label { font-weight: 800; font-size: 13.5px; padding: 0 4px; }
+.tp-desc { font-size: 12px; line-height: 1.35; color: var(--cl-muted); padding: 0 4px; }
+.tp-check {
+  position: absolute; right: 6px; top: 6px; width: 22px; height: 22px; border-radius: 99px;
+  display: grid; place-items: center; background: var(--cl-lume); color: var(--cl-on-lume);
+  box-shadow: 0 0 0 2px var(--cl-deep);
+}
+
+/* The picture: a 3-pane app at thumbnail size. */
+.tp-mini {
+  position: absolute; inset: 0; display: flex; gap: 4%; padding: 6%;
+  background: var(--tp-abyss); box-shadow: inset 0 0 0 1px var(--tp-border);
+}
+.tp-mini--half { clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+.tp-mini i, .tp-mini b, .tp-mini em { display: block; font-style: normal; }
+.tp-rail { width: 9%; display: flex; flex-direction: column; gap: 10%; align-items: center; padding-top: 2%; }
+.tp-dot { width: 100%; aspect-ratio: 1; border-radius: 30%; background: var(--tp-surface); }
+.tp-dot--on { background: var(--tp-lume); }
+.tp-list { width: 28%; border-radius: 6px; background: var(--tp-deep); padding: 6%; display: flex; flex-direction: column; gap: 9%; }
+.tp-line { height: 9%; min-height: 4px; border-radius: 3px; background: var(--tp-surface); }
+.tp-line--on { background: var(--tp-raise); }
+.tp-line--short { width: 60%; }
+.tp-chat { flex: 1; border-radius: 6px; background: var(--tp-deep); padding: 6% 7%; display: flex; flex-direction: column; gap: 9%; }
+.tp-msg { display: flex; flex-direction: column; gap: 3px; }
+.tp-msg b { width: 34%; height: 4px; border-radius: 2px; background: var(--tp-text); opacity: .85; }
+.tp-msg b.tp-name--lume { background: var(--tp-lume-text); opacity: 1; }
+.tp-msg em { width: 80%; height: 4px; border-radius: 2px; background: var(--tp-muted); opacity: .7; }
+.tp-msg em.tp-em--short { width: 55%; }
+.tp-compose { margin-top: auto; height: 16%; min-height: 7px; border-radius: 99px; background: var(--tp-surface); box-shadow: inset 0 0 0 1px var(--tp-border); }
+/* High contrast previews: the 2px edges the theme itself draws. */
+.tp-mini--hc { box-shadow: inset 0 0 0 2px var(--tp-border); }
+.tp-mini--hc .tp-list, .tp-mini--hc .tp-chat { box-shadow: inset 0 0 0 1.5px var(--tp-border); }
+.tp-mini--hc .tp-compose { box-shadow: inset 0 0 0 1.5px var(--tp-text); }
+.tp-mini--hc .tp-msg b, .tp-mini--hc .tp-msg em { opacity: 1; }
+
+@media (max-width: 760px) { .tp-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .tp-opt { transition: none; } .tp-opt:active { transform: none; } }

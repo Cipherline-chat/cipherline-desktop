@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { celebrationReducedNow } from '../utils/a11y/motionPrefs';
 import { Hand } from 'lucide-react';
 import { Keys } from './mascot/Keys';
 import { HIGH_FIVE_PLAY_EVENT, type HighFiveEventDetail } from '../utils/profileMoments';
@@ -23,7 +24,7 @@ export const HighFiveOverlay: React.FC = () => {
         let arm: ReturnType<typeof setTimeout> | null = null;
         const onPlay = (e: Event) => {
             const d = (e as CustomEvent<HighFiveEventDetail>).detail;
-            const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const reduced = celebrationReducedNow();
             if (hide) clearTimeout(hide);
             if (arm) clearTimeout(arm);
             setWave(false);

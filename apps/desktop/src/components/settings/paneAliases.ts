@@ -19,7 +19,7 @@ import type { PaneId } from './SettingsScreen';
 
 /** Every pane the Descent can show, in gauge order. Kept in sync with DepthGauge's ZONES by paneAliases.test.ts. */
 export const PANE_IDS = [
-    'profile', 'activityStyle', 'appearance',
+    'profile', 'activityStyle', 'appearance', 'accessibility',
     'devices', 'voice', 'notifications', 'keybinds', 'activity',
     'privacy', 'storage', 'billing',
     'advanced', 'danger',

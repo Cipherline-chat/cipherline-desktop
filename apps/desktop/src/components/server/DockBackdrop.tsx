@@ -1,5 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { isMotionActive, onMotionChange } from '../../utils/idleMotion';
+import { useTheme } from '../../theme/engine';
+import { ambientCount, ambientPaletteFor, drawMote } from '../../utils/ambientPalette';
+import { useAmbientActive } from '../../hooks/useAmbientMotion';
 
 /**
  * Server Settings' ambient light — real motes drifting through the water,
@@ -20,6 +23,10 @@ import { isMotionActive, onMotionChange } from '../../utils/idleMotion';
  * behind a working settings surface, not a hero backdrop, so it reads as
  * ambient light rather than something competing with the form fields on
  * top of it.
+ *
+ * Tinted per theme by utils/ambientPalette.ts (Dark unchanged) and gated by
+ * useAmbientActive() — Reduce motion, Celebrations and effects, Home ambience —
+ * exactly like SeaBackdrop: when inactive the canvas is not mounted.
  */
 
 interface Mote {
@@ -31,12 +38,15 @@ const MOTE_SPEED = 0.6;
 
 export const DockBackdrop: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const theme = useTheme();
+    const palRef = useRef(ambientPaletteFor(theme));
+    palRef.current = ambientPaletteFor(theme);
+    const active = useAmbientActive();
 
     useEffect(() => {
         const cv = canvasRef.current;
         const wrap = cv?.parentElement;
-        if (!cv || !wrap) return;
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        if (!cv || !wrap || !active) return;
         const cx = cv.getContext('2d');
         if (!cx) return;
 
@@ -64,20 +74,24 @@ export const DockBackdrop: React.FC = () => {
 
         const motes: Mote[] = [];
         for (let i = 0; i < MOTE_COUNT; i++) motes.push(spawn());
+        // The theme's count (Dark: all of them). The field is spawned at full
+        // size and drawn up to this many, so a theme switch never re-seeds it.
+        const shown = () => ambientCount(palRef.current, MOTE_COUNT);
 
         let raf = 0;
         let running = false;
         const tick = () => {
             cx.clearRect(0, 0, cv.width, cv.height);
-            for (const m of motes) {
+            const pal = palRef.current;
+            const n = shown();
+            for (let i = 0; i < motes.length; i++) {
+                const m = motes[i];
                 m.y -= m.v * MOTE_SPEED;
                 m.p += 0.012;
                 if (m.y < -10) Object.assign(m, spawn(cv.height + 8));
+                if (i >= n) continue;
                 const x = m.x + Math.sin(m.p) * 14;
-                cx.beginPath();
-                cx.arc(x, m.y, m.r, 0, 7);
-                cx.fillStyle = m.warm ? `rgba(255,201,77,${m.a})` : `rgba(37,224,200,${m.a})`;
-                cx.fill();
+                drawMote(cx, pal, x, m.y, m.r, m.a, m.warm);
             }
             raf = requestAnimationFrame(tick);
         };
@@ -96,11 +110,11 @@ export const DockBackdrop: React.FC = () => {
             cancelAnimationFrame(raf);
             ro.disconnect();
         };
-    }, []);
+    }, [active]);
 
     return (
         <div className="dock-motes-wrap" aria-hidden="true">
-            <canvas ref={canvasRef} className="dock-motes" />
+            {active && <canvas ref={canvasRef} className="dock-motes" />}
         </div>
     );
 };

@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
     coverScale, clampCrop, zoomAbout, IDENTITY_CROP, MAX_ZOOM,
     AVATAR_OUTPUT, BANNER_OUTPUT, cssAspectRatio,
+    hasTransparentPixel, croppedStillType, imageUploadType, imageUploadExt,
 } from './imageCrop';
 
 const FRAME = { w: 300, h: 300 };
@@ -165,5 +166,29 @@ describe('cssAspectRatio — a preview box is the exact shape of the crop', () =
         for (const bad of [{ width: 0, height: 480 }, { width: 1200, height: 0 }, { width: -1, height: 5 }, { width: NaN, height: 1 }, { width: Infinity, height: 1 }]) {
             expect(cssAspectRatio(bad)).toBe('1 / 1');
         }
+    });
+});
+
+describe('transparency-preserving crop output (server icons)', () => {
+    it('hasTransparentPixel finds any alpha below 255', () => {
+        expect(hasTransparentPixel([0, 0, 0, 255, 9, 9, 9, 255])).toBe(false);
+        expect(hasTransparentPixel([0, 0, 0, 255, 9, 9, 9, 254])).toBe(true);
+        expect(hasTransparentPixel([1, 2, 3, 0])).toBe(true);
+        expect(hasTransparentPixel([])).toBe(false);
+    });
+    it('PNG only when asked AND the crop is transparent; otherwise JPEG', () => {
+        expect(croppedStillType(true, true)).toBe('image/png');
+        expect(croppedStillType(true, false)).toBe('image/jpeg');
+        expect(croppedStillType(false, true)).toBe('image/jpeg');
+        expect(croppedStillType(false, false)).toBe('image/jpeg');
+    });
+    it('upload type follows the blob for the types the cropper produces', () => {
+        expect(imageUploadType(new Blob([], { type: 'image/png' }))).toBe('image/png');
+        expect(imageUploadType(new Blob([], { type: 'image/webp' }))).toBe('image/webp');
+        expect(imageUploadType(new Blob([], { type: 'image/jpeg' }))).toBe('image/jpeg');
+        expect(imageUploadType(new Blob([], { type: '' }))).toBe('image/jpeg');
+        expect(imageUploadExt('image/png')).toBe('png');
+        expect(imageUploadExt('image/webp')).toBe('webp');
+        expect(imageUploadExt('image/jpeg')).toBe('jpg');
     });
 });

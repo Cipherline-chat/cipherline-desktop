@@ -16,7 +16,7 @@
 }
 .mo-reef-bubble {
   position: absolute; bottom: 10px; border-radius: 50%;
-  border: 2px solid rgba(37, 224, 200, .6); opacity: 0;
+  border: 2px solid rgb(var(--cl-lume-rgb) / .6); opacity: 0;
   animation: mo-reef-bubble 2s ease-in-out both;
 }
 @keyframes mo-reef-bubble {
@@ -24,7 +24,7 @@
   100% { transform: translateY(-46vh) translateX(10px); opacity: 0; }
 }
 .mo-reef .mo-reef-count {
-  position: absolute; left: 0; top: -70px; font-size: 58px; color: var(--cl-lume, #25E0C8);
+  position: absolute; left: 0; top: -70px; font-size: 58px; color: var(--cl-lume, var(--cl-lume-text));
   animation: mo-reef-pop .5s cubic-bezier(.2, .8, .3, 1.15) 2.4s both;
 }
 .mo-reef .mo-reef-line {

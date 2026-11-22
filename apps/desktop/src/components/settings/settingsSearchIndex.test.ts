@@ -37,6 +37,12 @@ describe('searchSettingsIndex', () => {
         expect(searchSettingsIndex('purge').storage).toEqual(expect.arrayContaining(['Clear history', 'Server storage']));
     });
 
+    it('finds the Accessibility sizes by what people type', () => {
+        expect(searchSettingsIndex('zoom').accessibility).toContain('Interface size');
+        expect(searchSettingsIndex('font size').accessibility).toContain('Message text size');
+        expect(searchSettingsIndex('accessibility').accessibility).toEqual(expect.arrayContaining(['Interface size', 'Message text size']));
+    });
+
     it('empty or whitespace query matches nothing', () => {
         expect(searchSettingsIndex('')).toEqual({});
         expect(searchSettingsIndex('   ')).toEqual({});

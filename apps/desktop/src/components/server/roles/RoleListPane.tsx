@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { roleNameDraftError, ROLE_NAME_INPUT_MAX_UNITS } from '../../../utils/serverRoleNames';
 import { Plus, Search, X } from 'lucide-react';
 import { ClButton, ClInput, ClSelect } from '../../cl';
 import type { ClSelectOption, ClSelectReorderConfig } from '../../cl';
 import { readableRoleColorHex, roleColorHexFromInt } from '../../../utils/roleColor';
+import { roleIconOf, roleSecondaryHex } from '../../../utils/roleStyle';
+import { RoleIconBadge } from './RoleIconBadge';
 import { computeMovePosition } from './roleReorderMath';
 import { sortRolesForDisplay } from './roleOrder';
 import { useEscape } from '../../../hooks/useEscape';
@@ -17,6 +20,9 @@ interface Props {
     canManage: boolean;
     onReorder?: (roleId: string, newPosition: number) => Promise<void>;
     onError?: (msg: string) => void;
+    /** For role-icon images (decrypt + batched download). */
+    serverId?: string;
+    token?: string | null;
 }
 
 const sortRoles = (roles: Role[]): Role[] => sortRolesForDisplay(roles);
@@ -27,19 +33,22 @@ const sortRoles = (roles: Role[]): Role[] => sortRolesForDisplay(roles);
  *  trigger and the open option list since `ClSelect` renders the same
  *  `label` node in both places. No colour assigned -> normal text colour,
  *  never invisible. */
-function roleOptionLabel(role: Role): React.ReactNode {
+function roleOptionLabel(role: Role, serverId: string | null, token: string | null): React.ReactNode {
     const hex = roleColorHexFromInt(role.color);
     const readable = readableRoleColorHex(hex);
+    const secondary = readableRoleColorHex(roleSecondaryHex(role));
+    const icon = roleIconOf(role, serverId);
     return (
         <span className="flex items-center gap-2 min-w-0">
             <span
                 className="w-2.5 h-2.5 rounded-full shrink-0"
                 style={{
-                    backgroundColor: readable ?? 'transparent',
+                    background: readable ? (secondary ? `linear-gradient(135deg, ${readable}, ${secondary})` : readable) : 'transparent',
                     boxShadow: readable ? `0 0 6px ${readable}70` : undefined,
                     border: readable ? undefined : '1.5px solid rgba(255,255,255,0.25)',
                 }}
             />
+            {icon && <RoleIconBadge icon={icon} token={token} size={14} decorative />}
             <span className="truncate" style={readable ? { color: readable } : undefined}>
                 {role.name}
             </span>
@@ -51,7 +60,7 @@ function roleOptionLabel(role: Role): React.ReactNode {
 }
 
 export const RoleListPane: React.FC<Props> = ({
-    roles, selectedRoleId, onSelect, onCreate, canManage, onReorder,
+    roles, selectedRoleId, onSelect, onCreate, canManage, onReorder, serverId, token,
 }) => {
     const [creating, setCreating] = useState(false);
     const [draftName, setDraftName] = useState('');
@@ -84,11 +93,12 @@ export const RoleListPane: React.FC<Props> = ({
     );
 
     const options: ClSelectOption<string>[] = useMemo(() => {
-        if (filtering) return matches.map(r => ({ value: r.role_id, label: roleOptionLabel(r) }));
-        const opts = draggableRoles.map(r => ({ value: r.role_id, label: roleOptionLabel(r) }));
-        if (everyoneRole) opts.push({ value: everyoneRole.role_id, label: roleOptionLabel(everyoneRole) });
+        const label = (r: Role) => roleOptionLabel(r, serverId ?? null, token ?? null);
+        if (filtering) return matches.map(r => ({ value: r.role_id, label: label(r) }));
+        const opts = draggableRoles.map(r => ({ value: r.role_id, label: label(r) }));
+        if (everyoneRole) opts.push({ value: everyoneRole.role_id, label: label(everyoneRole) });
         return opts;
-    }, [filtering, matches, draggableRoles, everyoneRole]);
+    }, [filtering, matches, draggableRoles, everyoneRole, serverId, token]);
 
     // Runs the SAME persistence path the old up/down buttons (and the rail
     // before them) used — compute the new midpoint `position` via
@@ -141,7 +151,7 @@ export const RoleListPane: React.FC<Props> = ({
 
     const submitNew = async () => {
         const trimmed = draftName.trim();
-        if (!trimmed || busy) return;
+        if (!trimmed || busy || roleNameDraftError(trimmed) !== null) return;
         setBusy(true);
         try {
             await onCreate(trimmed);
@@ -154,7 +164,7 @@ export const RoleListPane: React.FC<Props> = ({
         <div className="shrink-0 border-b border-cl-border/40 flex items-center gap-3 px-5 py-3" style={{ background: 'var(--cl-abyss)' }}>
             {/* Left: count label */}
             <p className="text-[10px] font-mono font-semibold uppercase tracking-widest shrink-0" style={{ color: 'var(--cl-faint)' }}>
-                Roles<span className="text-cl-lume ml-1.5">{roles.length}</span>
+                Roles<span className="text-cl-lume-text ml-1.5">{roles.length}</span>
             </p>
 
             {/* Middle: the role picker — a dropdown instead of a horizontal rail
@@ -221,13 +231,15 @@ export const RoleListPane: React.FC<Props> = ({
                                 value={draftName}
                                 onChange={e => setDraftName(e.target.value)}
                                 placeholder="Role name…"
-                                maxLength={50}
+                                maxLength={ROLE_NAME_INPUT_MAX_UNITS}
+                                aria-invalid={roleNameDraftError(draftName) !== null}
+                                title={roleNameDraftError(draftName) ?? undefined}
                                 onKeyDown={e => {
                                     if (e.key === 'Enter') submitNew();
                                 }}
                                 style={{ width: 160, flexShrink: 0, padding: '7px 12px', fontSize: 13 }}
                             />
-                            <ClButton size="sm" onClick={submitNew} disabled={!draftName.trim() || busy} loading={busy}>
+                            <ClButton size="sm" onClick={submitNew} disabled={!draftName.trim() || roleNameDraftError(draftName) !== null || busy} loading={busy}>
                                 Add
                             </ClButton>
                             <ClButton size="sm" variant="ghost" icon onClick={() => { setCreating(false); setDraftName(''); }} tooltip="Cancel">

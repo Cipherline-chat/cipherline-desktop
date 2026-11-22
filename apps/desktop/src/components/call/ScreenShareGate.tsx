@@ -294,7 +294,7 @@ export const ScreenShareGate = ({
                 <TileNamePill insets={tileCornerInsets()} corner={tileChromeSlots(true).name}>
                     <span className="text-white text-[11px] font-semibold truncate min-w-0">{displayName}</span>
                     <AnnotationGrantBadge identity={p.identity} size={10} />
-                    <Monitor className="w-3 h-3 text-cl-lume shrink-0" />
+                    <Monitor className="w-3 h-3 text-cl-lume-text shrink-0" />
                     {/* The pill is pointer-events-none, so a click on the card
                         used to fall through to the Watch surface underneath.
                         The eye is hit-testable now (it has to be, to be
@@ -316,15 +316,15 @@ export const ScreenShareGate = ({
                 try { if (p.metadata) ssIsDeafened = JSON.parse(p.metadata).deafened === true; } catch { /* malformed or missing JSON is treated as absent */ }
                 const ssIsMuted = isMuted;
                 return ssIsDeafened ? (
-                    <div className="absolute bottom-2 right-2 bg-red-500 rounded-full p-1 border-[2px] border-[#0B0F1E] shadow-md z-30 pointer-events-none">
+                    <div className="absolute bottom-2 right-2 bg-red-500 rounded-full p-1 border-[2px] border-[color:var(--cl-abyss)] shadow-md z-30 pointer-events-none">
                         <Headphones className="w-2.5 h-2.5 text-white" />
                     </div>
                 ) : ssIsMuted ? (
-                    <div className="absolute bottom-2 right-2 bg-red-500 rounded-full p-1 border-[2px] border-[#0B0F1E] shadow-md z-30 pointer-events-none">
+                    <div className="absolute bottom-2 right-2 bg-red-500 rounded-full p-1 border-[2px] border-[color:var(--cl-abyss)] shadow-md z-30 pointer-events-none">
                         <MicOff className="w-2.5 h-2.5 text-white" />
                     </div>
                 ) : isLocalMuted ? (
-                    <div className="absolute bottom-2 right-2 bg-cl-raise rounded-full p-1 border-[2px] border-[#0B0F1E] shadow-md z-30 pointer-events-none">
+                    <div className="absolute bottom-2 right-2 bg-cl-raise rounded-full p-1 border-[2px] border-[color:var(--cl-abyss)] shadow-md z-30 pointer-events-none">
                         <MicOff className="w-2.5 h-2.5 text-[darkgray]" />
                     </div>
                 ) : null;

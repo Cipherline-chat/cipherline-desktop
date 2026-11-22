@@ -196,9 +196,9 @@ describe('ChatPane message row wiring', () => {
     });
 
     it('the row keeps its original box (no min-height hack) and is not an overflow clip', () => {
-        const row = /className=\{`group relative flex gap-3 py-0\.5 pr-2 pl-3 [^`]*`\}/.exec(chatPane)?.[0] ?? '';
+        const row = /className=\{`cl-msg-row group relative flex gap-3 py-0\.5 pr-2 pl-3 [^`]*`\}/.exec(chatPane)?.[0] ?? '';
         expect(row).not.toBe('');
-        expect(row).not.toMatch(/overflow-|min-h-|msg-row/);
+        expect(row).not.toMatch(/overflow-|min-h-|(?<!cl-)msg-row/); // cl-msg-row is the density hook (styles/readability.css), not a layout hack
     });
 
     it('NEGATIVE CONTROL: the above-the-row placement is gone from ChatPane', () => {
@@ -226,12 +226,13 @@ describe('ChatPane message row wiring', () => {
     });
 
     it('every action and its permission gate survived the move', () => {
-        for (const label of ['label="React"', 'label="Reply"', "'Unpin — stays saved to the server'", 'Save to server', "'Save for me'", 'label="Edit"', "label={isMe ? 'Delete — Shift to skip prompt'"]) {
+        for (const label of ['label="React"', 'label="Reply"', "'Unpin — stays saved to the server'", 'Save to server', "'Save for me'", 'label="Edit"', "label={(isMe || isClaimantRow) ? 'Delete — Shift to skip prompt'"]) {
             expect(bar).toContain(label);
         }
         expect(bar).toContain('(isServerChannel ? canReactServer : (isFriend || activeChat?.type === \'group\'))');
         expect(bar).toContain("isMe && msg.content?.type === 'text'");
-        expect(bar).toContain('(isMe || (canManageMessages && !isMe))');
+        // Delete: your own row, a Discord-verified claimant's imported row (phase 3), or a moderator.
+        expect(bar).toContain('(isMe || isClaimantRow || (canManageMessages && !isMe))');
         expect(bar).toContain('canPinInThisChat');
         expect(bar).toContain('serverSaveActionFor(msg.id)');
         expect(bar).toContain("entryPoint: e.detail === 0 ? 'msgbar-keyboard' : 'msgbar-mouse'");

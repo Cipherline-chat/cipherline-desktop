@@ -13,6 +13,8 @@
  * negative role.color (i.e. -1, our "no colour" sentinel) coerced it into
  * `#ffffff…ff` instead of being treated as nullish.
  */
+import { DARK_THEME, type Theme } from '../theme/themes';
+import { getTheme } from '../theme/engine';
 
 export interface RoleLite {
     role_id: string;
@@ -188,12 +190,12 @@ function rgb01ToHex(r: number, g: number, b: number): string {
 }
 
 /**
- * The dropdown menu's background (cl-kit's `--deep`, #131A30). Hardcoded
- * rather than read from a CSS custom property because this is a pure,
- * unit-testable function that runs outside component render — keep in sync
- * if `--deep` ever changes.
+ * The dropdown menu's background (cl-kit's `--deep`), from the theme data
+ * rather than a CSS custom property because this is a pure, unit-testable
+ * function that runs outside component render. Dark value: the Light slice
+ * passes the active theme's deep (themeColor('deep')) instead.
  */
-export const CL_KIT_DEEP_BG_HEX = '#131A30';
+export const CL_KIT_DEEP_BG_HEX = DARK_THEME.palette.deep;
 
 /**
  * Lightens a role colour just enough to clear a minimum WCAG contrast ratio
@@ -210,9 +212,13 @@ export const CL_KIT_DEEP_BG_HEX = '#131A30';
 export function readableRoleColorHex(
     hex: string | null,
     minRatio = 4.5,
-    bgHex: string = CL_KIT_DEEP_BG_HEX,
+    bgHexArg?: string,
 ): string | null {
     if (!hex) return null;
+    // No background given: the active theme's dropdown/panel (`deep`). On a
+    // light one the colour is darkened instead (readableOnLightHex).
+    if (bgHexArg === undefined && getTheme().scheme === 'light') return readableOnLightHex(hex, minRatio, getTheme().palette.deep);
+    const bgHex = bgHexArg ?? CL_KIT_DEEP_BG_HEX;
     if (contrastRatio(hex, bgHex) >= minRatio) return hex;
 
     const [r, g, b] = hexToRgb01(hex);
@@ -230,4 +236,44 @@ export function readableRoleColorHex(
     }
     const [fr, fg, fb] = hslToRgb(h, s, hi);
     return rgb01ToHex(fr, fg, fb);
+}
+
+/**
+ * Moves a colour toward readability against a LIGHT background: the lightest
+ * shade of the same hue/saturation that still clears `minRatio` (walking
+ * toward black). Colours that already clear it pass through unchanged.
+ */
+export function readableOnLightHex(hex: string, minRatio: number, bgHex: string): string {
+    if (contrastRatio(hex, bgHex) >= minRatio) return hex;
+    const [r, g, b] = hexToRgb01(hex);
+    const [h, s] = rgbToHsl(r, g, b);
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        const [nr, ng, nb] = hslToRgb(h, s, mid);
+        if (contrastRatio(rgb01ToHex(nr, ng, nb), bgHex) >= minRatio) lo = mid; else hi = mid;
+    }
+    const [fr, fg, fb] = hslToRgb(h, s, lo);
+    return rgb01ToHex(fr, fg, fb);
+}
+
+/**
+ * A role / username colour used as TEXT in the active theme. Dark shows it
+ * exactly as picked (theme.nameMinContrast 1, as before themes); Light keeps
+ * the hue and darkens it until it reads on the cream page and white panels.
+ * Non-hex values (a CSS variable, 'white') pass through.
+ */
+export function readableNameColor(color: string | null | undefined, theme: Theme = getTheme()): string | null {
+    if (!color) return null;
+    if (theme.nameMinContrast <= 1 || !/^#[0-9a-f]{6}$/i.test(color)) return color;
+    // Measure against the hardest of page, panel and the sunk wells (the
+    // member list's role groups sit on `sink`): on a light theme the darkest of
+    // them, on a dark one the lightest. Clearing it clears all three.
+    const grounds = [theme.palette.abyss, theme.palette.deep, theme.palette.sink];
+    const light = relativeLuminance(theme.palette.deep) > 0.4;
+    const bg = grounds.reduce((a, b) => ((relativeLuminance(b) < relativeLuminance(a)) === light ? b : a));
+    return light
+        ? readableOnLightHex(color, theme.nameMinContrast, bg)
+        : readableRoleColorHex(color, theme.nameMinContrast, bg);
 }

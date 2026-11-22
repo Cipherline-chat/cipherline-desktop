@@ -154,6 +154,29 @@ export function setOccluded(occluded: boolean, doc: Document = document): void {
     }
 }
 
+/** Attribute value while the Firewall game is open (see setGameOpen). */
+export const GAME_ON = 'on';
+
+/**
+ * Third, independent reason to stop decoration: the Firewall game is open. The
+ * game covers the content column only (and that column is not rendered at all while
+ * it is, firewall.css); the server rail and the titlebar stay visible beside it, so
+ * their loops (the rail Keys mascot, the dock bead, ping pills, status pulses) kept
+ * running on the same main thread and compositor the game draws against. firewall.css
+ * stops them on `<html data-cl-game="on">`. Its own attribute, not setOccluded's: the
+ * Settings screen sets and clears that one and would clear it under an open game.
+ * Does NOT notify onMotionChange listeners (the game itself listens to those).
+ */
+export function setGameOpen(open: boolean, doc: Document = document): void {
+    const root = doc.documentElement;
+    if (!root) return;
+    if (open) {
+        if (root.getAttribute('data-cl-game') !== GAME_ON) root.setAttribute('data-cl-game', GAME_ON);
+    } else if (root.hasAttribute('data-cl-game')) {
+        root.removeAttribute('data-cl-game');
+    }
+}
+
 let installed = false;
 
 /** Decorative loops rest after this long without pointer/key/wheel input. */

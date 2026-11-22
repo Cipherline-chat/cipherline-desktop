@@ -214,7 +214,9 @@ describe('category matrix', () => {
         expect(n.desktop_notifications).toBe(true);
         expect(n).not.toHaveProperty('screen_share_fps');
         const o = buildDiagnosticReport(input('other')).body.payload.settings;
-        expect(Object.keys(o).sort()).toEqual(['hardware_acceleration']);
+        // Push-to-talk delivery rides in `general` on purpose: "I can't talk in my game" is filed under any category.
+        expect(Object.keys(o).filter(k => !/^pt[tm]_/.test(k)).sort()).toEqual(['hardware_acceleration']);
+        expect(o).toHaveProperty('ptt_key_kind');
     });
     it('a crash report without a pending crash simply has no crash section', () => {
         expect(buildDiagnosticReport(input('crash', { crash: null })).body.payload).not.toHaveProperty('crash');

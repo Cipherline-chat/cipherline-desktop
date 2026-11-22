@@ -25,7 +25,7 @@
   border: 1px solid var(--cl-border);
 }
 .ss-keys-art { flex-shrink: 0; display: grid; place-items: center; width: 64px; }
-.ss-keys-arrow { color: var(--cl-lume); font-weight: 800; font-size: 18px; line-height: 1; }
+.ss-keys-arrow { color: var(--cl-lume-text); font-weight: 800; font-size: 18px; line-height: 1; }
 .ss-keys-note {
   display: flex;
   align-items: center;

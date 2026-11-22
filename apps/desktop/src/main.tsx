@@ -27,6 +27,8 @@ import './styles/cl-kit.css';
 import './styles/cl-kit-fallback.css';
 // App extensions to the kit — imported AFTER so they win at equal specificity.
 import './styles/cl-kit-ext.css';
+// The kit's Light values (generated: scripts/gen-theme-light-kit.cjs; the kit files are shared with apps/website).
+import './styles/theme-light-kit.css';
 // “The Descent” full-screen settings layer (sd- prefixed, composes the kit).
 import './styles/settings-descent.css';
 // “Drift” floating-deck workspace composition — the only layout; see layout-drift.css.
@@ -35,6 +37,15 @@ import './styles/layout-drift.css';
 // (utils/nightDive.ts, components/NightDiveSea.tsx). Imported LAST so its
 // background declarations win over the stylesheets they mirror.
 import './styles/night-dive.css';
+// Light theme: the structural differences (glows -> shadows, the kit, scrollbars).
+// Every rule is under :root[data-scheme="light"] (Light and High contrast light); imported last so it wins.
+import './styles/theme-light.css';
+// Midnight (true black): its few structural differences, under :root[data-theme="midnight"].
+import './styles/theme-midnight.css';
+// Gradient role names + role icons (utils/roleStyle.ts).
+import './styles/role-style.css';
+// High contrast themes (:root[data-contrast="high"]) and Windows High Contrast (forced-colors).
+import './styles/theme-contrast.css';
 import App from './App.tsx';
 import { AuthProvider } from './contexts/AuthContext.tsx';
 import { SubscriptionProvider } from './contexts/SubscriptionContext.tsx';
@@ -45,11 +56,20 @@ import { applyNightDiveNow } from './hooks/useNightDive';
 import StorageLockedScreen from './components/StorageLockedScreen';
 import StorageCorruptedScreen from './components/StorageCorruptedScreen';
 import StorageReadFailedScreen from './components/StorageReadFailedScreen';
+import StorageOpeningScreen from './components/StorageOpeningScreen';
 import RootErrorBoundary from './components/RootErrorBoundary';
 import StagingLockScreen from './components/StagingLockScreen';
 import { readStagingLockStatus, shouldShowStagingLockScreen } from './utils/stagingLock';
 import { APP_VERSION } from './constants';
 import { installRecentErrorCapture } from './utils/diagnostics/recentErrors';
+import { bootTheme } from './theme/engine';
+import { bootMotion } from './utils/a11y/motionPrefs';
+
+// Theme: applied synchronously right here (data-theme + the engine's variables
+// are on <html> before anything renders), then the device's stored theme id is
+// read from the main process in parallel with the store hydration below and
+// applied before the first React render (src/theme/engine.ts).
+const themeBoot = bootTheme();
 
 const endBootActivity = startFreezeLog();
 // Issue reporter: remember the last few renderer errors (scrubbed at capture).
@@ -66,17 +86,33 @@ const router = createHashRouter([
 // Run `cb` once the main thread goes idle (setTimeout fallback where unsupported).
 const idle = (cb: () => void) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(cb, { timeout: 30_000 }) : setTimeout(cb, 1000));
 
+// One React root for the whole boot: the "Opening your data…" screen (below)
+// may be on it before renderApp() runs, and renderApp() replaces it.
+let bootRoot: Root | null = null;
+const getRoot = (): Root => (bootRoot ??= createRoot(document.getElementById('root')!));
+
+// The store is retrying a load that failed for a reason that usually clears in
+// seconds (utils/storeLoadRetry.ts). Say so instead of a blank window, and never
+// flash the read-failed screen for a refusal that a retry fixes. A normal launch
+// never fires this. Unsubscribed once hydrate settles.
+const offLoadRetry = secureLocalStore.onLoadRetry(() => {
+  getRoot().render(<StrictMode><RootErrorBoundary><StorageOpeningScreen /></RootErrorBoundary></StrictMode>);
+});
+
 async function renderApp() {
   // Before the first paint, so no frame is ever rendered with decorative
   // loops running in an already-background window.
   installIdleMotionGate();
+  // Settings → Accessibility → Reduce motion: every matchMedia('(prefers-reduced-motion…)')
+  // caller and the <html data-reduced-motion> CSS hook follow the in-app choice.
+  bootMotion();
   installOpusBundleConsistency();
 
   // Night dive: the store is hydrated by now, so a client launched after
   // midnight paints its very first frame already deep instead of fading in.
   applyNightDiveNow();
 
-  const root = createRoot(document.getElementById('root')!);
+  const root = getRoot();
   // Covers the first render + commit, which React runs in later tasks; ends
   // the first time the thread goes idle.
   const endRender = beginActivity('startup:render');
@@ -175,4 +211,7 @@ async function renderUnlockedApp(root: Root, continuedPastReadFailure = false) {
 // leave the user staring at a blank window.
 trackActivity('startup:hydrate', () => secureLocalStore.hydrate())
   .catch((e) => console.error('[main] secureLocalStore.hydrate failed — booting anyway', e))
-  .finally(renderApp);
+  .finally(offLoadRetry)
+  // bootTheme never rejects and gives up on the host after 400 ms; by now it
+  // has normally long resolved (it ran in parallel with the hydration).
+  .finally(() => { void themeBoot.finally(renderApp); });

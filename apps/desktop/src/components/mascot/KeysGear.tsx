@@ -226,7 +226,7 @@ export const GearOn: React.FC<{ on: On; lanternDim: boolean }> = ({ on, lanternD
                 <rect x="35" y="55" width="40" height="22" rx="2" fill="#B98A55" stroke="#8C643A" strokeWidth="1.2" />
                 <path d="M35 60 L75 60" stroke="#8C643A" strokeWidth="1" />
                 <rect x="51" y="55" width="8" height="6" fill="#D9B98C" />
-                <path d="M55 73 L55 65 M51.5 68.5 L55 65 L58.5 68.5" stroke="var(--cl-abyss)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                <path d="M55 73 L55 65 M51.5 68.5 L55 65 L58.5 68.5" stroke="var(--cl-keys-ink)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
             </SVG>
         </span>
         <span className={cls('hkg-papers', on('papers'))}>

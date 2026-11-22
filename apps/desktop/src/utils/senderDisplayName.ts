@@ -9,7 +9,15 @@
  *
  * One function for the message header and the reply quote (owner, 2026-11-16:
  * replies show who sent the original, like mobile), so the two can't disagree.
+ *
+ * Imported history (Discord import phase 2): a row the SERVER marked as
+ * imported, whose decrypted `imported_from` matches the mark, is shown under the
+ * imported author's name (utils/importedAuthor.ts, plan B6.2). Any other row
+ * that carries such a block is shown as its real sender, as before.
  */
+import type { ImportMark } from '@cipherline/shared';
+import { importedNameOf, verifiedBlockOf } from './importedAuthor';
+
 export interface SenderNameContext {
     inServerChannel: boolean;
     nicknames?: Record<string, string | null | undefined> | null;
@@ -30,9 +38,15 @@ export function isOwnMessage(
 }
 
 export function senderDisplayName(
-    m: { sender_user_id?: string | null; sender_device_id?: string | null },
+    m: { sender_user_id?: string | null; sender_device_id?: string | null; content?: unknown; import_mark?: ImportMark | null },
     ctx: SenderNameContext,
 ): string {
+    const imported = importedNameOf(m);
+    if (imported) return imported;
+    // A claimed imported author (phase 3 seam; never set in phase 2) is named
+    // as the claimant's account, only on a verified imported row.
+    const claimed = verifiedBlockOf(m) ? (m.import_mark?.claimed_user_id ?? null) : null;
+    if (claimed) return (ctx.inServerChannel && ctx.nicknames?.[claimed]) || ctx.userIdToUsername[claimed] || 'Unknown User';
     const uid = m.sender_user_id || null;
     return (ctx.inServerChannel && uid && ctx.nicknames?.[uid])
         || (uid ? ctx.userIdToUsername[uid] : null)

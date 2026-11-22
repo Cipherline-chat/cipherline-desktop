@@ -102,7 +102,7 @@ const StorageLockedScreen: React.FC = () => {
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
                     >
-                        <ShieldAlert style={{ width: 28, height: 28, color: 'var(--cl-glow)' }} />
+                        <ShieldAlert style={{ width: 28, height: 28, color: 'var(--cl-glow-text)' }} />
                     </div>
                     <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 8 }}>
                         Storage couldn’t be unlocked
@@ -117,7 +117,7 @@ const StorageLockedScreen: React.FC = () => {
                 <div
                     style={{
                         background: 'var(--cl-deep)', border: '1px solid var(--cl-border)',
-                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+                        borderRadius: 20, padding: 22, boxShadow: '0 24px 60px rgb(var(--cl-shade-rgb) / 0.4)',
                     }}
                 >
                     {error && (
@@ -125,7 +125,7 @@ const StorageLockedScreen: React.FC = () => {
                             style={{
                                 marginBottom: 14, padding: '10px 12px', borderRadius: 12, fontSize: 12.5,
                                 background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.28)',
-                                color: 'var(--cl-flash)',
+                                color: 'var(--cl-flash-text)',
                             }}
                         >
                             {error}
@@ -175,7 +175,7 @@ const StorageLockedScreen: React.FC = () => {
                         </>
                     ) : (
                         <>
-                            <p style={{ fontSize: 12.5, color: 'var(--cl-flash)', marginBottom: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                            <p style={{ fontSize: 12.5, color: 'var(--cl-flash-text)', marginBottom: 10, lineHeight: 1.5, fontWeight: 600 }}>
                                 This permanently erases the encrypted data on this device. This can’t be undone.
                             </p>
                             {/* Intrinsic width, not fullWidth-both: "Erase & start

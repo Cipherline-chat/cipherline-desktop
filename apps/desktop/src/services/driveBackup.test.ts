@@ -699,11 +699,18 @@ describe('stale Drive folder recovery', () => {
         };
     }
 
-    beforeEach(() => {
+    let readySpy: { mockRestore: () => void } | undefined;
+    beforeEach(async () => {
         buildBackupPlanMock.mockReset();
+        // runBackup refuses unless this account's data loaded (backupStoreGuard.ts,
+        // covered against the real store in backupStoreGuard.test.ts). The store is
+        // not hydrated in this file, so report the account as loaded.
+        const { secureLocalStore } = await import('../utils/secureLocalStore');
+        readySpy = vi.spyOn(secureLocalStore, 'isAccountReady').mockReturnValue(true);
     });
     afterEach(() => {
         vi.unstubAllGlobals();
+        readySpy?.mockRestore();
         Object.assign(window, { electronAPI: undefined });
     });
 

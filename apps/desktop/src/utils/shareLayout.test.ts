@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     ULTRAWIDE_ASPECT, aspectOf, isUltrawide, inferSliceCount, defaultLayoutFor, layoutChoices, layoutsEqual,
     sliceRect, sliceLabel, parseLayout, centerIndex, WHOLE_LAYOUT,
+    regionRect, cropRectFor, parseCropLayout, MIN_REGION_PX, type RegionLayout,
 } from './shareLayout';
 
 const a = (w: number, h: number) => aspectOf(w, h);
@@ -170,5 +171,53 @@ describe('parseLayout (untrusted worker / stored values)', () => {
         [{ kind: 'slice', count: 3.5, index: 1 }], [{ kind: 'slice', count: '3', index: 1 }], [{ kind: 'crop' }],
     ])('rejects %j', (v) => {
         expect(parseLayout(v)).toBeNull();
+    });
+});
+
+describe('region crops (a window cropped out of its monitor - windowShareFallback.ts)', () => {
+    const R = (x: number, y: number, w: number, h: number): RegionLayout => ({ kind: 'region', x, y, w, h });
+
+    it('fractions of the frame, even offsets and sizes', () => {
+        expect(regionRect(2560, 1440, R(0.25, 0.25, 0.5, 0.5))).toEqual({ x: 640, y: 360, width: 1280, height: 720 });
+        const odd = regionRect(1921, 1081, R(0.3333, 0.3333, 0.3333, 0.3333));
+        expect([odd.x, odd.y, odd.width, odd.height].every(n => n % 2 === 0)).toBe(true);
+    });
+
+    it('the whole frame', () => {
+        expect(regionRect(1920, 1080, R(0, 0, 1, 1))).toEqual({ x: 0, y: 0, width: 1920, height: 1080 });
+    });
+
+    it('never leaves the frame, never smaller than MIN_REGION_PX', () => {
+        const r = regionRect(1920, 1080, R(0.99, 0.99, 0.5, 0.5));
+        expect(r.x + r.width).toBeLessThanOrEqual(1920);
+        expect(r.y + r.height).toBeLessThanOrEqual(1080);
+        expect(r.width).toBeGreaterThanOrEqual(MIN_REGION_PX);
+        const tiny = regionRect(1920, 1080, R(0.5, 0.5, 0.001, 0.001));
+        expect(tiny.width).toBe(MIN_REGION_PX);
+        expect(regionRect(40, 30, R(0, 0, 1, 1))).toEqual({ x: 0, y: 0, width: 40, height: 30 });
+    });
+
+    it('nonsense fractions are clamped, not thrown', () => {
+        const r = regionRect(1920, 1080, R(Number.NaN, -1, 5, Infinity));
+        expect(r.x).toBe(0);
+        expect(r.y).toBe(0);
+        expect(r.width).toBeLessThanOrEqual(1920);
+    });
+
+    it('cropRectFor: whole -> null, slice and region -> their rects', () => {
+        expect(cropRectFor(WHOLE_LAYOUT, 1920, 1080)).toBeNull();
+        expect(cropRectFor({ kind: 'slice', count: 3, index: 1 }, 7680, 1440)).toEqual(sliceRect(7680, 1440, 3, 1));
+        expect(cropRectFor(R(0, 0, 0.5, 0.5), 1920, 1080)).toEqual({ x: 0, y: 0, width: 960, height: 540 });
+    });
+
+    it('parseCropLayout validates what crosses into the worker', () => {
+        expect(parseCropLayout({ kind: 'whole' })).toEqual(WHOLE_LAYOUT);
+        expect(parseCropLayout({ kind: 'slice', count: 3, index: 2 })).toEqual({ kind: 'slice', count: 3, index: 2 });
+        expect(parseCropLayout(R(0.1, 0.1, 0.5, 0.5))).toEqual(R(0.1, 0.1, 0.5, 0.5));
+        expect(parseCropLayout(R(0.6, 0, 0.5, 1))).toBeNull();    // past the right edge
+        expect(parseCropLayout(R(0, 0, 0, 1))).toBeNull();        // empty
+        expect(parseCropLayout({ kind: 'region', x: '0', y: 0, w: 1, h: 1 })).toBeNull();
+        expect(parseCropLayout(null)).toBeNull();
+        expect(parseLayout(R(0, 0, 1, 1))).toBeNull();            // never a picker layout
     });
 });

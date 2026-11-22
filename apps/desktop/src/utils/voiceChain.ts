@@ -31,8 +31,8 @@ import type { VoiceSettings } from '../hooks/useVoiceSettings';
 /** The settings that decide the chain. */
 export type VoiceChainSettings = Pick<
     VoiceSettings,
-    'noiseSuppression' | 'voiceGate' | 'eqEnabled' | 'eqBands' | 'volumeNormalization' | 'micVolume'
->;
+    'noiseSuppression' | 'voiceGate' | 'eqEnabled' | 'eqBands' | 'volumeNormalization' | 'micVolume' | 'audioEngine'
+> & Partial<Pick<VoiceSettings, 'voiceGateManual'>>;
 
 /** Which worklet stages were successfully constructed on this context. EQ,
  *  the compressor and the gain are plain WebAudio nodes and cannot fail the
@@ -67,8 +67,12 @@ export interface VoiceChainPlan {
 /** True when any per-user stage is on — decided from the settings alone, so a
  *  stage that failed to load never detaches the others. */
 export function voiceChainNeedsProcessor(s: VoiceChainSettings): boolean {
+    // The new audio engine has no legacy gate: the voice-gate setting alone (on by default) must not attach a processor to a
+    // call whose every other stage is off, or "original sound" would never be a true bypass. Its MANUAL gate, when the user
+    // switched it on, is a stage like any other and does need the engine.
+    const gate = s.audioEngine === 'v2' ? s.voiceGateManual === true : s.voiceGate;
     return s.noiseSuppression
-        || s.voiceGate
+        || gate
         || s.eqEnabled
         || s.volumeNormalization
         || s.micVolume !== 100;
@@ -82,7 +86,7 @@ export function planVoiceChain(
 ): VoiceChainPlan {
     return {
         ns: s.noiseSuppression && available.ns,
-        gate: s.voiceGate && available.gate,
+        gate: s.voiceGate && available.gate && s.audioEngine !== 'v2',
         eq: s.eqEnabled,
         agc: s.volumeNormalization && available.agc,
         micGain: s.micVolume !== 100,
@@ -107,11 +111,14 @@ export const GATE_METER_REPORT_MS = 50;
  * a field it compares is not listed here.
  */
 export const LIVE_PROCESSOR_SETTING_KEYS = [
+    'audioEngine',
     'noiseSuppression',
     'noiseSuppressionMode',
     'volumeNormalization',
     'voiceGate',
     'voiceGateThreshold',
+    'voiceGateManual',
+    'voiceGateManualDb',
     'micVolume',
     'eqEnabled',
     'eqBands',
