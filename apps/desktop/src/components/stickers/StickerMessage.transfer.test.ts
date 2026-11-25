@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The receiving end of a history transfer, drawn: a brand-new device imports the
- * vault another device of yours sent (what HistorySyncBanner applies) and an OLD
+ * vault another device of yours sent (the all-in-one vault import) and an OLD
  * sticker message from that history renders its picture - for a sticker a
  * friend sent you (its bytes only ever lived in the received cache) and for one
  * of your own My stickers. The real StickerMessage -> StickerImage ->
@@ -137,7 +137,7 @@ describe('a sticker message in transferred history, on the new device', () => {
     it('draws the picture: a sticker a friend sent you, and one of your own My stickers', async () => {
         const { vault, sizes } = await oldDeviceVault();
         freshDevice();
-        // Same import HistorySyncBanner runs on the decrypted transfer.
+        // Same import the restore paths run on a decrypted vault.
         await importLocalHistory(USER, jsonBlob(vault));
 
         for (const id of ['m1', 'm2'] as const) {

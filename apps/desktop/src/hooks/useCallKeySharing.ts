@@ -75,6 +75,13 @@ export interface CallKeySharingArgs {
     recordGeneratedKey: (conversationId: string, callId: string, keyB64: string, epoch: number) => CallKeyDecision;
     /** false = the user is known NOT to be in the conversation; undefined = unknown. */
     isConversationMember: (conversationId: string, userId: string) => boolean | undefined;
+    /**
+     * Bumped to start a FRESH request schedule for the keyless call — after the
+     * user resolved the identity warning of the person whose key this device
+     * refused (utils/callKeyRefusal.ts). The holder's next answer goes through
+     * the same sender-trust gate as every other key.
+     */
+    rerequestNonce?: number;
 }
 
 interface ControlDevice { device_id: string; spk_pub_b64: string; user_id?: string }
@@ -147,7 +154,7 @@ async function sendKeyRequest(
 }
 
 export function useCallKeySharing(args: CallKeySharingArgs) {
-    const { token, deviceId, userId, bundleReady, activeCall, roomConnectedCallId, storeRef, keyEpoch } = args;
+    const { token, deviceId, userId, bundleReady, activeCall, roomConnectedCallId, storeRef, keyEpoch, rerequestNonce = 0 } = args;
 
     // Latest values for the callbacks the pull loop holds on to.
     const latest = useRef(args);
@@ -204,7 +211,8 @@ export function useCallKeySharing(args: CallKeySharingArgs) {
         };
         schedule();
         return () => { cancelled = true; if (timer) clearTimeout(timer); };
-    }, [isConvCall, hasAcceptedKey, canSend, callId, convId, token, deviceId, userId, storeRef]);
+        // rerequestNonce: a bump restarts the schedule (first request after the short grace, then the retries).
+    }, [isConvCall, hasAcceptedKey, canSend, callId, convId, token, deviceId, userId, storeRef, rerequestNonce]);
 
     // ── MINT (nobody can answer) ────────────────────────────────────────────
     useEffect(() => {

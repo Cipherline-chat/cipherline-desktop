@@ -127,7 +127,9 @@ export function useDiscordLink(token: string | null): DiscordLinkHook {
         set({ busy: true, error: null });
         try {
             const url = await startDiscordLink(token);
-            if (!openExternalLink(url).ok) throw new Error('could not open the browser');
+            // App-authored: the Discord sign-in URL our server just returned for a flow
+            // the user started — no leaving-Cipherline dialog mid-sign-in.
+            if (!openExternalLink(url, { source: 'app' }).ok) throw new Error('could not open the browser');
             set({ waitingSince: Date.now() });
             return true;
         } catch (err) {

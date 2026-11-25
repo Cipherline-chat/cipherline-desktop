@@ -143,15 +143,14 @@ describe('theme links: the import validator is the gate (malicious payloads)', (
         }
     });
 
-    it('an unreadable pick is nudged, and the card is told ("adjusted for readability")', () => {
-        const p = parseThemeLink(crafted({ ...base, colors: { ...base.colors, text: '#0b2030', muted: '#0c2131' } }));
+    it('a low-contrast pick arrives exactly as the sender made it (no nudge, no "adjusted" note)', () => {
+        const colors = { ...base.colors, text: '#0b2030', muted: '#0c2131' };
+        const p = parseThemeLink(crafted({ ...base, colors }));
         expect(p.kind).toBe('ok');
         if (p.kind === 'ok') {
-            expect(p.result.adjustments.map((a) => a.knob)).toEqual(expect.arrayContaining(['text', 'muted']));
-            expect(p.result.def.colors.text).not.toBe('#0b2030');
+            expect(p.result.def.colors).toEqual(colors);
+            expect(p.result).not.toHaveProperty('adjustments');
         }
-        const clean = parseThemeLink(buildThemeLink(ocean));
-        expect(clean.kind === 'ok' && clean.result.adjustments.length).toBe(0);
     });
 });
 

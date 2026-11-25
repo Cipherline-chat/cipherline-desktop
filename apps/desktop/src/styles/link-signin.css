@@ -1,0 +1,97 @@
+/* ============================================================================
+   "Sign in with your phone" — the confirm step (QrSignInPanel.tsx).
+   Theme tokens only (colour-literal ratchet).
+
+   The auth card's content column is ~288px. The confirm step used to put
+   "This isn't my account" and "Continue" side by side as two identical teal
+   buttons: ~139px each, so the longer label (~169px at the kit's 15px/800)
+   ran out of its own button (the kit's .cap is nowrap), and nothing told the
+   safe choice from the risky one. Now: stacked, full width, Continue primary,
+   the rejection a red-tinted ghost underneath.
+   ============================================================================ */
+
+.qr-confirm-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 22px;
+  flex: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 28px;
+  box-shadow: 0 0 0 1px rgb(var(--cl-bright-rgb) / 0.10), 0 8px 24px rgb(var(--cl-shade-rgb) / 0.35);
+}
+.qr-confirm-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* A long handle wraps inside the card instead of pushing it wider. */
+.qr-confirm-handle {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
+
+/* The "only continue if…" warning: a real callout, not footnote text. */
+.qr-confirm-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgb(var(--cl-lume-rgb) / 0.08);
+  border: 1px solid rgb(var(--cl-lume-rgb) / 0.28);
+  color: var(--cl-text);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+}
+.qr-confirm-warning svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--cl-lume-text);
+}
+
+.qr-confirm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin-top: 2px;
+  /* scrollIntoView leaves a little air under the second button. */
+  scroll-margin-bottom: 16px;
+}
+
+/* Never clip a label here: wrap onto a second line if the window, the font or
+   a translation ever makes it longer than the button. Beats the kit's
+   `.cap{white-space:nowrap}` on specificity, not order. */
+.qr-confirm-actions .cl-kit.clb .cap {
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.25;
+  text-align: center;
+  padding: 11px 18px;
+  min-height: 44px;
+}
+.qr-confirm-actions .cl-kit.clb .cap > span {
+  line-height: 1.25;
+}
+
+/* "This isn't my account": secondary AND the safe-but-final choice — a ghost
+   button whose label and hover ring carry the flash (danger) hue, so it reads
+   as "stop" without competing with Continue. */
+.qr-confirm-actions .cl-kit.clb--ghost.qr-confirm-reject .cap {
+  color: var(--cl-flash-text);
+}
+.qr-confirm-actions .cl-kit.clb--ghost.qr-confirm-reject .cap:hover,
+.qr-confirm-actions .cl-kit.clb--ghost.qr-confirm-reject .cap:focus-visible {
+  color: var(--cl-flash-text);
+  box-shadow: inset 0 0 0 1.5px var(--cl-flash);
+}

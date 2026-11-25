@@ -154,6 +154,14 @@ export const BOOT_PALETTES: Readonly<Record<BootThemeId, BootPalette>> = {
     },
 };
 
+/**
+ * Dark's title bar during the night dive (00:00-05:00): night-dive.css
+ * `--nd-bar` at night, mirrored like the palettes above so main can paint the
+ * caption overlay to match (electron/night-dive-chrome.ts; pinned to the CSS
+ * and to src/utils/nightDive.ts ABYSS_NIGHT by night-dive-chrome.test.ts).
+ */
+export const NIGHT_DIVE_TITLE_BAR = '#05070F';
+
 /** What the user picked (mirror of src/theme/themes.ts THEME_PREFERENCES). */
 export const BOOT_THEME_PREFERENCES = ['dark', 'light', 'midnight', 'hc-dark', 'hc-light', 'system'] as const;
 export type BootThemePreference = (typeof BOOT_THEME_PREFERENCES)[number];

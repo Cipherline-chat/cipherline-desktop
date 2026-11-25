@@ -38,24 +38,24 @@ export function clAudioLatencyMs(kind: ClAudioLatencyKind = 'light'): number {
 }
 
 /**
- * Strong (FastEnhancer B+S in a worker thread, utils/clAudioNative.ts). Its own delay is much longer than Light's: the two
- * models work on 32 ms windows of 16 kHz audio and the engine reports 3072 samples (64 ms) for it. The worklet keeps its own
- * Light engine running as a safety net and, so that a late Strong frame can be replaced by the SAME moment of Light audio, delays
- * Light's content to match (audio/clAudioWorklet.js, "TIME ALIGNMENT"). On top of that come whole 10 ms frames of playout delay
- * for the hand-off: frame f plays at output sample (448 + 480 * jitterFrames + 480 * f). Three frames: the models need about
- * 3 ms of a 10 ms frame on an ordinary PC and the answer crosses two thread hops; a late answer costs nothing audible (the
- * aligned Light frame of the same slot plays instead).
+ * Strong (since 2026-11-24: RNNoise's current model from `@shiguredo/rnnoise-wasm` in a worker thread, feeding the engine's Strong
+ * chain; utils/clAudioNative.ts, workers/clAudioStrong.worker.ts). That model answers two frames late (measured: 960 samples,
+ * against 480 for Light's 2017 model), so the engine reports 960 and the worklet delays its Light safety net by the 480-sample
+ * difference (audio/clAudioWorklet.js, "TIME ALIGNMENT"). On top comes the hand-off: whole 10 ms frames of playout delay, frame f plays at output sample
+ * (448 + 480 * jitterFrames + 480 * f). Three frames: the answer crosses two thread hops and a busy PC must not turn every frame
+ * into a late one; a late answer costs nothing audible (the Light frame of the same slot plays instead).
  *
- *   strong: 448 + 480 * 3 + 3072 + ~45 = 5005 samples = 104 ms    (Light: 971 samples = 20 ms)
+ *   strong: 448 + 480 * 3 + 960 + ~45 = 2893 samples = 60 ms    (Light: 971 samples = 20 ms)
  *
- * `~45` is the high-pass / limiter look-ahead the engine does not report (the same in every profile). The figure is measured end
- * to end by audio/clAudioWorkletAlign.test.ts with the real worklet and the real engine.
+ * (FastEnhancer, Strong from 2026-11-22 to 2026-11-24, reported 3072 samples: 104 ms in all.) `~45` is the high-pass / limiter
+ * look-ahead the engine does not report (the same in every profile). The figure is measured end to end by
+ * audio/clAudioWorkletAlign.test.ts with the real worklet and the real engine.
  */
 export const CL_NATIVE_JITTER_FRAMES = 3;
 export const CL_NATIVE_FRAME_SAMPLES = 480;
 /** What the Strong engine reports as its algorithmic delay (cla_delay_samples with noise = Strong). The worklet needs it up front to
  *  line Light up with it, the worker repeats it when it is ready, and clAudioWorkletAlign.test.ts checks it against the real wasm. */
-export const CL_STRONG_ENGINE_DELAY_SAMPLES = 3072;
+export const CL_STRONG_ENGINE_DELAY_SAMPLES = 960;
 /** The look-ahead both engines have beyond what they report (see the file header: "rest"). */
 export const CL_AUDIO_UNREPORTED_SAMPLES = 45;
 

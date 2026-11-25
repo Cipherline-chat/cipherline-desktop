@@ -66,7 +66,15 @@ describe('no KLIPY host outside the allowlist appears in source', () => {
         join(REPO, 'apps', 'website', 'src'),
     ];
     const EXT = /\.(ts|tsx|js|mjs|cjs|html|css|json)$/;
-    const SKIP_DIR = new Set(['node_modules', 'dist', 'dist-electron', 'build', 'release']);
+    // __fixtures__: saved responses for tests, never fetched by the app.
+    const SKIP_DIR = new Set(['node_modules', 'dist', 'dist-electron', 'build', 'release', '__fixtures__']);
+    // KLIPY's WEBSITE (page links someone pastes: klipy.com/gifs/<slug>, 2026-11-24
+    // embeds-media-everywhere). Not part of the KLIPY integration: only the SENDER's
+    // link-preview read visits it, exactly as for any website link, and only for a link
+    // the user put in their message; readers never contact it. Allowed in exactly the
+    // file that recognises those page links.
+    const PAGE_HOSTS = new Set(['klipy.com', 'www.klipy.com']);
+    const PAGE_HOST_FILES = new Set(['apps/desktop/electron/unfurl/page-media.ts']);
 
     function* walk(p: string): Generator<string> {
         let st;
@@ -91,7 +99,9 @@ describe('no KLIPY host outside the allowlist appears in source', () => {
                 // with anything appended), case-insensitive.
                 for (const m of text.matchAll(/[a-z0-9*.-]*klipy\.com[a-z0-9.-]*/gi)) {
                     const host = m[0].toLowerCase().replace(/\.$/, '');
-                    if (!allowed.has(host)) offenders.push(`${relative(REPO, file)}: ${m[0]}`);
+                    const rel = relative(REPO, file);
+                    if (allowed.has(host) || (PAGE_HOSTS.has(host) && PAGE_HOST_FILES.has(rel))) continue;
+                    offenders.push(`${rel}: ${m[0]}`);
                 }
             }
         }

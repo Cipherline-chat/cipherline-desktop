@@ -19,8 +19,8 @@ vi.setConfig({ testTimeout: 60_000 });
  * Through BOTH paths:
  *   backup:   buildBackupPlan -> writeBackupRecords -> openContainer -> applyBackupContainer
  *             (+ the in-place incremental update of the local file)
- *   transfer: exportLocalHistory (what HistoryRequestModal sends) -> importLocalHistory
- *             (what HistorySyncBanner applies)
+ *   transfer: exportLocalHistory (the all-in-one vault the retired server-relayed sync sent) -> importLocalHistory
+ *             (the import every restore path still runs)
  *
  * secureLocalStore and the Electron file bridge are in-memory fakes; the crypto,
  * container, vault builder, importers, blob store and sticker wire are real.

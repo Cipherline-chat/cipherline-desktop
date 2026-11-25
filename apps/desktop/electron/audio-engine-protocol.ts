@@ -3,7 +3,8 @@
  * Pure: no electron / node imports, so the host, main and the tests share ONE validator. The worklet speaks the same
  * shapes (src/audio/clAudioWorklet.js, "native mode"); src/utils/clAudioNativeProtocol.test.ts pins them together.
  *
- * Only three things may cross: 10 ms PCM frames (exactly 480 floats), settings (enums and finite numbers) and
+ * Only three things may cross: 10 ms PCM frames (exactly 480 floats), settings (enums and finite numbers; 's' restarts the stream and is
+ * acknowledged, 'sl' is the mic volume retargeted live) and
  * numbers (stats). Everything else is dropped by `parseWorkletMessage` BEFORE it reaches the addon.
  */
 
@@ -14,6 +15,9 @@ export const MAX_SEQ = 2 ** 48;
 export type WorkletToHost =
     | { t: 'f'; seq: number; ts: number; pcm: Float32Array }
     | { t: 's'; id: number; noise: 0 | 1 | 2 | 3; autoGain: boolean; manualGainDb: number; originalSound: boolean }
+    /** the mic volume moved while auto gain is on: retarget the running chain in place (the engine's pre-leveller gain; no rebuild, no
+     *  restart, no ack). Frames keep flowing around it, in order, so every frame after it is processed at the new gain. */
+    | { t: 'sl'; noise: 0 | 1 | 2 | 3; autoGain: boolean; manualGainDb: number; originalSound: boolean }
     | { t: 'dc'; hasGain: boolean; gainDb: number }
     | { t: 'g'; db: number }
     | { t: 'gate'; enabled: boolean; thresholdDb: number }
@@ -48,6 +52,11 @@ export function parseWorkletMessage(raw: unknown): WorkletToHost | null {
             if (!isInt(m.id, 0, MAX_SEQ) || !isInt(m.noise, 0, 4)) return null;
             if (typeof m.autoGain !== 'boolean' || typeof m.originalSound !== 'boolean' || !isFin(m.manualGainDb)) return null;
             return { t: 's', id: m.id, noise: m.noise as 0 | 1 | 2 | 3, autoGain: m.autoGain, manualGainDb: Math.max(-40, Math.min(40, m.manualGainDb)), originalSound: m.originalSound };
+        }
+        case 'sl': {
+            if (!isInt(m.noise, 0, 4)) return null;
+            if (typeof m.autoGain !== 'boolean' || typeof m.originalSound !== 'boolean' || !isFin(m.manualGainDb)) return null;
+            return { t: 'sl', noise: m.noise as 0 | 1 | 2 | 3, autoGain: m.autoGain, manualGainDb: Math.max(-40, Math.min(40, m.manualGainDb)), originalSound: m.originalSound };
         }
         case 'dc': {
             if (typeof m.hasGain !== 'boolean' || !isFin(m.gainDb)) return null;

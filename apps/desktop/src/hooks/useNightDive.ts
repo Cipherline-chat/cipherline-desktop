@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     NIGHT_DIVE_EVENT, NIGHT_RECHECK_MS, DEPTH_ATTR, DEPTH_NIGHT,
-    isNightHour, applyDepth, nightDiveReason,
-    type NightDiveDetail,
+    isNightHour, applyDepth, nightDiveReason, createTitleBarNightSync,
+    type NightDiveDetail, type TitleBarNightSync,
 } from '../utils/nightDive';
 import { THEME_CHANGE_EVENT, getTheme } from '../theme/engine';
 import type { Theme } from '../theme/themes';
@@ -88,7 +88,31 @@ export function useNightDiveActive(): boolean {
     useEffect(() => {
         const onEvent = () => setNight(read());
         window.addEventListener(NIGHT_DIVE_EVENT, onEvent);
+        // A flip between the first render and this subscription is not missed.
+        onEvent();
         return () => window.removeEventListener(NIGHT_DIVE_EVENT, onEvent);
     }, []);
     return night;
+}
+
+/**
+ * Mount where the darkened title bar is (Dashboard's drift shell): tells main
+ * whether the night dive is on screen, so the Windows / Linux caption buttons
+ * (drawn by the OS from main's colours) match the bar. main picks the colour
+ * (electron/night-dive-chrome.ts) and applies it only to plain Dark with no
+ * live preview, whatever order its theme and night messages arrive in.
+ * Announces the starting state, then every enter / exit (clock, theme change,
+ * wake from sleep: all go through the runtime's event); back to day when the
+ * shell unmounts. A page reload resets main, and the new page re-announces.
+ */
+export function useNightDiveTitleBarSync(): void {
+    const night = useNightDiveActive();
+    const sync = useRef<TitleBarNightSync | null>(null);
+    if (!sync.current) {
+        sync.current = createTitleBarNightSync((active) => {
+            (window as unknown as { electronAPI?: { setNightDive?: (a: boolean) => void } }).electronAPI?.setNightDive?.(active);
+        });
+    }
+    useEffect(() => { sync.current?.update(night); }, [night]);
+    useEffect(() => () => { sync.current?.dispose(); }, []);
 }

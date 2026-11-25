@@ -340,6 +340,58 @@ function getOrCreate(category: SoundCategory): HTMLAudioElement {
     return elements[category]!;
 }
 
+// ── Do Not Disturb: no call sounds, ever ────────────────────────────────────
+//
+// Owner rule, 2026-11-25: "DND mode should never have any call sound." While
+// the user is on Do Not Disturb, EVERY call cue is silent: incoming ring,
+// outgoing ringback, join/leave chimes, call-ended / moved / prompt cues,
+// screenshare and viewer cues, annotation cues, and the in-call mute / deafen /
+// camera toggles. The call still shows visually; only the audio is withheld.
+//
+// One choke point, not per-call-site checks: every cue in the app already
+// funnels through resolve() / playGeneratedSound(), so gating here covers
+// current AND future call sites (a site that forgets to ask cannot ring).
+// Non-call cues (message, mention, friend request, celebration...) are
+// untouched here; messages have their own DND handling upstream.
+//
+// The probe is a getter evaluated at play time, never a cached boolean, so a
+// status flip is honoured by the very next cue with no staleness window.
+
+/** Every category that is part of a call's audio cueing. Deliberately an explicit allow-list. */
+export const CALL_SOUND_CATEGORIES: ReadonlySet<SoundCategory> = new Set<SoundCategory>([
+    'call', 'ringing', 'join', 'leave', 'call_ended', 'call_moved', 'call_prompt',
+    'mute', 'unmute', 'deafen', 'undeafen', 'camera_on', 'camera_off',
+    'screenshare_on', 'screenshare_off', 'stream_viewer_join', 'stream_viewer_leave',
+    'annotation_request', 'annotation_allowed',
+]);
+
+let dndProbe: () => boolean = () => false;
+const activeLoops = new Map<HTMLAudioElement, SoundCategory>();
+
+/** Dashboard registers how to read "is the user on Do Not Disturb right now". */
+export function setCallSoundDndProbe(probe: (() => boolean) | null): void {
+    dndProbe = probe ?? (() => false);
+}
+
+/** True when `category` is a call cue and the user is on Do Not Disturb. */
+export function isCallSoundSilencedByDnd(category: SoundCategory): boolean {
+    if (!CALL_SOUND_CATEGORIES.has(category)) return false;
+    try { return dndProbe(); } catch { return false; }
+}
+
+/**
+ * Cut off any looping call cue that is already playing. Call when the status
+ * flips to DND mid-ring: the loop was started while the user was reachable, and
+ * "never any call sound" means it must stop now, not at the 15s ring timeout.
+ * Stopped elements are paused here; their owners' stoppers stay safe to call.
+ */
+export function silenceActiveCallLoopsIfDnd(): void {
+    for (const [el, cat] of activeLoops) {
+        if (!isCallSoundSilencedByDnd(cat)) continue;
+        try { el.pause(); el.currentTime = 0; el.loop = false; } catch { /* ignore */ }
+    }
+}
+
 /**
  * Resolve a category to the file and volume it should actually play at, or
  * null when it must stay silent. Every playback path goes through this —
@@ -353,6 +405,7 @@ function getOrCreate(category: SoundCategory): HTMLAudioElement {
  */
 function resolve(category: SoundCategory, prefs?: SoundsPrefs | null): { file: string; vol: number } | null {
     if (prefs && !prefs.sounds_enabled) return null;
+    if (isCallSoundSilencedByDnd(category)) return null;
 
     // Owner, 2026-11-08: the per-event sound settings (pick a file, mute or
     // balance each cue, upload your own) were removed from Settings. Their
@@ -446,6 +499,8 @@ export async function playGeneratedSound(src: string, baseVolume: number, prefs?
     // Deliberate silence (empty src, sounds off, zero volume) is not a failure: nothing to retry.
     if (!src) return true;
     if (prefs && !prefs.sounds_enabled) return true;
+    // Entrance sounds play when someone joins your call: a join cue, so silent under DND.
+    if (isCallSoundSilencedByDnd('join')) return true;
     const vol = Math.min(1, Math.max(0, baseVolume * (prefs?.master_volume ?? 0.8)));
     if (vol === 0) return true;
     if (!generatedEl) {
@@ -587,6 +642,7 @@ export function playLoopingSound(
         // per-play, so the stopper below unregisters it — otherwise every
         // outgoing call would leak a dead element into the routing registry.
         applyOutputDevice(el);
+        activeLoops.set(el, category);
         el.play().catch(() => { /* autoplay gate or no audio device */ });
     } catch {
         return () => { /* couldn't start — nothing to stop */ };
@@ -599,6 +655,7 @@ export function playLoopingSound(
             el.currentTime = 0;
             el.loop = false;
         } catch { /* ignore */ } finally {
+            activeLoops.delete(el);
             unregisterOutputDeviceTarget(el);
         }
     };

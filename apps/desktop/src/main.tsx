@@ -56,6 +56,7 @@ import { applyNightDiveNow } from './hooks/useNightDive';
 import StorageLockedScreen from './components/StorageLockedScreen';
 import StorageCorruptedScreen from './components/StorageCorruptedScreen';
 import StorageReadFailedScreen from './components/StorageReadFailedScreen';
+import { storeFailureCode } from './utils/storeHealthReport';
 import StorageOpeningScreen from './components/StorageOpeningScreen';
 import RootErrorBoundary from './components/RootErrorBoundary';
 import StagingLockScreen from './components/StagingLockScreen';
@@ -158,7 +159,10 @@ async function renderUnlockedApp(root: Root, continuedPastReadFailure = false) {
     root.render(
       <StrictMode>
         <RootErrorBoundary>
-          <StorageReadFailedScreen onContinue={() => { void renderUnlockedApp(root, true); }} />
+          <StorageReadFailedScreen
+            code={storeFailureCode(secureLocalStore.loadHealth())}
+            onContinue={() => { void renderUnlockedApp(root, true); }}
+          />
         </RootErrorBoundary>
       </StrictMode>,
     );

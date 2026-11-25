@@ -21,7 +21,11 @@
   OUR files is not accepted.
 
   Also fails (never passes vacuously) if win-unpacked is missing, no PE files were found, or the native addon
-  audio_capture.node was not among them.
+  audio_capture.node was not among them. Every name in -RequireFile must also be present under win-unpacked (and is
+  then held to -Publisher like our other files): the public stable release passes near-helper.exe, because a stable
+  build without the local history-transfer helper must never ship. The staging build packages the helper fail-safe
+  (it may be absent) and passes nothing, so there its absence is not an error; when it IS present it must still be
+  signed by us.
 
   Compatible with Windows PowerShell 5.1 (the self-hosted runner's `shell: powershell`) and pwsh 7.
 
@@ -30,10 +34,14 @@
 
 .PARAMETER Publisher
   Substring the signer certificate subject must contain for our own files. Default 'CN=Cipherline LLC'.
+
+.PARAMETER RequireFile
+  File names (e.g. near-helper.exe) that MUST be among the PE files under win-unpacked and signed by -Publisher.
 #>
 param(
   [Parameter(Mandatory = $true)][string]$ReleaseDir,
-  [string]$Publisher = 'CN=Cipherline LLC'
+  [string]$Publisher = 'CN=Cipherline LLC',
+  [string[]]$RequireFile = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,8 +74,19 @@ if (-not ($unpackedFiles | Where-Object { $_.Name -eq 'audio_capture.node' })) {
   exit 1
 }
 
+foreach ($req in $RequireFile) {
+  if (-not ($unpackedFiles | Where-Object { $_.Name -eq $req })) {
+    Write-Host "::error::$req was not found under $unpacked - it is required in this build and was not packaged."
+    Write-Error "$req was not found under $unpacked - it is required in this build and was not packaged."
+    exit 1
+  }
+}
+
 # Files that must be signed by US, not merely by somebody.
 $mustBePublisher = @('Cipherline.exe', 'audio_capture.node')
+# near-helper.exe (the local history-transfer helper, built from apps/desktop-host and packaged by build.extraResources at
+# resources\near-helper.exe) is ours whenever it ships, and so is every -RequireFile name.
+$mustBePublisher += @('near-helper.exe') + @($RequireFile)
 
 $all = @($installers) + @($unpackedFiles)
 $bad = New-Object System.Collections.Generic.List[string]

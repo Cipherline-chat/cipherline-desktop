@@ -1,9 +1,8 @@
 /**
  * Starting points for the custom theme editor (Settings → Appearance → Theme →
  * Create theme). Plain data, like themes.ts (exempt from the colour-literal
- * ratchet for the same reason). Each one passes the readability guard
- * untouched (customPresets.test.ts), so picking a preset never shows an
- * "adjusted" note.
+ * ratchet for the same reason). Like every custom theme, a preset's colours
+ * are used exactly as written.
  */
 import { CUSTOM_THEME_VERSION, customThemeFromBase, type CustomThemeDef } from './customTheme';
 

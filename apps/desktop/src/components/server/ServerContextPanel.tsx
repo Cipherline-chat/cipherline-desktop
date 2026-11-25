@@ -34,7 +34,7 @@ import type { ChannelInfo, HuddleCallInfo, CategoryInfo, ServerInfo, DividerInfo
 import { buildChannelTree, dividerVisibility, dividerAriaLabel, type TreeLeaf } from './channelTree';
 import { DividerHitArea } from './ChannelDividerRow';
 import { DividerFormDialog } from './DividerFormDialog';
-import { SortableCallsDivider } from './callsDividers';
+import { SortableCallsDivider, CallsTopDropzone, CALLS_TOP_END_ID } from './callsDividers';
 import { useCallsDividers } from './useCallsDividers';
 import { planCallsDrop, callsDividerKey, callsChannelKey, orderForContainer, CALLS_DIVIDER_PREFIX } from './callsLayout';
 import {
@@ -1133,6 +1133,8 @@ export const ServerContextPanel: React.FC<Props> = ({
             return d ? (d.parent_category_id ?? null) : fallback;
         }
         if (overId.startsWith('hcat:')) return overId.slice(5);
+        // The end-of-Calls-list zone: the top level, under no category.
+        if (overId === CALLS_TOP_END_ID) return null;
         return fallback;
     }
 
@@ -1221,7 +1223,8 @@ export const ServerContextPanel: React.FC<Props> = ({
         const currentCatId = activeHd.parent_category_id ?? null;
         const overId = over.id as string;
 
-        const targetCatId: string | null = containerOfKey(overId, currentCatId);
+        // Calls channels always live under a category: the top-level zone is for dividers only.
+        const targetCatId: string | null = overId === CALLS_TOP_END_ID ? currentCatId : containerOfKey(overId, currentCatId);
 
         if (targetCatId === currentCatId) return;
 
@@ -1486,14 +1489,13 @@ export const ServerContextPanel: React.FC<Props> = ({
         return { uncategorized, byCat };
     }, [localHuddles]);
     // The Calls list as a tree (Calls channels + dividers, in display order) and
-    // which dividers to draw: the same rule as the text list - a divider never
-    // advertises a section the viewer cannot see; managers see every divider,
-    // the would-be-hidden ones marked (not dimmed).
+    // which dividers to draw: every one the server sent (the same rule as the
+    // text list - channelTree.dividerVisibility).
     const callsTree = useMemo(
         () => buildChannelTree(localHuddles, localHuddleCats, localDividers),
         [localHuddles, localHuddleCats, localDividers],
     );
-    const callsDividerVis = useMemo(() => dividerVisibility(callsTree, canManage), [callsTree, canManage]);
+    const callsDividerVis = useMemo(() => dividerVisibility(callsTree), [callsTree]);
     const callsItemsOf = (catId: string | null): TreeLeaf[] => (
         catId === null
             ? callsTree.top
@@ -1522,7 +1524,6 @@ export const ServerContextPanel: React.FC<Props> = ({
                 divider={d}
                 interactive={canManage}
                 pending={pending}
-                hiddenFromMembers={callsDividerVis.faded.has(d.divider_id)}
                 ariaLabel={dividerAriaLabel(d)}
                 tabIndex={canManage && !pending ? 0 : undefined}
                 onContextMenu={menu.length ? (e) => { e.stopPropagation(); catMenu.open(e, menu, d.label ? `Divider · ${d.label}` : 'Divider'); } : undefined}
@@ -2733,6 +2734,13 @@ export const ServerContextPanel: React.FC<Props> = ({
                             </div>
                         );
                     })()}
+
+                    {canManage && (
+                        <CallsTopDropzone
+                            dragActive={!!huddleActiveId?.startsWith(CALLS_DIVIDER_PREFIX)}
+                            overHere={huddleOverId === CALLS_TOP_END_ID}
+                        />
+                    )}
 
                     <DragOverlay dropAnimation={null}>
                         {huddleActiveId?.startsWith('hd:') && (() => {

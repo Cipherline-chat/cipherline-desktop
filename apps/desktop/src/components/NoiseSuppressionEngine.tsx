@@ -9,11 +9,11 @@
  *
  * What the modes are (the call-audio engine, crates/cl-audio, utils/clAudioSettings.ts):
  *   Light  = the engine's noise suppression at full strength, in the page's own audio thread. It cannot drop out.
- *   Strong = two small speech-enhancement models (FastEnhancer B + S) in a worker thread (utils/clAudioNative.ts): only
- *            speech is let through at all. When the PC is too busy for them, Light's frame of the same moment plays
- *            instead, with no gap and no jump in time (the worklet keeps the two aligned).
- * Delays: utils/clAudioLatency.ts, measured end to end by audio/clAudioWorkletAlign.test.ts (Light 20 ms; Strong 104 ms: the
- *         models need 64 ms of look-ahead, plus 30 ms reserved for the hand-off and 9 ms of buffering that every mode pays).
+ *   Strong = RNNoise's current model (`@shiguredo/rnnoise-wasm`, the app's only noise suppression until 2026-10-19) in a worker
+ *            thread (utils/clAudioNative.ts), feeding the same auto gain as Light; Light runs the 2017 model. When the PC is too
+ *            busy, Light's frame of the same moment plays instead, with no gap and no jump in time (the worklet keeps the two aligned).
+ * Delays: utils/clAudioLatency.ts, measured end to end by audio/clAudioWorkletAlign.test.ts (Light 20 ms; Strong 60 ms: the
+ *         model answers 20 ms late, plus 30 ms reserved for the hand-off and 9 ms of buffering that every mode pays).
  */
 import React from 'react';
 import { OptionCard } from './settings/OptionCard';
@@ -36,9 +36,8 @@ export const NoiseSuppressionInfo: React.FC = () => (
             without touching your voice.
         </p>
         <p>
-            <b>Strong</b> (adds {strongMs()}): a deeper cleanup, and only speech gets through. Typing, eating, a
-            rustling bag or a door are cut even when they are loud. It needs a moment more of your voice to decide
-            what is noise, so others hear you about a tenth of a second later than with Light.
+            <b>Strong</b> (adds {strongMs()}): a larger noise model that cleans deeper, under your voice and
+            between your words. It runs in its own thread, so others hear you slightly later than with Light.
         </p>
         <p>Neither removes other people talking near you: both are built to keep speech.</p>
         <p>Remembered per microphone.</p>
@@ -64,7 +63,7 @@ export const NoiseSuppressionEngine: React.FC<{
     const choices: { value: NsChoice; title: string; description: string }[] = [
         { value: 'off', title: 'Off', description: 'No cleanup. Your mic as it is.' },
         { value: 'light', title: 'Light', description: `Silent pauses, clean voice. Adds ${lightMs().replace(' ', '\u00a0')}.` },
-        { value: 'strong', title: 'Strong', description: `Only your voice gets through. Adds ${strongMs().replace(' ', '\u00a0')}.` },
+        { value: 'strong', title: 'Strong', description: `Deeper cleanup, larger model. Adds ${strongMs().replace(' ', '\u00a0')}.` },
     ];
     return (
         <>
@@ -80,7 +79,7 @@ export const NoiseSuppressionEngine: React.FC<{
                 ))}
             </div>
             {strongNote && <p className="vv-hint" role="status" data-testid="ns-strong-unavailable">{strongNote}</p>}
-            {!compact && <p className="vv-hint" data-testid="ns-difference">Both send silence while you are not talking. Light cleans the background under your voice. Strong cleans deeper and also cuts sounds that are not speech, like typing or eating, but others hear you about a tenth of a second later.</p>}
+            {!compact && <p className="vv-hint" data-testid="ns-difference">Both send silence while you are not talking. Light cleans the background under your voice. Strong uses a larger noise model and cleans deeper, but others hear you slightly later.</p>}
         </>
     );
 };

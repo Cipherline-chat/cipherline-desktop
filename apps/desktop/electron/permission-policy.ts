@@ -30,7 +30,13 @@ export interface PermissionRequestFacts {
 }
 
 /** Third-party frames allowed to go fullscreen (embedded video players only). */
-export const FULLSCREEN_EMBED_ORIGINS: readonly string[] = ['https://www.youtube-nocookie.com'];
+export const FULLSCREEN_EMBED_ORIGINS: readonly string[] = [
+    'https://www.youtube-nocookie.com',
+    // Link embeds phase 4: Twitch's clip and video players, TikTok's player (the same exact origins as the CSP frame-src).
+    'https://clips.twitch.tv',
+    'https://player.twitch.tv',
+    'https://www.tiktok.com',
+];
 
 export function originOf(url: string | undefined): string | null {
     if (!url) return null;

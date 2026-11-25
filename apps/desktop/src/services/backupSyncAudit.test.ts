@@ -11,8 +11,8 @@ vi.setConfig({ testTimeout: 60_000 });
  * that ride the vault — through BOTH paths:
  *
  *   backup:   buildBackupPlan -> writeBackupRecords -> openContainer -> applyBackupContainer
- *   transfer: exportLocalHistory (all-in-one vault, what HistoryRequestModal sends)
- *             -> importLocalHistory (what HistorySyncBanner applies)
+ *   transfer: exportLocalHistory (all-in-one vault, the retired server-relayed sync format)
+ *             -> importLocalHistory (the import every restore path still runs)
  *
  * plus the compatibility edges (an old vault on a new build, an unknown record
  * kind from a newer build) and the restore-merges-not-overwrites keys.
@@ -200,7 +200,7 @@ describe('encrypted backup -> restore on a fresh device', () => {
 });
 
 describe('device-to-device history transfer -> a newly linked device', () => {
-    it('carries the same set inline (the all-in-one vault HistoryRequestModal sends)', async () => {
+    it('carries the same set inline (the all-in-one vault)', async () => {
         const want = await populateDeviceA();
         const blob = await exportLocalHistory(USER, { rangeDays: null });
         const vault = JSON.parse(await blob.text());

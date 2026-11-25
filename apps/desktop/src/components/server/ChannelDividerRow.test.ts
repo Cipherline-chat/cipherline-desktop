@@ -2,14 +2,13 @@
 /**
  * Divider rows: label shown exactly as typed (no automatic decoration), every
  * style (and an unknown one) draws, managers get a real hit area, members get
- * an inert plain row, and a genuinely member-hidden divider is MARKED (eye-off
- * + tooltip) rather than dimmed.
+ * an inert plain row, and no divider is ever marked or dimmed as "hidden".
  */
 import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DIVIDER_STYLES, isLabelDividerStyle } from '@cipherline/shared';
-import { ChannelDividerVisual, DividerHitArea, DIVIDER_HIT_MIN_PX, hiddenFromMembersTitle } from './ChannelDividerRow';
+import { ChannelDividerVisual, DividerHitArea, DIVIDER_HIT_MIN_PX } from './ChannelDividerRow';
 import type { DividerInfo } from '../../hooks/useServers';
 
 const d = (style: string, label: string | null = 'Test'): Pick<DividerInfo, 'style' | 'label' | 'color'> =>
@@ -70,30 +69,18 @@ describe('DividerHitArea', () => {
         }
     });
 
-    it('a member-hidden divider is marked with an eye-off + tooltip and is NOT dimmed', () => {
-        const out = row(true, { hiddenFromMembers: true });
-        expect(out).toContain(`title="${hiddenFromMembersTitle('line')}"`);
-        expect(out).toContain('data-testid="divider-hidden-mark"');
-        expect(out).not.toMatch(/opacity/);
+    it('every divider is drawn as-is: no hidden mark, no tooltip, never dimmed (owner 2026-11-24)', () => {
+        for (const style of DIVIDER_STYLES) {
+            const out = html(h(DividerHitArea, { divider: d(style, 'x'), interactive: true, ariaLabel: 'Divider' }));
+            expect(out).not.toContain('divider-hidden-mark');
+            expect(out).not.toContain('data-hidden-from-members');
+            expect(out).not.toMatch(/opacity/);
+        }
     });
 
-    it('the hidden tooltip names the rule that hid it: below-only for labelled dividers, either side for plain ones', () => {
-        // Owner, 2026-11-17: a labelled divider under "Rules" said "nothing visible next to it"
-        // while Rules sat right above it. Labelled dividers head the channels UNDER them.
-        for (const style of DIVIDER_STYLES.filter(isLabelDividerStyle)) {
-            const title = hiddenFromMembersTitle(style);
-            expect(title).toMatch(/no channel below it/);
-            expect(title).not.toMatch(/next to it|above/);
-        }
-        for (const style of DIVIDER_STYLES.filter(s => !isLabelDividerStyle(s))) {
-            expect(hiddenFromMembersTitle(style)).toMatch(/no channel above or below it/);
-        }
-        const labelled = html(h(DividerHitArea, { divider: d('label', '~'), interactive: true, ariaLabel: 'Divider', hiddenFromMembers: true }));
-        expect(labelled).toContain(`title="${hiddenFromMembersTitle('label')}"`);
-        expect(labelled).toContain(`aria-label="${hiddenFromMembersTitle('label')}"`);
-    });
-
-    it('a visible divider carries no hidden mark', () => {
-        expect(row(true)).not.toContain('divider-hidden-mark');
+    it('a text divider with no words still draws (a hairline) rather than an empty box; with words it is the words', () => {
+        expect(vis(d('text', null))).toContain('h-px');
+        expect(vis(d('text', ''))).toContain('h-px');
+        expect(vis(d('text', 'Words'))).toContain('>Words<');
     });
 });

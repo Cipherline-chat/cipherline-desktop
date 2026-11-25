@@ -2,7 +2,7 @@
  * AnnouncementBanners — admin-authored announcement banners, app-wide.
  *
  * Mounted once in Dashboard.tsx's app shell (alongside TrialBanner /
- * HistorySyncBanner, above the content-panes row) so it's visible no matter
+ * the other app-wide banners, above the content-panes row) so it's visible no matter
  * which tab/pane is open, without sitting inside the 34px drag-region
  * titlebar or interfering with window dragging / the native window controls.
  *
@@ -16,6 +16,10 @@
  * learn who dismissed what) — persisted via secureLocalStore, one JSON array
  * of dismissed banner ids per account, capped by `recordDismissal` so it
  * can't grow forever. A non-dismissible banner renders no close control.
+ *
+ * Each banner starts COLLAPSED (glyph + one truncated line) and expands on
+ * click/Enter/Space to the full body; that open/closed state is per mount and
+ * never persisted. Dismiss is available in both states.
  *
  * All targeting/scheduling is server-resolved — this component does no
  * eligibility filtering of its own beyond "already dismissed by this user".
@@ -110,6 +114,7 @@ export const AnnouncementBanners: React.FC<Props> = ({ wsConnectCount }) => {
                         icon={Icon ? <Icon size={15} /> : undefined}
                         title={b.title || undefined}
                         description={body}
+                        collapsible
                         onDismiss={b.dismissible ? () => dismiss(b.id) : undefined}
                     />
                 );

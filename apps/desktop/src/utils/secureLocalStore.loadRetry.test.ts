@@ -108,7 +108,7 @@ describe('secureLocalStore — retrying a transient load failure at boot', () =>
         expect(retries).toEqual([]);
         expect(secureLocalStore.isStoreUnread()).toBe(false);
         expect(secureLocalStore.getItem(PINS)).toBe(REAL_PINS);
-        expect(secureLocalStore.loadHealth()).toEqual({ status: 'ok', lastFailure: null });
+        expect(secureLocalStore.loadHealth()).toEqual({ status: 'ok', lastFailure: null, unreadableRecords: 0 });
     });
 
     it('a backing store held for a moment: loads on a later attempt, with the data', async () => {
@@ -121,6 +121,7 @@ describe('secureLocalStore — retrying a transient load failure at boot', () =>
         expect(secureLocalStore.loadHealth()).toEqual({
             status: 'ok',
             lastFailure: { stage: 'open', name: 'UnknownError', attempts: 3, recovered: true },
+            unreadableRecords: 0,
         });
     });
 
@@ -150,6 +151,7 @@ describe('secureLocalStore — retrying a transient load failure at boot', () =>
         expect(secureLocalStore.loadHealth()).toEqual({
             status: 'unread',
             lastFailure: { stage: 'open', name: 'UnknownError', attempts, recovered: false },
+            unreadableRecords: 0,
         });
     });
 

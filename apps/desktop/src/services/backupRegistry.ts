@@ -100,16 +100,27 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_onboarded_v2_{uid}',         match: 'exact',  include: true,  why: 'Skip onboarding again after a restore' },
     { pattern: 'cipherline_checklist_dismissed_{uid}',  match: 'exact',  include: true,  why: 'Onboarding checklist dismissed' },
     { pattern: 'cipherline_first_week_nudges_{uid}',    match: 'exact',  include: true,  why: 'First-week tips: the off switch + what was already shown/taught (incl. the save-a-message coach mark) — a restore must not re-teach' },
-    { pattern: 'cipherline_sync_dismissed_{uid}',       match: 'exact',  include: true,  why: 'History-sync banner dismissed' },
-    { pattern: 'cipherline_privacy_settings',           match: 'exact',  include: true,  why: 'Privacy toggles' },
+    { pattern: 'cipherline_sync_dismissed_{uid}',       match: 'exact',  include: true,  why: 'Sign-in history step: Start fresh chosen' },
+    { pattern: 'cipherline_privacy_settings',           match: 'exact',  include: true,  why: 'Privacy toggles (incl. Generate link previews and Show embeds: portable privacy preferences)' },
     { pattern: 'cipherline_screenlock_settings',        match: 'exact',  include: true,  why: 'Screen-lock PIN verifier (user-set)' },
     { pattern: 'cipherline_gif_settings',               match: 'exact',  include: true,  why: 'GIF picker prefs incl. the KLIPY opt-in (a preference, not media)' },
+    // Included, unlike the F2 trust state above (safety-number pins, identity
+    // warnings, own-device ledger): those are CRYPTOGRAPHIC trust a vault must
+    // never vouch for. This is a UX preference the user ticked ("don't ask me
+    // before opening example.com links"), restored only into the same account
+    // from its own encrypted vault, and the worst a restore can do is skip a
+    // dialog for sites the user already chose. Re-validated on read
+    // (utils/externalLinks/trustedDomains.ts), so a malformed entry is dropped.
+    { pattern: 'cipherline_trusted_link_domains_{uid}', match: 'exact',  include: true,  why: 'Settings → Privacy → Trusted websites: sites whose links open without the leaving-Cipherline check' },
+    // Same reasoning: a preference the user flipped in Settings, restored only
+    // into the same account. Unreadable values fall back to warning ON.
+    { pattern: 'cipherline_link_warning_prefs_{uid}',   match: 'exact',  include: true,  why: 'Settings → Privacy → "Warn before opening links" + "Still warn about suspicious links"' },
     { pattern: 'cipherline_ambient_motion',             match: 'exact',  include: true,  why: 'Appearance' },
     { pattern: 'cipherline_motion_prefs',               match: 'exact',  include: true,  why: 'Accessibility → Motion & effects: reduce motion, animated images, celebrations (portable preferences)' },
     { pattern: 'cipherline_message_styles_mode',        match: 'exact',  include: true,  why: 'Appearance: Message styles (show all / without animation / plain)' },
     { pattern: 'cipherline_card_styles_{uid}',          match: 'exact',  include: true,  why: 'Message styles: "My styles" library of named card styles (re-validated on read)' },
     { pattern: 'cipherline_card_styles_meta_{uid}',     match: 'exact',  include: true,  why: 'Message styles sync stamps (per-style created/at + delete tombstones) so a restore keeps delete history; re-stamped on restore' },
-    { pattern: 'cipherline_custom_themes_{uid}',        match: 'exact',  include: true,  why: 'Custom themes: the library of named custom themes (colours only, data not CSS; re-validated + readability-guarded on read)' },
+    { pattern: 'cipherline_custom_themes_{uid}',        match: 'exact',  include: true,  why: 'Custom themes: the library of named custom themes (colours only, data not CSS; re-validated on read)' },
     { pattern: 'cipherline_custom_themes_meta_{uid}',   match: 'exact',  include: true,  why: 'Custom themes sync stamps (per-theme created/at + delete tombstones) so a restore keeps delete history; re-stamped on restore' },
     { pattern: 'cipherline_active_theme_{uid}',         match: 'exact',  include: true,  why: 'Which theme this device had applied when the backup was made (builtin id, or custom id + a validated snapshot) so a restore re-applies it ON THAT DEVICE ONLY; a device-choice mirror, never part of the `themes` sync slot (re-validated on read)' },
     { pattern: 'cipherline_seasonal_effects',           match: 'exact',  include: true,  why: 'Appearance' },
@@ -164,6 +175,7 @@ export const KV_RULES: KvRule[] = [
     // overlay is a testing aid, not a preference worth carrying.
     { pattern: 'cipherline_mic_device_gain',               match: 'exact',  include: false, why: 'New audio engine: learned gain per microphone (utils/micDeviceGain.ts, keyed by capture deviceId) — device-specific, never travels; the engine re-learns it in ~2 s' },
     { pattern: 'cipherline_ns_noise_prompt',              match: 'exact',  include: false, why: 'Background-noise prompt snooze (utils/noiseFloorPrompt.ts) — "this device was asked"; about this room and mic, never travels' },
+    { pattern: 'cipherline_embed_prefs',                  match: 'exact',  include: false, why: 'Appearance → Compact embeds (utils/embedPrefs.ts): how dense link previews are on THIS screen; per device by the owner\'s choice, never travels' },
     { pattern: 'cipherline_screenshare_codec',          match: 'exact',  include: false, why: 'Screen-share encoder override — about this device’s GPU, never travels' },
     { pattern: 'cipherline_entrance_prefs_{uid}',   match: 'exact',  include: true,  why: 'Listener settings for other people\'s call entrance sounds: the global switch + the people you muted (utils/entrancePrefs.ts). Personal preference, nothing sent anywhere' },
     { pattern: 'cipherline_egg_progress_{uid}',        match: 'exact',  include: true,  why: 'Easter eggs FOUND (distinct ids, utils/eggProgress.ts) for the Egg hunter badge: account progress, so a restore on a new machine keeps it (the server also holds it; the union can only grow)' },

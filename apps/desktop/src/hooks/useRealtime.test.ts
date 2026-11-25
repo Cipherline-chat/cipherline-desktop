@@ -2,72 +2,51 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import {
-    shouldHandleHistoryRequest, isMyHistoryDelivery, isOwnAnswerEcho, isSelfReadEvent, isSocketStale, readDisplayName,
+    isRetiredHistorySyncFrame, RETIRED_HISTORY_SYNC_EVENTS, isOwnAnswerEcho, isSelfReadEvent, isSocketStale, readDisplayName,
     parseDeviceLinkedEvent, formatDeviceLinkedToast,
 } from './useRealtime';
-
-/**
- * Device-scoped WS event filtering (device-sync audit hardening
- * follow-up). Server-side broadcasts every device:* event to ALL of a
- * user's connected sockets, by design — these two pure predicates are the
- * ONLY thing standing between "this event is for me" and "this event is
- * for some other device of mine that also happens to be online right
- * now." Zero test coverage existed for this before — exactly the gap that
- * let a critical bug (isMyHistoryDelivery's missing device_id check) ship
- * unnoticed: an unrelated device silently received and applied another
- * device's history transfer, overwriting its own local history.
- */
 
 const ME = 'my-device-id';
 const OTHER = 'some-other-device-id';
 
-describe('isMyHistoryDelivery — device:approved transfer-key filtering', () => {
-    it('accepts when the event device_id matches this device', () => {
-        expect(isMyHistoryDelivery(ME, ME)).toBe(true);
+/**
+ * The server-relayed history sync was removed from this client (2026-11-24); the API keeps emitting its events while older clients
+ * exist. An old device's request, its approver's key delivery and its decline must all be dropped before dispatch: no prompt, no
+ * import, no crash.
+ */
+describe('isRetiredHistorySyncFrame: the old history-sync events are ignored', () => {
+    it('drops an old device\'s history request, targeted or broadcast', () => {
+        expect(isRetiredHistorySyncFrame({ event: 'device:history_request', data: { device_id: OTHER, device_name: 'Old PC', target_device_id: ME } })).toBe(true);
+        expect(isRetiredHistorySyncFrame({ event: 'device:history_request', data: {} })).toBe(true);
+        expect(isRetiredHistorySyncFrame({ event: 'device:history_request' })).toBe(true);
     });
-
-    it('rejects when the event device_id belongs to a DIFFERENT device — the core bug this closes', () => {
-        expect(isMyHistoryDelivery(OTHER, ME)).toBe(false);
+    it('drops a decline and a key delivery, wrapped or legacy plaintext, for this device or another', () => {
+        expect(isRetiredHistorySyncFrame({ event: 'device:history_declined', data: { device_id: ME, reason: null } })).toBe(true);
+        expect(isRetiredHistorySyncFrame({ event: 'device:approved', data: { device_id: ME, wrapped_transfer_key_b64: 'AAAA' } })).toBe(true);
+        expect(isRetiredHistorySyncFrame({ event: 'device:approved', data: { device_id: OTHER, transfer_key_b64: 'AAAA' } })).toBe(true);
+        expect(isRetiredHistorySyncFrame({ event: 'device:approved', data: { device_id: ME, transfer_meta: {} } })).toBe(true);
     });
-
-    // Unlike shouldHandleHistoryRequest, a missing/absent device_id must
-    // NEVER be treated as "for everyone" — a transfer key is sensitive,
-    // single-recipient data, not a broadcast request.
-    it('rejects when the event device_id is missing (fails closed, not permissive)', () => {
-        expect(isMyHistoryDelivery(undefined, ME)).toBe(false);
-        expect(isMyHistoryDelivery(null, ME)).toBe(false);
-        expect(isMyHistoryDelivery('', ME)).toBe(false);
+    it('leaves every other frame alone, including a device:approved that carries no history key', () => {
+        expect(isRetiredHistorySyncFrame({ event: 'device:approved', data: { device_id: ME } })).toBe(false);
+        expect(isRetiredHistorySyncFrame({ event: 'message:new', data: {} })).toBe(false);
+        expect(isRetiredHistorySyncFrame({ event: 'device:linked', data: {} })).toBe(false);
     });
-
-    it('rejects when this device has no known deviceId yet', () => {
-        expect(isMyHistoryDelivery(OTHER, undefined)).toBe(false);
-        expect(isMyHistoryDelivery(OTHER, null)).toBe(false);
+    it('never throws on junk', () => {
+        for (const junk of [null, undefined, 0, 'device:history_request', [], { event: 42 }, { event: 'device:approved', data: 'x' }]) {
+            expect(() => isRetiredHistorySyncFrame(junk)).not.toThrow();
+            expect(isRetiredHistorySyncFrame(junk)).toBe(false);
+        }
     });
-
-    it('rejects when BOTH are missing — two absences must never accidentally match', () => {
-        expect(isMyHistoryDelivery(undefined, undefined)).toBe(false);
-        expect(isMyHistoryDelivery(null, null)).toBe(false);
-        expect(isMyHistoryDelivery('', '')).toBe(false);
-    });
-});
-
-describe('shouldHandleHistoryRequest — device:history_request targeting', () => {
-    it('accepts an unscoped request (no target_device_id) — meant for every approved device to see', () => {
-        expect(shouldHandleHistoryRequest(undefined, ME)).toBe(true);
-        expect(shouldHandleHistoryRequest(null, ME)).toBe(true);
-    });
-
-    it('accepts a request scoped to THIS device', () => {
-        expect(shouldHandleHistoryRequest(ME, ME)).toBe(true);
-    });
-
-    it('rejects a request scoped to a DIFFERENT device', () => {
-        expect(shouldHandleHistoryRequest(OTHER, ME)).toBe(false);
-    });
-
-    it('accepts (permissively) when this device has no known deviceId yet, regardless of targeting', () => {
-        expect(shouldHandleHistoryRequest(OTHER, undefined)).toBe(true);
-        expect(shouldHandleHistoryRequest(OTHER, null)).toBe(true);
+    it('the dispatch drops them first, and nothing in it handles the old events any more', () => {
+        const src = readFileSync(fileURLToPath(new URL('./useRealtime.ts', import.meta.url)), 'utf8')
+            .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+        const parse = src.indexOf('const msg = JSON.parse(event.data);');
+        const guard = src.indexOf('if (isRetiredHistorySyncFrame(msg)) return;');
+        expect(parse).toBeGreaterThan(0);
+        expect(guard).toBeGreaterThan(parse);
+        expect(src.slice(parse, guard)).not.toMatch(/msg\.event ===/);
+        for (const ev of RETIRED_HISTORY_SYNC_EVENTS) expect(src).not.toContain(`msg.event === '${ev}'`);
+        expect(src).not.toMatch(/setHistory(Request|Delivered|Declined)|msg\.data\??\.(wrapped_)?transfer_key_b64/);
     });
 });
 
@@ -160,9 +139,8 @@ describe('readDisplayName — optional display_name on live call events', () => 
  * awaiting axios and globalIncomingCall is still set — and it toasted about
  * itself. This predicate drops the winner's own echo.
  *
- * Note the polarity is the OPPOSITE of isMyHistoryDelivery: that one guards a
- * secret and must deny on a missing id; this one only suppresses a toast and
- * must ALLOW on a missing id, or an older server (which sends no device_id)
+ * Note the polarity is the OPPOSITE of isSelfReadEvent's fail-closed rule: this
+ * one only suppresses a toast and must ALLOW on a missing id, or an older server (which sends no device_id)
  * would have the event swallowed on every device, restoring the 15s
  * silent-ring-then-looks-missed behaviour the event exists to prevent.
  */
@@ -197,8 +175,8 @@ describe('isOwnAnswerEcho — call:answered_elsewhere self-filtering', () => {
  * render) and "I read this, somewhere else" (a badge to clear) — getting the
  * polarity wrong either direction is a real bug: too permissive clears a
  * genuinely-unread badge (the user misses a message), too strict never
- * clears anything (stale badges forever). Fails closed like
- * isMyHistoryDelivery — a missing id on either side is never a match.
+ * clears anything (stale badges forever). Fails closed: a missing id on
+ * either side is never a match.
  */
 const MY_ID = 'my-user-id';
 const OTHER_USER = 'someone-elses-user-id';

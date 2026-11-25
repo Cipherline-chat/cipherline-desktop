@@ -154,9 +154,12 @@ export function resolveNotification(input: NotifDecisionInput): NotifDecision {
  */
 export function gateOnOtherDeviceAttention(
     decision: NotifDecision,
-    input: { category: string; mobileAttentive: boolean },
+    input: { category: string; mobileAttentive: boolean; sessionSilent?: boolean },
 ): NotifDecision {
-    if (!input.mobileAttentive) return decision;
+    // `sessionSilent`: this PC is locked / asleep / just woke (utils/sessionLock.ts).
+    // The phone is being told instead (the server cleared this device's attention
+    // at the lock), so alerting here would double up and pile up for unlock.
+    if (!input.mobileAttentive && !input.sessionSilent) return decision;
     if (input.category === 'call') return decision;
     if (!decision.playsSound && !decision.showsToast) return decision;
     return { ...decision, playsSound: false, showsToast: false };

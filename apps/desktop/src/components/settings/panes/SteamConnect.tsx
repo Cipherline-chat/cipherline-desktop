@@ -51,7 +51,7 @@ export const SteamConnect: React.FC<{
                     <span className="ps-steam-actions">
                         {card && (
                             <button type="button" className="su-iconbtn" aria-label="Open your Steam profile" title="Open your Steam profile"
-                                onClick={() => openExternalLink(steamProfileUrl(card.steam_id))}>
+                                onClick={() => openExternalLink(steamProfileUrl(card.steam_id), { source: 'app' })}>
                                 <ExternalLink size={14} />
                             </button>
                         )}

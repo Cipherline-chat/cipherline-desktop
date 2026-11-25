@@ -37,8 +37,8 @@ describe('send / edit carry channel_refs (server channels only)', () => {
     });
     it('channel text message and edit include them', () => {
         // (followed by the message font, and a size field only for a one-size message: richWire.extractUniformSize)
-        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard) };");
-        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleEditField(editCardTouched, outgoingCard) })");
+        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard), ...embedsField };");
+        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleEditField(editCardTouched, outgoingCard), embeds: linkEmbeds })");
     });
     it('negative control: the DM content literal does not carry channel_refs', () => {
         const dm = chatPane.split('\n').find(l => l.includes("const content: ClientContent = bareInviteCode"));

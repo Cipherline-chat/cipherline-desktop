@@ -32,7 +32,16 @@ name: Release Stable Desktop
 #      the only thing between the update host and users' machines. Even a dry run signs (it proves the key).
 #      Format + keys: apps/desktop/electron/update-manifest-keys.ts, apps/desktop/scripts/sign-update-manifest.mjs.
 #
-#   6. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
+#   6. The local-network history-transfer helper (apps/desktop-host/near-helper, Rust; packaged as <resources>/near-helper[.exe])
+#      is REQUIRED in every platform build: since 0.1.4 it is the ONLY way history moves between a user's devices. Each job
+#      builds it before packaging and FAILS when no binary came out (apps/desktop/scripts/build-near-helper.sh is fail-safe
+#      for the private staging builds and always exits 0, so the check after it is what makes it required here), and checks
+#      again after packaging that the helper is inside the app (Windows: signed by Cipherline LLC; macOS: Developer ID +
+#      hardened runtime, both architectures; Linux: within the glibc 2.31 floor). A stable release without history
+#      transfer must never ship. The Rust toolchain is pinned (RUST_TOOLCHAIN below) to the rustc of the digest-pinned
+#      rust:1-bullseye image the Linux build runs in, so all three platforms compile the helper with the same compiler.
+#
+#   7. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
 #      (CLIENT_ATTEST_SECRETS on the server; it is empty today, and the private builds ship without it too).
 #      Add it to the production environment when that is switched on.
 #
@@ -54,6 +63,11 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # The near-helper's compiler on Windows and macOS (rustup ships on the hosted images). Keep it equal to `rustc --version`
+  # in the rust:1-bullseye image pinned by digest in apps/desktop/scripts/build-near-helper.sh (the Linux build).
+  RUST_TOOLCHAIN: '1.98.0'
 
 jobs:
   prepare:
@@ -131,6 +145,21 @@ jobs:
         run: |
           cd apps/desktop
           npm run rebuild-native
+      # REQUIRED (safety note 6). electron-builder signs it: an extraResources *.exe is signed on copy (Azure options below),
+      # and the signature gate after packaging requires near-helper.exe to be present and signed by Cipherline LLC.
+      - name: Set up Rust (near transfer helper)
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update --target x86_64-pc-windows-msvc
+      - name: Build the near transfer helper (required)
+        shell: bash
+        run: |
+          export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+          rustc --version
+          bash apps/desktop/scripts/build-near-helper.sh
+          if [ ! -s apps/desktop/build/Release/near-helper.exe ]; then
+            echo "::error title=Local history transfer::near-helper.exe was not built. A stable release without history transfer must never ship."
+            exit 1
+          fi
       # Azure Artifact Signing's PowerShell module runs `dotnet tool install sign ...`.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -152,12 +181,13 @@ jobs:
       # Every PE file we ship must be signed, not just the installers: electron-builder signs only *.exe unless
       # build.win.signExts says otherwise, and an unsigned audio_capture.node is blocked by Smart App Control
       # (screen-share audio dies). Fails on any file that is not Valid; stable builds are never unsigned, so there is
-      # no skip path here.
+      # no skip path here. -RequireFile near-helper.exe: the history-transfer helper must be packaged
+      # (win-unpacked\resources\near-helper.exe) and signed by Cipherline LLC (safety note 6).
       - name: Verify Windows code signature (every shipped PE file)
         shell: powershell
         run: |
           # -ExecutionPolicy Bypass: do not depend on the runner's machine policy to run a checked-in script.
-          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/desktop/scripts/verify-windows-signatures.ps1 -ReleaseDir apps/desktop/release
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/desktop/scripts/verify-windows-signatures.ps1 -ReleaseDir apps/desktop/release -RequireFile near-helper.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke test (Windows unpacked)
         shell: bash
@@ -301,6 +331,27 @@ jobs:
       - name: Install deps
         shell: bash
         run: npm ci --legacy-peer-deps
+      # REQUIRED (safety note 6): one universal Mach-O (arm64 + x86_64, lipo'd by the script) packaged into both apps.
+      # electron-builder's signer walks the whole bundle, so the helper in Contents/Resources is signed with the Developer ID
+      # identity, the hardened runtime and build.mac.entitlementsInherit, and notarized with the app; the step after packaging
+      # proves it.
+      - name: Set up Rust (near transfer helper)
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Build the near transfer helper (required)
+        shell: bash
+        run: |
+          export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+          rustc --version
+          bash apps/desktop/scripts/build-near-helper.sh
+          if [ ! -s apps/desktop/build/Release/near-helper ]; then
+            echo "::error title=Local history transfer::near-helper was not built. A stable release without history transfer must never ship."
+            exit 1
+          fi
+          H=apps/desktop/build/Release/near-helper
+          for a in arm64 x86_64; do
+            lipo "$H" -verify_arch "$a" || { echo "::error title=Local history transfer::near-helper has no $a slice ($(lipo -archs "$H"))"; exit 1; }
+          done
       - name: Build renderer + Electron main
         shell: bash
         run: |
@@ -331,6 +382,28 @@ jobs:
             --config.extraMetadata.clientAttestSecret="$CLIENT_ATTEST_SECRET" \
             --config.extraMetadata.googleDriveClientId="$GOOGLE_DRIVE_CLIENT_ID" \
             --config.extraMetadata.googleDriveClientSecret="$GOOGLE_DRIVE_CLIENT_SECRET"
+      # Every packaged app carries the helper, signed by OUR Developer ID with the hardened runtime and a secure timestamp
+      # (what notarization requires of every Mach-O in the bundle), with both architectures.
+      - name: Verify the near transfer helper (packaged, signed, hardened)
+        shell: bash
+        run: |
+          cd apps/desktop
+          n=0
+          for app in release/mac*/Cipherline.app; do
+            [ -d "$app" ] || continue
+            H="$app/Contents/Resources/near-helper"
+            if [ ! -s "$H" ]; then echo "::error title=Local history transfer::$H is missing from the packaged app"; exit 1; fi
+            codesign --verify --strict --verbose=2 "$H"
+            info="$(codesign -dvv "$H" 2>&1)"
+            echo "$info" | grep -E '^(Authority|TeamIdentifier|Timestamp|CodeDirectory)' || true
+            echo "$info" | grep -q '^Authority=Developer ID Application: Cipherline LLC' || { echo "::error::$H is not signed by the Cipherline LLC Developer ID"; exit 1; }
+            echo "$info" | grep -Eq 'flags=0x[0-9a-f]*\(.*runtime' || { echo "::error::$H is not signed with the hardened runtime (notarization would reject it)"; exit 1; }
+            echo "$info" | grep -q '^Timestamp=' || { echo "::error::$H has no secure timestamp"; exit 1; }
+            for a in arm64 x86_64; do lipo "$H" -verify_arch "$a" || { echo "::error::$H has no $a slice"; exit 1; }; done
+            n=$((n + 1))
+          done
+          [ "$n" -ge 1 ] || { echo "::error::no packaged Cipherline.app found under apps/desktop/release"; exit 1; }
+          echo "near-helper verified in $n app bundle(s)"
       - name: Smoke test (macOS unpacked)
         shell: bash
         run: |
@@ -477,6 +550,17 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libarchive-tools rpm fakeroot xvfb
+      # REQUIRED (safety note 6). Built inside the digest-pinned rust:1-bullseye image (glibc 2.31, the same floor as every other
+      # Linux binary we ship); the script drops a helper that exceeds the floor, which then fails here.
+      - name: Build the near transfer helper (required)
+        shell: bash
+        run: |
+          command -v docker >/dev/null || { echo "::error::docker is required to build the near-helper at the glibc 2.31 floor"; exit 1; }
+          bash apps/desktop/scripts/build-near-helper.sh
+          if [ ! -s apps/desktop/build/Release/near-helper ]; then
+            echo "::error title=Local history transfer::near-helper was not built. A stable release without history transfer must never ship."
+            exit 1
+          fi
       - name: Build renderer + Electron main
         shell: bash
         run: |
@@ -493,6 +577,14 @@ jobs:
             --config.extraMetadata.googleDriveClientId="$GOOGLE_DRIVE_CLIENT_ID" \
             --config.extraMetadata.googleDriveClientSecret="$GOOGLE_DRIVE_CLIENT_SECRET"
           ls -la release/
+      - name: Verify the near transfer helper (packaged)
+        shell: bash
+        run: |
+          cd apps/desktop
+          H=release/linux-unpacked/resources/near-helper
+          if [ ! -s "$H" ] || [ ! -x "$H" ]; then echo "::error title=Local history transfer::$H is missing (or not executable) in the packaged app"; exit 1; fi
+          bash scripts/check-glibc-floor.sh 2.31 "$H"
+          echo "near-helper packaged: $H ($(wc -c < "$H") bytes)"
       - name: Smoke test (Linux unpacked)
         shell: bash
         run: |

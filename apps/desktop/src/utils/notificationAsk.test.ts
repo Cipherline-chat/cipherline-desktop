@@ -117,13 +117,16 @@ describe('permission asks happen at the moment of need, never at launch', () => 
         }
         expect(offenders).toEqual([]);
         // The only renderer callers of notifShow: the message dispatcher (reacting
-        // to an incoming message) and the ask's accept().
+        // to an incoming message), the ask's accept(), and the own-device history
+        // sheet's nudge (OwnTransferHost.notifyHolderSheet: fires only when this
+        // person just asked for their history from their own other device and the
+        // window is not in front - a moment of need, never startup).
         const callers = walk(srcRoot)
             .filter(f => /notifShow\??\./.test(readFileSync(f, 'utf8')) || /notifShow\?\.\(/.test(readFileSync(f, 'utf8')))
             .map(f => relative(srcRoot, f))
             .filter(r => r !== 'env.d.ts')
             .sort();
-        expect(callers).toEqual(['hooks/useFirstWeekNudges.ts', 'hooks/useNotificationDispatch.ts']);
+        expect(callers).toEqual(['components/near/OwnTransferHost.tsx', 'hooks/useFirstWeekNudges.ts', 'hooks/useNotificationDispatch.ts']);
     });
 
     it('mic / camera: the ONLY direct getUserMedia call sites are the Voice & Video settings pane (user-opened) — joining a call goes through LiveKit', () => {

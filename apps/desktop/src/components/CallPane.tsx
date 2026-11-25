@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { useStableCallback } from '../hooks/useStableCallback';
 import '@livekit/components-styles';
 import {
     LiveKitRoom,
@@ -1167,6 +1168,31 @@ export const CallPane = ({
         if (handoverRef.current.connected) doHandover();
     }, [doHandover]);
     useEffect(() => { const h = handoverRef.current; return () => window.clearTimeout(h.timer); }, []);
+
+    // <LiveKitRoom onError>. MUST keep one identity for the life of the pane: the
+    // wrapper (@livekit/components-react 2.9) lists onError in the deps of the
+    // effect that calls room.connect(), and livekit-client 2.18's Room.connect()
+    // only returns early when the room is Connected - not while it is
+    // Reconnecting. As an inline arrow, every re-render during a LiveKit
+    // reconnect issued a fresh connect; with the SFU down that connect failed at
+    // once (JOIN_FAILURE) and ended the call, instead of the SDK's own ~40 s
+    // reconnect bringing it back when the SFU returned. That is how a LiveKit
+    // OOM restart (prod, 2026-11-24, ~6 s down) became "kicked from the call".
+    const onRoomError = useStableCallback((err: Error) => {
+        // A microphone / camera that can't be opened is not a failed
+        // connection: the room is (or is about to be) connected. Stay in
+        // the call with that device off instead of leaving at 0:00
+        // (utils/callMediaDeviceErrors.ts). The join handover's own
+        // mic-wait timer finishes the join without the mic.
+        if (isMediaDeviceUnavailableError(err)) {
+            console.warn('[CallPane] media device unavailable — staying in the call without it:', err.name);
+            const { title, message } = describeMediaDeviceUnavailable(err, !!(videoByDefault && grants.camera));
+            toast.push({ kind: 'warning', title, message });
+            return;
+        }
+        console.error('[CallPane] LiveKit connection error:', err);
+        failConnection(err.message || "Couldn't connect to the call.", 'connect', err);
+    });
     // A CallPane that goes away (left, failed, replaced) ends any warm-up and
     // any join trace still open for it. Deferred and re-checked so React
     // StrictMode's dev-only mount→unmount→mount probe (dev:windows runs it)
@@ -1260,21 +1286,10 @@ export const CallPane = ({
                     // connection: tear down here, tell the server nothing.
                     if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));
                 }}
-                onError={(err) => {
-                    // A microphone / camera that can't be opened is not a failed
-                    // connection: the room is (or is about to be) connected. Stay in
-                    // the call with that device off instead of leaving at 0:00
-                    // (utils/callMediaDeviceErrors.ts). The join handover's own
-                    // mic-wait timer finishes the join without the mic.
-                    if (isMediaDeviceUnavailableError(err)) {
-                        console.warn('[CallPane] media device unavailable — staying in the call without it:', err.name);
-                        const { title, message } = describeMediaDeviceUnavailable(err, !!(videoByDefault && grants.camera));
-                        toast.push({ kind: 'warning', title, message });
-                        return;
-                    }
-                    console.error('[CallPane] LiveKit connection error:', err);
-                    failConnection(err.message || "Couldn't connect to the call.", 'connect', err);
-                }}
+                // Stable identity on purpose (useStableCallback): <LiveKitRoom> re-runs
+                // room.connect() whenever onError changes, and a connect issued while
+                // the SDK is reconnecting replaces that reconnect (see onRoomError).
+                onError={onRoomError}
                 // Observability, not policy: the SDK raises these for a peer we
                 // can't decrypt (wrong key / mid-rotation window), a missing
                 // local key, and — on a client with NO encryption block — an

@@ -254,3 +254,32 @@ export function missingKeyEpochs(
     }
     return [...out];
 }
+
+const ACTION_CONTENT_TYPES = new Set(['edit', 'delete', 'reaction']);
+
+/**
+ * The unread count a server channel should show, given the server's count and
+ * the decrypted newest page of that channel.
+ *
+ * `GET /servers/:id/unread` counts every row after the read cursor that is not
+ * your own, and cannot tell a reaction (or an edit / delete marker) from a
+ * message: those are E2EE envelopes like any other. Owner rule: a reaction in a
+ * server channel never lights unread. So subtract the action rows by OTHER
+ * people found in the tail. Rows that could not be decrypted (placeholders)
+ * still count as messages. When the tail holds your own interleaved rows it can
+ * miss an older action row, so this errs toward a slightly HIGHER count, never
+ * hiding a real message.
+ */
+export function correctedUnreadCount(
+    serverCount: number,
+    rows: ReadonlyArray<{ sender_user_id?: string | null; content?: unknown; import_mark?: unknown }>,
+    userId: string | null | undefined,
+): number {
+    let actions = 0;
+    for (const r of rows) {
+        if (!r.sender_user_id || r.sender_user_id === userId) continue;
+        const t = (r.content as { type?: string } | null | undefined)?.type;
+        if (t && ACTION_CONTENT_TYPES.has(t)) actions++;
+    }
+    return Math.max(0, serverCount - actions);
+}

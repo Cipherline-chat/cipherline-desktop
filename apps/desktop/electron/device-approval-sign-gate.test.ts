@@ -278,9 +278,4 @@ describe('the shipped code actually uses the gate', () => {
         expect(wiring).toContain('response === 1');
         expect(wiring).toContain('approvalQuestion(info)');
     });
-
-    it('the history-request proof is NOT gated: it is the REQUESTER proving itself, not an approval', () => {
-        const body = handlerBody('crypto:history-request-proof');
-        expect(body).not.toContain('approvalSignGate');
-    });
 });

@@ -101,7 +101,7 @@ export interface OnboardingFlowState {
     bio: string;
     /** The one-click friend request to the referrer (or to a friend who joined with your link). */
     friendRequestSentTo: string | null;
-    /** "Also join the official Cipherline server" (joined when the ending starts). */
+    /** "Also join the official Cipherline server" (joined when the ending starts). On by default (owner 2026-11-24); the person can switch it off on the invite step. */
     joinOfficial: boolean;
 }
 
@@ -112,7 +112,7 @@ export const INITIAL_FLOW_STATE: OnboardingFlowState = {
     discriminator: null,
     bio: '',
     friendRequestSentTo: null,
-    joinOfficial: false,
+    joinOfficial: true,
 };
 
 /** Props every step component receives. */

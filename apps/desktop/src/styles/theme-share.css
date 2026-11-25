@@ -38,11 +38,6 @@
   box-shadow: inset 0 0 0 1px rgb(var(--cl-bright-rgb) / .16), 0 0 0 1px var(--cl-border);
 }
 .tle-sw-label { margin-left: 4px; font-size: 11px; color: var(--cl-faint); white-space: nowrap; }
-.tle-note {
-  display: flex; align-items: flex-start; gap: 6px; margin: 8px 13px 0 15px;
-  font-size: 11.5px; font-weight: 700; line-height: 1.4; color: var(--cl-glow-text);
-}
-.tle-note svg { flex: none; margin-top: 1px; }
 .tle-status { margin: 8px 13px 0 15px; font-size: 11.5px; font-weight: 700; color: var(--cl-ok-text); }
 .tle-status--err { color: var(--cl-danger-text); }
 /* Three equal columns, every button full-width in its cell at the kit's small size: same

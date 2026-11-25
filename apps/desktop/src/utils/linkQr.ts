@@ -1,8 +1,10 @@
 /**
  * QR linking payload builders — the strings a DISPLAYING device renders into a
- * QR code, for both of docs/QR-LINKING.md's primitives.
+ * QR code (docs/QR-LINKING.md). The `xfer` QR history-transfer primitive was
+ * removed with the server-relayed history sync it fed (2026-11-24); history
+ * moves between devices only by the local-network own-device transfer now.
  *
- * These are byte-identical ports of `buildLinkQr`/`buildXferQr` from
+ * These are byte-identical ports of `buildLinkQr` from
  * `/home/antigravity/cm-wt/qrlink/src/core/crypto/link-qr.ts` (the mobile
  * repo's scanner-side counterpart), kept here rather than imported across
  * repos so this package has no cross-repo build dependency. Do not change
@@ -13,7 +15,6 @@
  *
  * ```
  * cipherline://link/1?i=<link_id>&k=<ephemeral X25519 public key, base64url>
- * cipherline://xfer/1?t=<transfer_id>
  * ```
  */
 
@@ -45,22 +46,6 @@ const SCHEME = 'cipherline://';
 export function buildLinkQr(linkId: string, ekPubB64: string): string {
     const k = ekPubB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     return `${SCHEME}link/1?i=${encodeURIComponent(linkId)}&k=${encodeURIComponent(k)}`;
-}
-
-/**
- * `xfer` (QR transfer authorisation) — carries ONLY a random nonce, no key
- * material, so unlike `buildLinkQr` there is no "must come from an IPC-local
- * key" constraint: `transferId` is exactly what `POST /v1/link/transfers`
- * returned. docs/QR-LINKING.md §3.2/§3.5: the id is worthless to anyone not
- * already signed into the same account, which is what makes that safe.
- *
- * `transferId` is still server-supplied, so it is `encodeURIComponent`-ed for
- * the same QR-4 reason `buildLinkQr` above is, even though this string has no
- * second parameter for an injected id to shadow today — not depending on that
- * staying true is cheap.
- */
-export function buildXferQr(transferId: string): string {
-    return `${SCHEME}xfer/1?t=${encodeURIComponent(transferId)}`;
 }
 
 /**

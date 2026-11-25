@@ -6,7 +6,7 @@
  *   2. ONE API call builds the new server (roles, categories, channels,
  *      overrides in a single transaction: private channels exist with their
  *      overrides from the first instant, nothing is ever briefly public);
- *   3. custom emojis, one at a time, paced under the server's 20/min limit.
+ *   3. custom emojis, one at a time, paced under the import route's limit (importEmoji 90/min).
  *
  * Idempotent retries: `state` outlives a failed attempt. After the server
  * exists a retry never creates a second one, and emojis already on the server

@@ -1,9 +1,8 @@
 /**
- * Single, validated entry point for opening a URL found in MESSAGE CONTENT —
- * i.e. genuinely user-controlled, unlike the Stripe checkout/portal URLs
- * elsewhere in the app, which come from our own server and only need a
- * scheme sanity-check as defence in depth. This one is the real case CLAUDE.md
- * means by "never shell.openExternal() a user-controlled URL unvalidated."
+ * Single, validated entry point for opening a URL outside the app. Message
+ * content (and embeds, profiles, presence) is genuinely user-controlled —
+ * the real case CLAUDE.md means by "never shell.openExternal() a
+ * user-controlled URL unvalidated."
  *
  * ChatPane.tsx and SharedContentModal.tsx each had their own copy of this
  * (`function openUrl`) — duplicated, and neither validated the URL before
@@ -12,23 +11,44 @@
  * always present in a packaged/dev Electron session, and neither of those
  * components is reused by the website), but "unreachable today" isn't a
  * reason to leave an unvalidated shell.openExternal-adjacent path sitting in
- * the code — the assumption that it's unreachable is exactly the kind of
- * thing that stops being true after a refactor nobody thought to re-check
- * against this file.
+ * the code.
  *
  * The actual electron/main.ts IPC handler (shell:open-external) already
  * restricts to https:/mailto: only — deliberately, per its own comment ("http
  * removed to prevent MITM downgrade", an L2 security-audit finding). That
  * restriction is correct and this file does NOT relax it. What it adds:
  *   - The SAME check applied client-side, before firing the IPC call, so a
- *     rejected URL (e.g. a plain http:// link, which the URL-detection regex
- *     in both callers happily matches) can report back WHY nothing happened,
- *     instead of the previous silent no-op — the main process's handler has
- *     no return value and no error path, so a rejected call there is
- *     indistinguishable from a slow one.
- *   - The identical check applied to the window.open() fallback, which
- *     previously had none at all.
+ *     rejected URL (e.g. a plain http:// link) can report back WHY nothing
+ *     happened instead of a silent no-op.
+ *   - The identical check applied to the window.open() fallback.
+ *
+ * LEAVING-CIPHERLINE GATE (owner: "if it's a link that isn't trusted and you
+ * open it, have a warning about leaving cipherline"). Every content link —
+ * message text, masked `[label](url)` links, embeds, the lightbox's "Open
+ * original", profile and rich-presence links — comes through here, so this is
+ * where the gate lives rather than at each call site:
+ *   - a destination that is not trusted (utils/externalLinks/trustedDomains
+ *     .ts: cipherline.chat built in, plus the account's own "Trusted
+ *     websites") raises the "You're leaving Cipherline" dialog
+ *     (components/LeavingCipherlineDialog.tsx) instead of opening; only its
+ *     Visit button opens, and only the request the gate itself recorded;
+ *   - a masked link whose text names a different site ALWAYS raises it, even
+ *     for a trusted destination, with the mismatch spelled out;
+ *   - nothing opens, and no dialog is raised, without a live user gesture
+ *     (`navigator.userActivation`), so content that reaches this function
+ *     outside a click gets `no-user-gesture`, never a browser tab.
+ * The account can turn the dialog down (Settings → Privacy → "Warn before
+ * opening links", with "Still warn about suspicious links" under it) or off
+ * entirely; the real-click requirement is never configurable.
+ * `source: 'app'` is for destinations written by Cipherline's own code (an
+ * OAuth sign-in the user just started, a Stripe receipt our server returned,
+ * the update download): they skip the dialog, keep the scheme check, and
+ * must never be passed anything from a message, embed, profile or presence.
  */
+import { describeExternalLink } from './externalLinks/describeLink';
+import { hasLeaveHost, requestLeave } from './externalLinks/leaveGate';
+import { hasUserGesture, sendToShell } from './externalLinks/shellOpen';
+import { getLinkWarningPrefs } from './externalLinks/linkWarningPrefs';
 
 /** Schemes electron/main.ts's shell:open-external handler will actually act
  *  on. Kept in sync with that allowlist by hand — duplicating a one-line
@@ -36,18 +56,44 @@
  *  ask the main process what it allows. */
 const ALLOWED_SCHEMES = new Set(['https:', 'mailto:']);
 
+export interface OpenExternalOptions {
+    /**
+     * The link's VISIBLE text when it differs from the URL (a masked
+     * `[label](url)` link). If it names another site the dialog says so.
+     */
+    label?: string;
+    /**
+     * 'content' (default): anything from a message, embed, profile or
+     * presence — gated. 'app': a destination authored by Cipherline's own
+     * code (see the file comment) — scheme-checked, no dialog.
+     */
+    source?: 'content' | 'app';
+}
+
 export type OpenExternalResult =
-    | { ok: true }
-    | { ok: false; reason: 'unparseable' | 'disallowed-scheme' };
+    | { ok: true; opened: 'now' | 'after-confirm' }
+    | { ok: false; reason: 'unparseable' | 'disallowed-scheme' | 'no-user-gesture' | 'no-confirm-host' };
 
 /**
- * Validate and open a user-controlled URL. Never throws.
- *
- * Does not await the Electron IPC round-trip — callers here are synchronous
- * click/keydown handlers with nothing meaningful to do while it's in flight,
- * matching the previous fire-and-forget behaviour.
+ * Settings → Privacy (linkWarningPrefs.ts): with "Warn before opening links"
+ * ON every untrusted link asks; OFF, only a suspicious one does, and only while
+ * "Still warn about suspicious links" is ON. Both OFF = never warn.
  */
-export function openExternalLink(url: string): OpenExternalResult {
+function needsDialog(suspicious: boolean): boolean {
+    const prefs = getLinkWarningPrefs();
+    if (prefs.warn) return true;
+    return suspicious && prefs.warnSuspicious;
+}
+
+/**
+ * Validate and open (or ask before opening) a URL. Never throws.
+ *
+ * `ok: true` with `opened: 'after-confirm'` means the leaving-Cipherline
+ * dialog is now showing; whether the user then visits is theirs to decide.
+ * Does not await the Electron IPC round-trip — callers are synchronous
+ * click/keydown handlers with nothing meaningful to do while it's in flight.
+ */
+export function openExternalLink(url: string, opts: OpenExternalOptions = {}): OpenExternalResult {
     let parsed: URL;
     try {
         parsed = new URL(url);
@@ -59,17 +105,22 @@ export function openExternalLink(url: string): OpenExternalResult {
     }
 
     // The scheme check above ran on `parsed`, so `parsed.href` — the
-    // normalised, validated form — is what reaches BOTH sinks below, never the
-    // raw input string. (For an https/mailto URL it is the same link, with the
+    // normalised, validated form — is what reaches the OS, never the raw
+    // input string. (For an https/mailto URL it is the same link, with the
     // parser's canonical spelling: a bare origin gains its trailing slash.)
-    const target = parsed.href;
-
-    if (typeof window !== 'undefined' && window.electronAPI?.openExternal) {
-        void window.electronAPI.openExternal(target).catch(() => { /* main process already logs failures */ });
-    } else {
-        // Realistically dead in this app (see file doc comment) — kept as a
-        // safety net rather than assuming the invariant holds forever.
-        window.open(target, '_blank', 'noopener,noreferrer');
+    if (opts.source === 'app') {
+        sendToShell(parsed.href);
+        return { ok: true, opened: 'now' };
     }
-    return { ok: true };
+
+    // The real-click requirement holds whatever the warning settings say.
+    if (!hasUserGesture()) return { ok: false, reason: 'no-user-gesture' };
+    const model = describeExternalLink(parsed, { label: opts.label });
+    if (model.trusted || !needsDialog(model.suspicious)) {
+        sendToShell(model.href);
+        return { ok: true, opened: 'now' };
+    }
+    if (!hasLeaveHost()) return { ok: false, reason: 'no-confirm-host' };
+    requestLeave(model);
+    return { ok: true, opened: 'after-confirm' };
 }

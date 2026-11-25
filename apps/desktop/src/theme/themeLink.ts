@@ -94,7 +94,7 @@ export type ThemeLinkParse =
 /**
  * What a URL in a message is, for the chat card: not a theme link at all; a
  * theme link that can't be read (bad fragment, refused by the validator); or
- * a valid theme, already validated and readability-guarded.
+ * a valid theme, already validated (colours exactly as shared).
  */
 export function parseThemeLink(url: unknown): ThemeLinkParse {
     if (!isThemeLinkUrl(url)) return { kind: 'none' };

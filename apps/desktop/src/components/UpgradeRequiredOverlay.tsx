@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../constants';
 import { useUpdate } from '../contexts/UpdateContext';
 import { DEFAULT_UPDATE_URL, UPGRADE_REQUIRED_EVENT, pinUpdateUrl } from '../utils/clientControl';
+import { openExternalLink } from '../utils/openExternalLink';
 import { fetchClientStatus } from '../utils/clientStatusFetch';
 import { UpdateRequiredScreen, type CheckPhase } from './UpdateRequiredScreen';
 
@@ -86,7 +87,8 @@ export default function UpgradeRequiredOverlay() {
 
     const openWebsite = useCallback(() => {
         // Pinned again at the point of use: only ever our own download page.
-        window.electronAPI?.openExternal?.(pinUpdateUrl(updateUrl))?.catch?.(() => { /* nothing else to try */ });
+        // App-authored (source 'app'): no leaving-Cipherline dialog on top of the update screen.
+        openExternalLink(pinUpdateUrl(updateUrl), { source: 'app' });
     }, [updateUrl]);
 
     const install = useCallback(async () => {

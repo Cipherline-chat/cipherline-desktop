@@ -109,53 +109,33 @@ export function channelsIn(items: TreeItem[]): ChannelInfo[] {
 // ── Divider visibility ──────────────────────────────────────────────────────
 
 /**
- * Which dividers to draw. A divider never advertises a section the viewer
- * cannot see: the server already withholds dividers inside containers the
- * member cannot see, and the channel list it sends is VIEW-filtered, so a
- * section with no channel in THIS list is a section with nothing the viewer
- * may see.
+ * Which dividers to draw: ALL of them (owner, 2026-11-24: "all divider types
+ * can be placed anywhere and seen").
  *
- *   - A labelled divider heads the section AFTER it (up to the next divider
- *     or the end of its container): drawn only when that section has a
- *     visible channel or sub-category. Its label never sits over hidden
- *     channels.
- *   - Line / dots / blank space separate what is before from what is after:
- *     drawn when either side has something visible (hidden when "every
- *     channel it separates" is hidden).
+ * Who may see a divider is decided by the SERVER, by its container: one inside
+ * a category the member cannot see never arrives (ChannelLayoutService.
+ * listDividers). Beyond that nothing here hides a divider. The old rule - hide
+ * a divider when the channels around it were hidden from this member, or when
+ * there was nothing after it - made a divider placed between, above or below
+ * channels vanish for members and flicker for managers; a divider is a
+ * decoration the manager put there on purpose, so it is drawn wherever it was
+ * placed, first, last, or alone in an otherwise empty section.
  *
- * Exception: the top of the list (dividers under no category) is always
- * drawn. It sits in no container, so there is nothing private for it to sit
- * over, and a divider placed above the categories has no channels "after" it
- * in its own list, so the rule above hid it from everyone (owner, 2026-11-16:
- * "make dividers visible if they aren't under a category").
- *
- * `keepEmpty` (members who manage channels): every divider is drawn so it can
- * be edited or dragged, and the ones a viewer like this would not see are
- * returned in `faded` so the list can mark them (an eye-off mark + tooltip, never dimmed).
+ * Kept as a function (not inlined) so the lists, the Calls panel and the tests
+ * share one answer. `faded` is always empty now (nothing is "would be hidden
+ * from members"); it stays in the shape so a caller need not change.
  */
-export function dividerVisibility(tree: ChannelTree, keepEmpty: boolean): { shown: Set<string>; faded: Set<string> } {
+export function dividerVisibility(tree: ChannelTree): { shown: Set<string>; faded: Set<string> } {
     const shown = new Set<string>();
-    const faded = new Set<string>();
-    const hasContent = (seg: TreeItem[]) => seg.some(it => it.kind === 'channel' || it.kind === 'subcategory');
-    const walk = (items: TreeItem[], always = false) => {
-        items.forEach((it, i) => {
-            if (it.kind === 'subcategory') { walk(it.items); return; }
-            if (it.kind !== 'divider') return;
-            if (always) { shown.add(it.id); return; }
-            let end = i + 1;
-            while (end < items.length && items[end].kind !== 'divider') end++;
-            let start = i - 1;
-            while (start >= 0 && items[start].kind !== 'divider') start--;
-            const after = hasContent(items.slice(i + 1, end));
-            const before = hasContent(items.slice(start + 1, i));
-            const visible = isLabelDividerStyle(it.divider.style) ? after : (after || before);
-            if (visible) shown.add(it.id);
-            else if (keepEmpty) { shown.add(it.id); faded.add(it.id); }
-        });
+    const walk = (items: TreeItem[]) => {
+        for (const it of items) {
+            if (it.kind === 'divider') shown.add(it.id);
+            else if (it.kind === 'subcategory') walk(it.items);
+        }
     };
-    walk(tree.top, true);
+    walk(tree.top);
     for (const c of tree.categories) walk(c.items);
-    return { shown, faded };
+    return { shown, faded: new Set<string>() };
 }
 
 /** Screen-reader text for a divider: a separator, labelled when it has words. */

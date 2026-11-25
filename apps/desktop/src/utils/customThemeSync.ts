@@ -247,7 +247,7 @@ export function buildThemesPayload(state: ThemeSyncState, now: number): ThemesPa
  * Parse + validate a payload from another device. Throws on a structurally
  * invalid / oversize / unknown-version payload (the caller changes nothing);
  * drops bad items one by one (each theme re-normalised: the same validation
- * and readability guard as the editor). A bad item never becomes a tombstone.
+ * as the editor). A bad item never becomes a tombstone.
  */
 export function parseThemesPayload(json: string, now: number): ThemeSyncState {
     if (json.length > MAX_THEMES_PAYLOAD_BYTES) throw new Error('themes payload too large');

@@ -52,4 +52,34 @@ describe('renderer CSP (R-09)', () => {
             expect(code.match(/https:\/\/[a-z0-9.-]*googleapis\.com[^'"`\s]*/g) ?? [], f).toEqual([]);
         }
     });
+
+    it('link embeds: media-src/img-src gain clmedia: (main-process streams of registered URLs) and no internet origin', () => {
+        const media = directive('media-src').split(/\s+/);
+        expect(media).toEqual(["'self'", 'blob:', 'clmedia:']);
+        const img = directive('img-src').split(/\s+/);
+        expect(img).toContain('clmedia:');
+        for (const d of [media, img]) {
+            expect(d).not.toContain('*');
+            expect(d).not.toContain('https:');
+            expect(d).not.toContain('http:');
+        }
+        // Inline clip playback adds NO third-party frame origin (every clip host plays as a file); the only
+        // player frames are YouTube and, phase 4, Twitch + TikTok — each an exact origin, never a wildcard.
+        expect(directive('frame-src')).toBe('https://www.youtube-nocookie.com https://clips.twitch.tv https://player.twitch.tv https://www.tiktok.com blob: https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat');
+    });
+
+    it('clmedia: is declared before ready, streamable, and does NOT bypass CSP or get fetch(); CORS only for the renderer', () => {
+        const m = main.match(/protocol\.registerSchemesAsPrivileged\(\[\s*\{ scheme: CLMEDIA_SCHEME, privileges: \{([^}]*)\} \},\s*\]\);/);
+        expect(m).not.toBeNull();
+        const p = m![1];
+        expect(p).toContain('stream: true');
+        expect(p).toContain('bypassCSP: false');
+        expect(p).toContain('supportFetchAPI: false');
+        // CORS-enabled (the sender's frame grab draws a frame onto a canvas), answered
+        // only for the app's own renderer origin (media-protocol.ts corsHeaders).
+        expect(p).toContain('corsEnabled: true');
+        expect(main).toMatch(/allowOrigin: \(origin\) => isTrustedSenderUrl\(`\$\{origin\}\/`, DEV_SERVER_URL, CIPHERLINE_PROD_PORT\)/);
+        expect(main.indexOf('protocol.registerSchemesAsPrivileged')).toBeLessThan(main.indexOf('app.whenReady().then('));
+        expect(main).toMatch(/protocol\.handle\(CLMEDIA_SCHEME, createClmediaHandler\(mediaRegistry/);
+    });
 });

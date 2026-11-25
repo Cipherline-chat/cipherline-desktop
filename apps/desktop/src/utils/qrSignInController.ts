@@ -27,6 +27,10 @@
  *        legacy approver.)
  *   QR-1 confirm screen now names the account with avatar + handle + which
  *        device approved, all resolved from the NEW token via `/auth/me`.
+ *        2026-11-23: the avatar is the account's REAL picture when it has
+ *        one (`loadAvatarPreview` — fetched with the pending token, decrypted
+ *        in memory, cached nowhere; see utils/linkAvatarPreview.ts), the
+ *        identity-colour letter tile until it arrives and whenever it can't.
  */
 
 import type { ClaimLinkSessionResponse, LinkGrantPayload, LinkPollResponse } from '../types/link';
@@ -74,6 +78,12 @@ export interface QrSignInSnapshot {
         discriminator: number | null;
         /** Encrypted-avatar attachment id (or null) from `/auth/me`. */
         avatarUrl: string | null;
+        /** A displayable URL (an object URL) for the DECRYPTED avatar, once
+         *  `loadAvatarPreview` has produced one; null until then and whenever
+         *  it can't (no avatar, offline, no dep) — the view shows the letter
+         *  tile. Revoked by the controller the moment the confirm screen goes
+         *  away, whichever way it goes. */
+        avatarSrc: string | null;
         /** Display-only context — which of the approving account's devices
          *  said yes. NOT part of the QR-1 trust decision. */
         approvedByDeviceName: string;
@@ -168,6 +178,19 @@ export interface QrSignInDeps {
      *  see `buildQrText` below for why the string itself must never come from
      *  the server. */
     renderQr: (text: string) => Promise<string>;
+    /**
+     * Optional — the account's real profile picture for the confirm screen.
+     * Called once per confirm screen with the PENDING session's access token
+     * and the attachment id `/auth/me` returned; resolves a displayable URL
+     * (an object URL for the decrypted image) or null. Must persist nothing
+     * and must not use the global axios instance (see
+     * utils/linkAvatarPreview.ts). Never awaited by the flow: the confirm
+     * screen renders immediately with the letter tile and the picture
+     * replaces it when (if) it arrives. A rejection is swallowed.
+     */
+    loadAvatarPreview?: (accessToken: string, avatarAttachmentId: string) => Promise<string | null>;
+    /** Releases a URL `loadAvatarPreview` produced (`URL.revokeObjectURL`). */
+    releaseAvatarPreview?: (url: string) => void;
     /** Builds the QR payload string from the link id and the EK PUB KEY THIS
      *  MODULE GOT FROM `linkBegin` — never from a server response field.
      *  docs/QR-LINKING.md §2.5: a server-rendered/sourced QR would let a
@@ -278,6 +301,13 @@ export class QrSignInController {
      *  Mirrored into the snapshot as `verificationCode` (the view shows it
      *  only from `scanned` on). */
     private code: string | null = null;
+    /** The confirm screen's decrypted-avatar URL, owned here so it is
+     *  released exactly once, whichever way the screen goes away. */
+    private avatarPreview: string | null = null;
+    /** Bumped every time the preview is dropped: a load that resolves after
+     *  its confirm screen is gone sees a stale number and releases its URL
+     *  instead of showing it. */
+    private avatarSeq = 0;
     // Not a constructor parameter property: this app's tsconfig sets
     // `erasableSyntaxOnly`, which forbids that shorthand (it is not purely
     // type-level — it generates an assignment), so the field is declared
@@ -328,6 +358,7 @@ export class QrSignInController {
      * action — skipping it on unmount is exactly the leak it exists to close.
      */
     private discardClaimed(): void {
+        this.dropAvatarPreview();
         const tokens = this.claimed;
         this.claimed = null;
         if (this.pending) {
@@ -360,12 +391,48 @@ export class QrSignInController {
         void Promise.resolve(request).catch(() => { /* best-effort; the pair expires on its own */ });
     }
 
+    /** Release the confirm screen's avatar URL (if any) and invalidate any
+     *  load still in flight. Idempotent. */
+    private dropAvatarPreview(): void {
+        this.avatarSeq++;
+        const url = this.avatarPreview;
+        this.avatarPreview = null;
+        if (url) {
+            try { this.deps.releaseAvatarPreview?.(url); } catch { /* nothing to release */ }
+        }
+    }
+
+    /** Kick off the confirm screen's avatar load. Not awaited — see
+     *  `QrSignInDeps.loadAvatarPreview`. */
+    private startAvatarPreview(accessToken: string, avatarAttachmentId: string | null): void {
+        const load = this.deps.loadAvatarPreview;
+        if (!load || !avatarAttachmentId || !accessToken) return;
+        const seq = this.avatarSeq;
+        let request: Promise<string | null>;
+        try {
+            request = load(accessToken, avatarAttachmentId);
+        } catch {
+            return;
+        }
+        void Promise.resolve(request).then((url) => {
+            if (!url) return;
+            const identity = this.snapshot.confirmIdentity;
+            if (seq !== this.avatarSeq || this.disposed || this.snapshot.phase !== 'confirm' || !identity) {
+                try { this.deps.releaseAvatarPreview?.(url); } catch { /* nothing to release */ }
+                return;
+            }
+            this.avatarPreview = url;
+            this.set({ confirmIdentity: { ...identity, avatarSrc: url } });
+        }, () => { /* letter tile stays */ });
+    }
+
     /** Never call the outside world (main process, network) after dispose. */
     private guard(): boolean {
         return !this.disposed;
     }
 
     private fail(err: unknown, message = describeError(err)): void {
+        this.dropAvatarPreview();
         if (this.guard()) {
             this.set({
                 phase: 'error', error: message, qrDataUrl: null, fingerprint: null,
@@ -438,9 +505,11 @@ export class QrSignInController {
                     username: identity.username,
                     discriminator: identity.discriminator,
                     avatarUrl: identity.avatar_url ?? null,
+                    avatarSrc: null,
                     approvedByDeviceName: grant.approved_by_device_name,
                 },
             });
+            this.startAvatarPreview(tokens.access_token, identity.avatar_url ?? null);
         } catch (err) {
             this.discardClaimed();
             await this.stopSession();
@@ -465,6 +534,7 @@ export class QrSignInController {
         // hand `login` an emptied token.
         const session = { ...pending };
         this.pending = null;
+        this.dropAvatarPreview();
         this.set({ phase: 'opening', confirmIdentity: null });
         try {
             const { deviceId, requiresPairing } = await this.deps.registerDevice(session.user_id, session.access_token);

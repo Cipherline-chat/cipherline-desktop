@@ -18,7 +18,7 @@ import { frankingFieldsAfterEdit, withoutFranking, type StoredFranking } from '.
 import { adoptServerCopy } from './pendingSend';
 import { sanitizeChannelRefs } from './channelRefs';
 import { withEditFont } from './formatting/messageFont';
-import { withEditCardStyle } from '@cipherline/shared';
+import { isEmbedsOnlyEdit, withEditCardStyle, withEditEmbeds } from '@cipherline/shared';
 
 /** A cached or freshly-decrypted channel row, as far as the merge cares.
  *  Structurally a superset-tolerant view of Dashboard's `StoredChannelMsg`. */
@@ -115,10 +115,14 @@ export function applyChannelEditDelete<T extends ChannelRow>(thread: T[], action
     if (c.type === 'edit') {
         // The edited text is vouched for by the EDIT's own commitment, never the
         // original's (utils/franking.ts frankingFieldsAfterEdit).
+        const content = editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size, c);
+        // A late link preview attached by the sender's app is not an edit of the
+        // words (link-embeds.ts isEmbedsOnlyEdit); anything else is marked.
+        const unmarked = isEmbedsOnlyEdit(next[idx].content, content, c);
         next[idx] = {
             ...withoutFranking(next[idx]),
-            content: editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size, c),
-            edited: true,
+            content,
+            ...(unmarked ? {} : { edited: true }),
             ...frankingFieldsAfterEdit(action),
         } as T;
     } else {
@@ -169,8 +173,9 @@ export function editedContent(targetContent: unknown, text: string, channelRefs?
         // The card style (packages/shared/card-style.ts) is the exception:
         // an edit WITHOUT `card_style` keeps the original's (an older client
         // editing a styled message must not strip it); `null` removes it; a
-        // valid style replaces it.
-        return withEditCardStyle(withEditFont(refs.length > 0 ? { ...rest, channel_refs: refs } : rest, font, size), edit);
+        // valid style replaces it. Link embeds (link-embeds.ts withEditEmbeds)
+        // follow the same rule; readers drop any whose link the new text lost.
+        return withEditEmbeds(withEditCardStyle(withEditFont(refs.length > 0 ? { ...rest, channel_refs: refs } : rest, font, size), edit), edit);
     };
     if (isUndecryptablePlaceholder({ content: targetContent })) return withRefs({ type: 'text', text });
     return withRefs({ ...(targetContent as object), text });

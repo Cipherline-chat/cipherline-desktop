@@ -22,7 +22,7 @@
  * Reactors' Discord ids go to the renderer like authors' (the API keeps only
  * the keyed hash).
  */
-import { DiscordApiError, checkMediaUrl, type DiscordClient } from './discord-client';
+import { DiscordApiError, checkEmbedProxyUrl, checkMediaUrl, type DiscordClient } from './discord-client';
 import { isSnowflake } from './redact';
 
 /** Web Crypto's UUID (global in Node 19+ and Electron main; also the page in the harness). */
@@ -48,8 +48,12 @@ const VOICE_MESSAGE_FLAG = 1 << 13;
 
 interface RawUser { id?: unknown; username?: unknown; global_name?: unknown; avatar?: unknown; bot?: unknown; discriminator?: unknown }
 interface RawAttachment { id?: unknown; filename?: unknown; size?: unknown; url?: unknown; content_type?: unknown }
-interface RawEmbedImage { url?: unknown; proxy_url?: unknown }
-interface RawEmbed { type?: unknown; image?: RawEmbedImage; thumbnail?: RawEmbedImage; title?: unknown; description?: unknown; url?: unknown; fields?: unknown; author?: { name?: unknown }; footer?: { text?: unknown } }
+interface RawEmbedImage { url?: unknown; proxy_url?: unknown; width?: unknown; height?: unknown }
+interface RawEmbed {
+    type?: unknown; image?: RawEmbedImage; thumbnail?: RawEmbedImage; title?: unknown; description?: unknown; url?: unknown; fields?: unknown;
+    author?: { name?: unknown }; footer?: { text?: unknown }; color?: unknown; provider?: { name?: unknown };
+    video?: { url?: unknown; width?: unknown; height?: unknown };
+}
 /** The original message inside a forward: the same fields, minus ids and author. */
 interface RawSnapshot {
     content?: unknown; timestamp?: unknown; mentions?: RawUser[]; attachments?: RawAttachment[]; embeds?: RawEmbed[];
@@ -109,6 +113,30 @@ export interface ImportMessage {
     pinned: boolean;
     /** Up to 20 per message (Discord's limit). `users` filled by fetchReactors (first 100), [] past the budget. */
     reactions: ImportReaction[];
+    /**
+     * The previews Discord generated for links in the message (link embeds
+     * phase 4): the renderer maps them into LinkEmbed so imported history keeps
+     * its previews. Absent from an older main process.
+     */
+    linkEmbeds?: ImportLinkEmbed[];
+}
+
+/** One link preview Discord made for a link in a message (see collectLinkEmbeds). */
+export interface ImportLinkEmbed {
+    url: string;
+    type: 'link' | 'article' | 'video' | 'rich';
+    title: string | null;
+    description: string | null;
+    site: string | null;
+    author: string | null;
+    /** `#rrggbb` from Discord's colour integer. */
+    color: string | null;
+    /** The preview picture, fetched from Discord (its own media or its external-image proxy copy), never from the site. */
+    thumbRef: string | null;
+    thumbWidth: number | null;
+    thumbHeight: number | null;
+    /** The page's video (https), as Discord recorded it; the renderer keeps it only for providers it can play. */
+    videoUrl: string | null;
 }
 
 export interface ImportReactor { id: string; name: string; kind: 'user' | 'app' }
@@ -214,6 +242,60 @@ function collectEmbeds(list: RawEmbed[] | undefined, reg: MediaRegistry, channel
     }
 }
 
+/** A link preview's picture is small; anything bigger is not worth the import's time or storage. */
+export const LINK_EMBED_THUMB_FETCH_MAX = 5 * 1024 * 1024;
+const LINK_EMBED_TYPES = new Set(['link', 'article', 'video']);
+
+/**
+ * Previews Discord's own unfurler generated for links IN the message (link
+ * embeds phase 4): type link / article / video, or a `rich` one whose url is a
+ * link in the words of a PERSON's message (X / Twitter and others unfurl as
+ * rich). Bot and webhook embeds (fields, footers, no link in the words) stay
+ * with collectEmbeds' quoted text, unchanged. At most 5 per message (the
+ * receivers' cap). The picture is Discord's copy: on its media hosts, or its
+ * external-image proxy (checkEmbedProxyUrl) — never the linked site.
+ */
+function collectLinkEmbeds(list: RawEmbed[] | undefined, content: string, isPerson: boolean, reg: MediaRegistry, channelId: string, out: ImportLinkEmbed[]): RawEmbed[] {
+    const rest: RawEmbed[] = [];
+    const int = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= 16384 ? v : null);
+    for (const e of Array.isArray(list) ? list.slice(0, 10) : []) {
+        if (!e || typeof e !== 'object') continue;
+        const url = typeof e.url === 'string' && /^https:\/\//.test(e.url) && e.url.length <= 2048 ? e.url : null;
+        const type = typeof e.type === 'string' ? e.type : '';
+        const isLink = !!url && (LINK_EMBED_TYPES.has(type) || (type === 'rich' && isPerson && content.includes(url) && !Array.isArray(e.fields)));
+        if (!isLink || out.length >= 5) { rest.push(e); continue; }
+        let thumbRef: string | null = null;
+        let thumbWidth: number | null = null;
+        let thumbHeight: number | null = null;
+        for (const img of [e.thumbnail, e.image]) {
+            const u = [img?.proxy_url, img?.url].find(x => checkMediaUrl(x) || checkEmbedProxyUrl(x)) as string | undefined;
+            if (!u) continue;
+            thumbRef = registerAny(reg, { url: u, kind: 'file', channelId, max: LINK_EMBED_THUMB_FETCH_MAX });
+            thumbWidth = int(img?.width);
+            thumbHeight = int(img?.height);
+            if (thumbRef) break;
+        }
+        const color = typeof e.color === 'number' && Number.isInteger(e.color) && e.color >= 0 && e.color <= 0xffffff ? `#${e.color.toString(16).padStart(6, '0')}` : null;
+        const video = typeof e.video?.url === 'string' && /^https:\/\//.test(e.video.url) && e.video.url.length <= 2048 ? e.video.url : null;
+        out.push({
+            url: url!, type: type as ImportLinkEmbed['type'],
+            title: s(e.title, 256) || null, description: s(e.description, 700) || null,
+            site: s(e.provider?.name, 80) || null, author: s(e.author?.name, 120) || null,
+            color, thumbRef, thumbWidth, thumbHeight, videoUrl: video,
+        });
+    }
+    return rest;
+}
+
+/** register() for a link preview's picture: Discord's media hosts or its external-image proxy. */
+function registerAny(reg: MediaRegistry, e: MediaEntry): string | null {
+    if (!checkMediaUrl(e.url) && !checkEmbedProxyUrl(e.url)) return null;
+    for (const [ref, have] of reg) if (have.url === e.url) return ref;
+    const ref = randomUUID();
+    reg.set(ref, e);
+    return ref;
+}
+
 /** One raw message -> what the renderer needs, or null for types that carry no words. */
 export function normalizeMessage(m: RawMessage, reg: MediaRegistry, channelId: string): ImportMessage | null {
     if (!m || !isSnowflake(m.id) || typeof m.type !== 'number' || !KEPT_TYPES.has(m.type)) return null;
@@ -229,7 +311,10 @@ export function normalizeMessage(m: RawMessage, reg: MediaRegistry, channelId: s
     const files: ImportFileInfo[] = [];
     const embeds: ImportMessage['embeds'] = [];
     collectFiles(m.attachments, typeof m.flags === 'number' && (m.flags & VOICE_MESSAGE_FLAG) !== 0, m.id as string, reg, channelId, files);
-    collectEmbeds(m.embeds, reg, channelId, files, embeds);
+    // Discord's previews of links in the words become LinkEmbed (renderer); the rest stays quoted text.
+    const linkEmbeds: ImportLinkEmbed[] = [];
+    const otherEmbeds = collectLinkEmbeds(m.embeds, typeof m.content === 'string' ? m.content : '', author.kind === 'user', reg, channelId, linkEmbeds);
+    collectEmbeds(otherEmbeds, reg, channelId, files, embeds);
     // A forward: the words, files and embeds of the ORIGINAL become this message's body.
     let forwarded: ImportMessage['forwarded'] = null;
     const snap = m.message_reference?.type === 1 && Array.isArray(m.message_snapshots) ? m.message_snapshots[0]?.message : undefined;
@@ -283,6 +368,7 @@ export function normalizeMessage(m: RawMessage, reg: MediaRegistry, channelId: s
         mentionNames,
         replyTo: m.type === 19 && ref && (ref.type === undefined || ref.type === 0) && isSnowflake(ref.message_id) ? ref.message_id : null,
         files, embeds, stickers, stickerItems, forwarded, poll,
+        ...(linkEmbeds.length ? { linkEmbeds } : {}),
         pinned: m.pinned === true,
         reactions,
     };

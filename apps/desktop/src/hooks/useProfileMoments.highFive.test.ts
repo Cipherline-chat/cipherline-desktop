@@ -19,7 +19,8 @@ describe('incoming high five: one notification', () => {
 
     it('positive control: the overlay itself names who sent it and is announced', () => {
         const overlay = read('components/HighFiveOverlay.tsx');
-        expect(overlay).toMatch(/High five from \{play\.from\}/);
+        expect(overlay).toMatch(/High five!/);
+        expect(overlay).toMatch(/from <b>\{play\.from\}<\/b>/);
         expect(overlay).toMatch(/aria-live="polite"/);
     });
 });

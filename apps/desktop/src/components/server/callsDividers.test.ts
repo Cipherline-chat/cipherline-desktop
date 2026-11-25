@@ -66,21 +66,43 @@ describe('planCallsDrop', () => {
     });
 });
 
-describe('Calls list divider visibility (same rule as the text list)', () => {
-    it('a label divider shows only over a visible Calls channel; managers see the rest marked, not dimmed', () => {
-        const tree = buildChannelTree([hd('a', 'C', 1000)], [cat('C', 1000)], [dv('head', 'C', 500), dv('tail', 'C', 2000)]);
-        const member = dividerVisibility(tree, false);
-        expect(member.shown.has('head')).toBe(true);
-        expect(member.shown.has('tail')).toBe(false);
-        const manager = dividerVisibility(tree, true);
-        expect(manager.shown.has('tail')).toBe(true);
-        expect(manager.faded.has('tail')).toBe(true);
-        expect(manager.faded.has('head')).toBe(false);
+describe('Calls list divider visibility (same rule as the text list: every divider is drawn)', () => {
+    it('a divider is shown first, last, between and alone in a Calls category, in every style', () => {
+        for (const style of ['label', 'header', 'pill', 'text', 'line', 'dots', 'space'] as const) {
+            const tree = buildChannelTree(
+                [hd('a', 'C', 2000)],
+                [cat('C', 1000), cat('E', 2000)],
+                [dv('head', 'C', 500, style), dv('tail', 'C', 9000, style), dv('alone', 'E', 1000, style), dv('top', null, 100, style)],
+            );
+            const v = dividerVisibility(tree);
+            for (const id of ['head', 'tail', 'alone', 'top']) expect(v.shown.has(id)).toBe(true);
+            expect(v.faded.size).toBe(0);
+        }
     });
 
     it('a divider in a Calls category the member cannot see is not sent, so nothing shows', () => {
         // The category is absent from a member's list: the divider's container is gone.
         const tree = buildChannelTree([], [], []);
-        expect(dividerVisibility(tree, false).shown.size).toBe(0);
+        expect(dividerVisibility(tree).shown.size).toBe(0);
+    });
+});
+
+describe('Calls top of list: a divider can be dropped under no category', () => {
+    it('dragged out of a category onto the top zone it ends up last at the top, and the source category is renumbered', () => {
+        const H = [hd('a', 'C', 1000), hd('b', 'C', 3000)];
+        // After the optimistic reflow (onHuddleDragOver) the divider already has parent null.
+        const moved = [dv('d', null, 1000)];
+        const plan = planCallsDrop(H, moved, callsDividerKey('d'), 'calls-top-end', 'C', null)!;
+        expect(plan.containers.map(c => c.parent)).toEqual([null, 'C']);
+        expect(plan.containers[0].items.map(i => i.id)).toEqual(['d']);
+        expect(plan.containers[1].items.map(i => i.id)).toEqual(['a', 'b']);
+    });
+
+    it('dropped on the top zone behind other top-level dividers it lands LAST; before the first it lands FIRST', () => {
+        const top = [dv('t1', null, 1000), dv('t2', null, 2000), dv('d', null, 3000)];
+        const last = planCallsDrop([], top, callsDividerKey('d'), 'calls-top-end', null, null)!;
+        expect(last.containers[0].items.map(i => i.id)).toEqual(['t1', 't2', 'd']);
+        const first = planCallsDrop([], top, callsDividerKey('d'), callsDividerKey('t1'), null, null)!;
+        expect(first.containers[0].items.map(i => i.id)).toEqual(['d', 't1', 't2']);
     });
 });

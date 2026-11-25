@@ -284,7 +284,7 @@ export class DiscordClient {
      * a hard byte cap (declared length first, then the real body).
      */
     async getMedia(rawUrl: string, maxBytes: number, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
-        const url = checkMediaUrl(rawUrl);
+        const url = checkMediaUrl(rawUrl) ?? checkEmbedProxyUrl(rawUrl);
         if (!url) throw new DiscordApiError('invalid_response', 'Bad media address.');
         const res = await this.send(url.toString(), `MEDIA ${url.hostname}`, { Accept: '*/*' }, signal, false);
         if (res.status === 403 || res.status === 404 || res.status === 410) {
@@ -349,6 +349,25 @@ export const DISCORD_MEDIA_HOSTS = new Set(['cdn.discordapp.com', 'media.discord
 const MEDIA_PATH = /^\/(attachments|ephemeral-attachments|avatars|embed\/avatars|stickers)\/[0-9A-Za-z_.~!$&'()*+,;=:@%/-]+$/;
 /** Query keys Discord puts on media URLs: the signature (ex / is / hm) and the proxy's resize options. */
 const MEDIA_QUERY_KEYS = new Set(['ex', 'is', 'hm', 'size', 'format', 'quality', 'width', 'height', 'animated']);
+
+/**
+ * Discord's EXTERNAL image proxy (images-ext-N.discordapp.net/external/…): the
+ * copy Discord's own servers made of a linked page's preview picture when the
+ * message was posted. Used only for a link preview's thumbnail (link embeds
+ * phase 4, history.ts collectLinkEmbeds), so importing it contacts Discord,
+ * never the linked site. Strict: https, these hosts, the /external/ path.
+ */
+export const DISCORD_EMBED_PROXY_HOSTS = new Set(['images-ext-1.discordapp.net', 'images-ext-2.discordapp.net']);
+export function checkEmbedProxyUrl(raw: unknown): URL | null {
+    if (typeof raw !== 'string' || raw.length > 2048) return null;
+    let u: URL;
+    try { u = new URL(raw); } catch { return null; }
+    if (u.protocol !== 'https:' || u.username || u.password || u.port) return null;
+    if (!DISCORD_EMBED_PROXY_HOSTS.has(u.hostname)) return null;
+    if (!/^\/external\/[0-9A-Za-z_.~!$&'()*+,;=:@%/-]+$/.test(u.pathname) || u.pathname.includes('..')) return null;
+    for (const [k, v] of u.searchParams) if (!MEDIA_QUERY_KEYS.has(k) && !(k === '' && v === '')) return null;
+    return u;
+}
 
 /** A Discord media URL we will fetch, or null. Strict: https, fixed hosts, media paths, no credentials or port. */
 export function checkMediaUrl(raw: unknown): URL | null {

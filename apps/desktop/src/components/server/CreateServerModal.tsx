@@ -18,6 +18,7 @@ import { DialogForm, DialogField, DialogStack } from '../dialog/DialogExtras';
 import { BusyLabel } from '../dialog/BusyLabel';
 import type { DiscordTemplateImportRequest, DiscordTemplatePreview } from '../../utils/discordTemplate';
 import { imageUploadType, imageUploadExt } from '../../utils/imageCrop';
+import { openExternalLink } from '../../utils/openExternalLink';
 import '../../styles/dialog-server.css';
 
 /**
@@ -155,7 +156,7 @@ export const CreateServerModal: React.FC<Props> = ({
                     onBack={() => setMode('scratch')}
                     onClose={handleClose}
                     onOpenServer={async (id, n) => { await onOpenImportedServer?.(id, n); handleClose(); }}
-                    onOpenExternal={(url) => { void window.electronAPI?.openExternal(url); }}
+                    onOpenExternal={(url) => { openExternalLink(url, { source: 'app' }); }}
                 />
             ) : importing ? (
                 <DiscordTemplateImport

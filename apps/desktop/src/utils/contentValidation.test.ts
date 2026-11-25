@@ -79,6 +79,11 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
     // desktop hooks/useCallKeySharing.ts: a joiner without the call key asks for it
     'call_key_request': { client_msg_id: UUID, type: 'call_key_request', call_id: UUID2 },
     'call_key_request (no client_msg_id)': { type: 'call_key_request', call_id: UUID2 },
+    // own-device transfer control messages (contract section 7): never rows
+    'near_offer': { client_msg_id: UUID, type: 'near_offer', v: 1, e_pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', nonce: 'BBBBBBBBBBBBBBBBBBBBBB', ts: 1763500000000, to: UUID2 },
+    'near_answer (accepted)': { type: 'near_answer', v: 1, nonce: 'BBBBBBBBBBBBBBBBBBBBBB', to: UUID2, e_pub: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    'near_answer (declined)': { type: 'near_answer', v: 1, nonce: 'BBBBBBBBBBBBBBBBBBBBBB', declined: true },
+    'near_msg': { type: 'near_msg', v: 1, nonce: 'BBBBBBBBBBBBBBBBBBBBBB', from: 'a', seq: 3, body_b64: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', to: UUID2 },
     // the answer to it
     'call_key (share)': { client_msg_id: UUID, type: 'call_key', call_id: UUID2, epoch: 4, e2ee_key_b64: KEY, key_id: 'share', rotates_at: '2026-10-20T14:40:00.000Z' },
     'call_event (mobile-known)': { type: 'call_event', call_id: UUID2, event: 'ended' },
@@ -128,6 +133,16 @@ describe('refused shapes', () => {
         ['reaction bad action', { type: 'reaction', target_id: UUID, emoji: '👍', action: 'toggle' }],
         ['reaction huge emoji', { type: 'reaction', target_id: UUID, emoji: 'x'.repeat(300), action: 'add' }],
         ['pin without at', { type: 'pin', conversation_id: UUID, target_id: UUID, action: 'add' }],
+        ['near_offer wrong version', { type: 'near_offer', v: 2, e_pub: 'AAAA', nonce: 'BBBB', ts: 1, to: UUID }],
+        ['near_offer without a target device', { type: 'near_offer', v: 1, e_pub: 'AAAA', nonce: 'BBBB', ts: 1 }],
+        ['near_offer text ts', { type: 'near_offer', v: 1, e_pub: 'AAAA', nonce: 'BBBB', ts: 'now', to: UUID }],
+        ['near_offer huge key', { type: 'near_offer', v: 1, e_pub: 'A'.repeat(65), nonce: 'BBBB', ts: 1, to: UUID }],
+        ['near_answer with neither key nor decline', { type: 'near_answer', v: 1, nonce: 'BBBB', to: UUID }],
+        ['near_answer declined:false', { type: 'near_answer', v: 1, nonce: 'BBBB', declined: false }],
+        ['near_msg bad side', { type: 'near_msg', v: 1, nonce: 'BBBB', from: 'x', seq: 1, body_b64: 'AAAA', to: UUID }],
+        ['near_msg seq 0', { type: 'near_msg', v: 1, nonce: 'BBBB', from: 'a', seq: 0, body_b64: 'AAAA', to: UUID }],
+        ['near_msg oversize body', { type: 'near_msg', v: 1, nonce: 'BBBB', from: 'n', seq: 1, body_b64: 'A'.repeat(2049), to: UUID }],
+        ['near_msg empty body', { type: 'near_msg', v: 1, nonce: 'BBBB', from: 'n', seq: 1, body_b64: '', to: UUID }],
         ['call_key_request without call_id', { type: 'call_key_request' }],
         ['call_key_request numeric call_id', { type: 'call_key_request', call_id: 7 }],
         ['call_key_request object call_id', { type: 'call_key_request', call_id: { id: UUID } }],

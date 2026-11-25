@@ -33,11 +33,25 @@ describe('settings -> engine settings', () => {
         expect(wantsNativeStrong({ ...strong, noiseSuppressionMode: 'light' })).toBe(false);
     });
 
-    it('volumeNormalization -> auto gain; the mic volume is ignored while it is on', () => {
-        const on = engineSettingsFor({ ...base, micVolume: 180 });
-        expect(on.autoGain).toBe(true);
-        expect(on.manualGainDb).toBe(0);
-        expect(on.originalSound).toBe(false);
+    it('auto gain ON: the mic volume is still applied, as a pre-gain (100 % = 0 dB, 150 % = positive, below 100 % = negative)', () => {
+        const at = (micVolume: number) => engineSettingsFor({ ...base, micVolume });
+        expect(at(100).autoGain).toBe(true);
+        expect(at(100).manualGainDb).toBe(0);
+        expect(at(150).autoGain).toBe(true);
+        expect(at(150).manualGainDb).toBeGreaterThan(0);
+        expect(at(150).manualGainDb).toBeCloseTo(micSliderToDb(150), 1);
+        expect(at(200).manualGainDb).toBeCloseTo(7.5, 1);
+        expect(at(50).manualGainDb).toBeLessThan(0);
+        expect(at(150).originalSound).toBe(false);
+        // the same number as with auto gain off: one slider law
+        expect(at(150).manualGainDb).toBe(engineSettingsFor({ ...base, volumeNormalization: false, micVolume: 150 }).manualGainDb);
+    });
+
+    it('the mic volume never changes the native Strong decision, with auto gain on or off', () => {
+        const strong = { audioEngine: 'v2', noiseSuppression: true, noiseSuppressionMode: 'strong' } as const;
+        for (const volumeNormalization of [true, false]) for (const micVolume of [50, 100, 180]) {
+            expect(wantsNativeStrong({ ...strong, volumeNormalization, micVolume })).toBe(true);
+        }
     });
 
     it('auto gain off: the mic volume is the manual gain in dB, by the same slider law as the legacy chain', () => {

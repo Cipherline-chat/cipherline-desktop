@@ -15,15 +15,30 @@
  */
 import secureLocalStore from '../utils/secureLocalStore';
 
-export type BackupStoreBlock = 'locked' | 'unread' | 'not-ready';
+export type BackupStoreBlock = 'locked' | 'unread' | 'not-ready' | 'partial';
 
 export const BACKUP_STORE_UNREADABLE_MESSAGE =
     'Your data on this device couldn’t be read, so backing up now could overwrite a good backup with an empty one. Restart Cipherline and try again.';
 
+/**
+ * 'partial': the store loaded, but some records could not be read this launch
+ * (secureLocalStore: UNREADABLE RECORDS). A backup would export the history
+ * without them, and the backup writer drops what the new export no longer
+ * holds — so the backup, possibly the only other copy of those records, would
+ * lose them too.
+ */
+export const BACKUP_STORE_PARTIAL_MESSAGE =
+    'Some of your data on this device couldn’t be read, so a backup now would leave it out of your backup. Nothing was deleted. Restart Cipherline and try again.';
+
+/** What to tell the user about a block. */
+export function backupStoreBlockMessage(block: BackupStoreBlock): string {
+    return block === 'partial' ? BACKUP_STORE_PARTIAL_MESSAGE : BACKUP_STORE_UNREADABLE_MESSAGE;
+}
+
 export class BackupStoreUnreadableError extends Error {
     readonly reason: BackupStoreBlock;
     constructor(reason: BackupStoreBlock) {
-        super(BACKUP_STORE_UNREADABLE_MESSAGE);
+        super(backupStoreBlockMessage(reason));
         this.name = 'BackupStoreUnreadableError';
         this.reason = reason;
     }
@@ -35,6 +50,7 @@ export function backupStoreBlock(userId: string): BackupStoreBlock | null {
         if (secureLocalStore.isLocked()) return 'locked';
         if (secureLocalStore.hasLoadFailure()) return 'unread';
         if (!secureLocalStore.isAccountReady(userId)) return 'not-ready';
+        if (secureLocalStore.unreadableRecordCount() > 0) return 'partial';
         return null;
     } catch {
         // Not hydrated (or anything else unexpected): the safe answer is no.

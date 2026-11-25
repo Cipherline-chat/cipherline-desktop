@@ -2,7 +2,8 @@
 /**
  * FormattedText in a real DOM: the element each syntax becomes, that sender
  * text never becomes markup, spoilers (hidden + inert until revealed), masked
- * links (real destination on hover, confirm before opening, phishing warning),
+ * links (real destination on hover, the shared leaving-Cipherline dialog before
+ * opening, the label/destination mismatch line),
  * headings without a size change, and leaves handed back to the caller.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -21,6 +22,8 @@ const writeClipboard = vi.fn(() => Promise.resolve());
 (window as unknown as { electronAPI: unknown }).electronAPI = { openExternal, writeClipboard };
 
 const { renderFormatted } = await import('./FormattedText');
+const { default: LeavingCipherlineHost } = await import('../LeavingCipherlineDialog');
+const { setUserGestureProbeForTests } = await import('../../utils/externalLinks/shellOpen');
 
 let root: Root;
 let host: HTMLDivElement;
@@ -153,39 +156,81 @@ describe('masked links', () => {
         expect(a.querySelector('strong')?.textContent).toBe('this');
     });
 
-    it('clicking asks first, naming the real destination; confirming opens it', async () => {
+    // The shared "You're leaving Cipherline" dialog (components/LeavingCipherlineDialog
+    // .tsx), mounted the way App.tsx mounts it; a click needs a live user gesture.
+    let hostRoot: Root;
+    let dialogHost: HTMLDivElement;
+    beforeEach(() => {
+        setUserGestureProbeForTests(() => true);
+        dialogHost = document.createElement('div');
+        document.body.appendChild(dialogHost);
+        hostRoot = createRoot(dialogHost);
+        act(() => hostRoot.render(React.createElement(LeavingCipherlineHost)));
+    });
+    afterEach(() => {
+        act(() => hostRoot.unmount());
+        setUserGestureProbeForTests(null);
+    });
+
+    it('clicking asks first, showing the full destination with the site in bold; Visit opens it', async () => {
         const h = mount('[docs](https://example.com/docs)');
         click(h.querySelector('.cl-fmt-link')!);
-        await settle();
+        await settle(150);
         const dlg = document.querySelector('[role="dialog"]')!;
-        expect(dlg.textContent).toContain('Open this link?');
-        expect(dlg.textContent).toContain('example.com');
-        expect(dlg.querySelector('[data-dest]')?.textContent).toBe('https://example.com/docs');
+        expect(dlg.textContent).toContain('You’re leaving Cipherline');
+        expect(dlg.querySelector('[data-lcd-url]')?.textContent).toBe('https://example.com/docs');
+        expect(dlg.querySelector('[data-lcd-site]')?.textContent).toBe('example.com');
+        expect(dlg.querySelector('[data-lcd-mismatch]')).toBeNull();
         expect(openExternal).not.toHaveBeenCalled();
-        const open = [...dlg.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Open link')!;
-        click(open);
+        const visit = [...dlg.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Visit site')!;
+        click(visit);
         await settle();
         expect(openExternal).toHaveBeenCalledWith('https://example.com/docs');
     });
 
-    it('a label that names another site gets a warning', async () => {
+    it('a label that names another site gets the mismatch line and no trust box', async () => {
         const h = mount('[https://paypal.com](https://paypa1.example/login)');
         click(h.querySelector('.cl-fmt-link')!);
-        await settle();
+        await settle(150);
         const dlg = document.querySelector('[role="dialog"]')!;
-        expect(dlg.textContent).toContain("This link isn't what it says");
-        expect(dlg.textContent).toContain('paypal.com');
-        expect(dlg.textContent).toContain('paypa1.example');
-        expect([...dlg.querySelectorAll('button')].some(b => b.textContent?.trim() === 'Open anyway')).toBe(true);
+        expect(dlg.querySelector('[data-lcd-mismatch]')?.textContent).toBe('The link text says paypal.com but it goes to paypa1.example.');
+        expect(dlg.querySelector('.lcd-trust')).toBeNull();
+        expect([...dlg.querySelectorAll('button')].some(b => b.textContent?.trim() === 'Visit anyway')).toBe(true);
     });
 
-    it('cancel opens nothing', async () => {
+    it('a masked link to a TRUSTED site that claims another still asks', async () => {
+        const h = mount('[paypal.com](https://cipherline.chat/x)');
+        click(h.querySelector('.cl-fmt-link')!);
+        await settle(150);
+        expect(document.querySelector('[data-lcd-mismatch]')?.textContent).toBe('The link text says paypal.com but it goes to cipherline.chat.');
+        expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it('a masked link to cipherline.chat whose text names no other site opens directly', async () => {
+        const h = mount('[our changelog](https://cipherline.chat/changelog)');
+        click(h.querySelector('.cl-fmt-link')!);
+        await settle(150);
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(openExternal).toHaveBeenCalledWith('https://cipherline.chat/changelog');
+    });
+
+    it('cancel opens nothing; focus starts on Cancel', async () => {
         const h = mount('[docs](https://example.com/docs)');
         click(h.querySelector('.cl-fmt-link')!);
-        await settle();
+        await settle(150);
+        expect(document.activeElement?.textContent?.trim()).toBe('Cancel');
         const cancel = [...document.querySelectorAll('[role="dialog"] button')].find(b => b.textContent?.trim() === 'Cancel')!;
         click(cancel);
-        await settle(250);
+        await settle(300);
+        expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it('without a user gesture nothing opens and no dialog appears', async () => {
+        setUserGestureProbeForTests(() => false);
+        const h = mount('[docs](https://example.com/docs)');
+        click(h.querySelector('.cl-fmt-link')!);
+        await settle(150);
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
         expect(openExternal).not.toHaveBeenCalled();
     });
 });

@@ -29,20 +29,20 @@ import type { EmojiEntry } from '../../utils/personalEmoji/library';
 import { StickerImage } from './StickerImage';
 import { AddStickerDialog } from './AddStickerDialog';
 import { emojiFileProblem } from '../../utils/personalEmoji/pickFile';
+import { ServerIcon } from '../server/ServerIcon';
+import { stickerSectionServer, type StickerServerLite, type StickerSectionServer } from '../../utils/stickers/sectionServer';
 
 export type StickerPick =
     | { kind: 'personal'; entry: Pick<EmojiEntry, 'id' | 'name' | 'mime' | 'animated'> }
     | { kind: 'server'; sticker: ServerSticker };
-
-interface ServerInfoLite { server_id: string; name: string }
 
 interface Props {
     anchorRect: DOMRect | null;
     token: string | null;
     /** The server whose channel is open, or null (DM / group). */
     currentServerId: string | null;
-    /** For section names. */
-    servers: readonly ServerInfoLite[];
+    /** For section names and icons (the same icon fields as the server rail). */
+    servers: readonly StickerServerLite[];
     onPick: (pick: StickerPick) => void;
     onClose: () => void;
 }
@@ -52,7 +52,16 @@ const TILE = 84;
 const INDEX_MAX_AGE_MS = 60_000;
 
 interface Tile { key: string; pick: StickerPick; name: string; hint: string }
-interface Section { id: string; title: string; icon: React.ReactNode; tiles: Tile[]; empty?: React.ReactNode }
+interface Section {
+    id: string;
+    title: string;
+    /** Recent / My stickers: their own glyph. A server section has `server` instead. */
+    icon?: React.ReactNode;
+    /** A server section: drawn with that server's icon (or its abbreviation tile). */
+    server?: StickerSectionServer;
+    tiles: Tile[];
+    empty?: React.ReactNode;
+}
 
 const personalTile = (e: Pick<EmojiEntry, 'id' | 'name' | 'mime' | 'animated'>, prefix: string): Tile => ({
     key: `${prefix}:p:${e.id}`, pick: { kind: 'personal', entry: e }, name: e.name, hint: e.name,
@@ -62,7 +71,26 @@ const serverTile = (s: ServerSticker, prefix: string): Tile => ({
     hint: s.description ? `${s.name} — ${s.description}` : s.name,
 });
 
-const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('') || '?';
+/** The section's glyph: a server's icon through the shared ServerIcon (same
+ *  decrypt + cache path as the server rail, abbreviation tile when it has none),
+ *  otherwise the section's own icon. Decorative: the caller names the section. */
+const SectionGlyph: React.FC<{ section: Section; token: string | null; className: string }> = ({ section, token, className }) => {
+    if (!section.server) return <>{section.icon}</>;
+    const sv = section.server;
+    return (
+        <span aria-hidden="true" className="inline-flex shrink-0">
+            <ServerIcon
+                serverId={sv.serverId}
+                name={sv.name}
+                attachmentId={sv.attachmentId}
+                keyB64={sv.keyB64}
+                nonceB64={sv.nonceB64}
+                token={token}
+                className={className}
+            />
+        </span>
+    );
+};
 
 export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServerId, servers, onPick, onClose }) => {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -116,7 +144,7 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
 
     useEffect(() => { requestAnimationFrame(() => searchRef.current?.focus()); }, []);
 
-    const serverName = useCallback((id: string) => servers.find(s => s.server_id === id)?.name ?? 'Server', [servers]);
+    const serverName = useCallback((id: string) => stickerSectionServer(id, servers).name, [servers]);
 
     const sections = useMemo<Section[]>(() => {
         void cacheVersion;
@@ -142,7 +170,7 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
         const serverSection = (id: string, title: string): Section | null => {
             const list = (stickerListCache.get(id) ?? []).filter(s => stickerMatches(q, s));
             if (!list.length) return null;
-            return { id: `server:${id}`, title, icon: <span className="text-[10px] font-bold">{initials(title)}</span>, tiles: list.map(s => serverTile(s, id)) };
+            return { id: `server:${id}`, title, server: stickerSectionServer(id, servers), tiles: list.map(s => serverTile(s, id)) };
         };
 
         if (currentServerId) {
@@ -151,7 +179,7 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
             else if (!q && stickerListCache.has(currentServerId)) {
                 out.push({
                     id: `server:${currentServerId}`, title: `${serverName(currentServerId)} (this server)`,
-                    icon: <span className="text-[10px] font-bold">{initials(serverName(currentServerId))}</span>, tiles: [],
+                    server: stickerSectionServer(currentServerId, servers), tiles: [],
                     empty: <span>No stickers on this server yet. People who can manage emojis and stickers add them in Server Settings → Stickers.</span>,
                 });
             }
@@ -173,7 +201,7 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
             if (sec) out.push(sec);
         }
         return out;
-    }, [query, mine, recent, currentServerId, serverName, cacheVersion]);
+    }, [query, mine, recent, currentServerId, serverName, servers, cacheVersion]);
 
     const flat = useMemo(() => sections.flatMap(s => s.tiles), [sections]);
 
@@ -307,7 +335,7 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
                                 onClick={() => jumpTo(s.id)}
                                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-cl-muted hover:bg-white/5 hover:text-cl-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
                             >
-                                {s.icon}
+                                <SectionGlyph section={s} token={token} className="h-7 w-7 shrink-0 overflow-hidden rounded-[7px] text-[10px] leading-none" />
                             </button>
                         ))}
                     </nav>
@@ -315,7 +343,10 @@ export const StickerPicker: React.FC<Props> = ({ anchorRect, token, currentServe
                     <div ref={scrollRef} className="relative flex-1 overflow-y-auto px-2 pb-2" role="presentation">
                         {sections.map(sec => (
                             <section key={sec.id} data-sticker-section={sec.id} aria-label={sec.title}>
-                                <h3 className="sticky top-0 z-10 bg-cl-surface py-1.5 text-[11px] font-semibold uppercase tracking-wide text-cl-faint truncate">{sec.title}</h3>
+                                <h3 className="sticky top-0 z-10 flex items-center gap-1.5 bg-cl-surface py-1.5 text-[11px] font-semibold uppercase tracking-wide text-cl-faint">
+                                    {sec.server && <SectionGlyph section={sec} token={token} className="h-[18px] w-[18px] shrink-0 overflow-hidden rounded-[5px] text-[8px] leading-none normal-case tracking-normal" />}
+                                    <span className="min-w-0 truncate">{sec.title}</span>
+                                </h3>
                                 {sec.tiles.length === 0 ? (
                                     <div className="px-1 pb-3 text-[12px] leading-relaxed text-cl-faint">
                                         {sec.empty}

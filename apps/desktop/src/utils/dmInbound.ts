@@ -39,7 +39,7 @@ import { secureLocalStore } from './secureLocalStore';
 import { serverOrderIndex } from './messageOrder';
 import { frankingFieldsAfterEdit, withoutFranking } from './franking';
 import { withEditFont } from './formatting/messageFont';
-import { withEditCardStyle } from '@cipherline/shared';
+import { isEmbedsOnlyEdit, withEditCardStyle, withEditEmbeds } from '@cipherline/shared';
 
 export type ThreadMap = messageStore.ThreadMap;
 /** One stored DM row (the shape the thread arrays hold). */
@@ -220,7 +220,7 @@ export function isCallKeyControl(content: unknown): boolean {
  * on threads that already hold the merged messages, safe:
  *  - edit / delete: only by the original sender (isSameAuthor), by target id;
  *  - reaction add/remove: set semantics per device;
- *  - pin, profile_update, group_update, call_key_request, and a call_key that
+ *  - pin, profile_update, group_update, call_key_request, near_offer / near_answer / near_msg, and a call_key that
  *    is not a call's start ({@link isCallKeyControl}): no thread row (their side
  *    effects run in the pull loop, outside any reducer);
  *  - everything else is a row, appended once per id.
@@ -236,10 +236,13 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
                 if (i !== -1 && isSameAuthor(currentThread[i], m)) {
                     // The edited text is vouched for by the EDIT's own commitment,
                     // never the original's (utils/franking.ts frankingFieldsAfterEdit).
+                    const content = withEditEmbeds(withEditCardStyle(withEditFont({ ...currentThread[i].content, text: m.content.text }, m.content.font, m.content.size), m.content), m.content);
+                    // A late link preview (embeds-only edit) is not marked "(edited)"; any real edit is.
+                    const unmarked = isEmbedsOnlyEdit(currentThread[i].content, content, m.content);
                     currentThread[i] = {
                         ...withoutFranking(currentThread[i]),
-                        content: withEditCardStyle(withEditFont({ ...currentThread[i].content, text: m.content.text }, m.content.font, m.content.size), m.content),
-                        edited: true,
+                        content,
+                        ...(unmarked ? {} : { edited: true }),
                         ...frankingFieldsAfterEdit(m),
                     };
                 }
@@ -264,7 +267,7 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
                     else reactions[rKey] = rList;
                     currentThread[i] = { ...msg, reactions };
                 }
-            } else if (type === 'pin' || type === 'profile_update' || type === 'group_update' || type === 'call_key_request' || isCallKeyControl(m.content)) {
+            } else if (type === 'pin' || type === 'profile_update' || type === 'group_update' || type === 'call_key_request' || type === 'near_offer' || type === 'near_answer' || type === 'near_msg' || isCallKeyControl(m.content)) {
                 // Not a row. Handled by the pull loop; the branch exists so these
                 // don't reach the final append and show up as messages.
             } else if (!currentThread.find(t => t.id === m.id)) {
@@ -368,16 +371,22 @@ export async function commitPulledBatch(args: {
     const { toStore, ackOnly, persist, ack } = args;
     let persistError: unknown;
     let persisted = toStore.length === 0;
+    /** Set when the persist named the conversations it could NOT store. */
+    let notStored: ReadonlySet<string> | null = null;
     if (!persisted) {
         try {
             await persist(groupByConversation(toStore));
             persisted = true;
         } catch (e) {
             persistError = e ?? new Error('persist failed');
+            if (e instanceof PartialPersistError) notStored = e.conversationIds;
         }
     }
-    const stored = persisted ? toStore : [];
-    const carry = persisted ? [] : toStore;
+    // A partial persist ACKs the conversations that ARE on disk and carries the
+    // rest. Any other failure says nothing about which records landed, so the
+    // whole batch is carried, as before.
+    const stored = persisted ? toStore : notStored ? toStore.filter(t => !notStored!.has(t.conversationId)) : [];
+    const carry = persisted ? [] : notStored ? toStore.filter(t => notStored!.has(t.conversationId)) : toStore;
     const acked = [...ackOnly, ...stored.map(s => s.envelopeId)];
     const ackDone: Promise<unknown> = acked.length === 0
         ? Promise.resolve(undefined)
@@ -401,5 +410,38 @@ export async function commitPulledBatch(args: {
  */
 export async function persistIncomingDms(userId: string, byConversation: ThreadMap): Promise<void> {
     const keys = await messageStore.mergeThreads('dm', userId, byConversation, applyIncomingDmMessages);
-    await secureLocalStore.flushDurable(keys);
+    try {
+        await secureLocalStore.flushDurable(keys);
+    } catch (e) {
+        // flushDurable names the records it could not make durable, and every
+        // other one it was asked about IS on disk. Turn that into conversations
+        // so the rest of the batch can be ACKed (commitPulledBatch).
+        // By name, not instanceof: secureLocalStore's NotDurableError, which
+        // test doubles of the store do not all carry.
+        const notDurable = (e as { name?: unknown; keys?: unknown } | null);
+        if (notDurable?.name !== 'NotDurableError' || !Array.isArray(notDurable.keys)) throw e;
+        const pending = new Set(notDurable.keys as string[]);
+        const ids = Object.keys(byConversation).filter(id => pending.has(messageStore.threadKey('dm', userId, id)));
+        // A pending key we cannot map back (not expected) leaves us unable to
+        // say which conversations stored: fail the whole batch, as before.
+        if (ids.length === 0 || ids.length < pending.size) throw e;
+        throw new PartialPersistError(ids, e);
+    }
+}
+
+/**
+ * Some conversations of a batch are on disk and these are not. The usual cause
+ * is a thread record this launch could not read (secureLocalStore: UNREADABLE
+ * RECORDS), whose writes are held so the record on disk is never replaced: its
+ * messages stay on the server, and the other conversations in the same batch
+ * are still ACKed instead of being held back with it.
+ */
+export class PartialPersistError extends Error {
+    readonly conversationIds: ReadonlySet<string>;
+    constructor(conversationIds: readonly string[], cause: unknown) {
+        super(`${conversationIds.length} conversation(s) could not be stored — left on the server`);
+        this.name = 'PartialPersistError';
+        this.conversationIds = new Set(conversationIds);
+        (this as { cause?: unknown }).cause = cause;
+    }
 }

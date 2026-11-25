@@ -8,11 +8,14 @@
  *   noiseSuppression on, 'light'    -> profile Light (classic RNNoise + leveller + WebRTC AGC2/limiter)
  *   noiseSuppression on, 'strong'   -> the in-page engine runs Light here (the worklet maps a Strong request to Light) as the
  *                                      safety net, kept time-aligned with the worker's Strong; the sound the user hears is
- *                                      Strong (FastEnhancer B+S, in a Web Worker: utils/clAudioNative.ts) whenever the worker is
+ *                                      Strong (rnnoise-wasm feeding the engine, in a Web Worker: utils/clAudioNative.ts) whenever the worker is
  *                                      up and keeping pace; otherwise, frame by frame, Light.
  *   volumeNormalization (auto gain) -> auto_gain
- *   micVolume                       -> manual gain in dB (the same slider law as the legacy chain) while auto gain is
- *                                      off; ignored while it is on (the leveller owns the gain)
+ *   micVolume                       -> `manualGainDb`, in dB (the same slider law as the legacy chain). Auto gain off: the engine's fixed
+ *                                      gain in place of the leveller. Auto gain ON: a pre-gain AHEAD of the whole chain (as if the mic
+ *                                      were hotter), so the leveller still levels to its target and a mic it cannot lift fully (its
+ *                                      max-boost cap) gets the extra. 100 % is 0 dB either way, a bit-identical path. The manual gate
+ *                                      measures the raw mic before any gain, so the pre-gain never moves where it opens.
  *   voiceGate / voiceGateThreshold  -> ignored. The legacy gate (automatic and manual alike) does not exist under v2; a
  *                                      user who had it on gets NO gate here, it is never converted.
  *   voiceGateManual / voiceGateManualDb -> the engine's MANUAL gate: a fixed threshold on the raw mic level (dBFS, RMS
@@ -70,7 +73,7 @@ export function engineSettingsFor(s: EngineInput): ClEngineSettings {
     return {
         noise: !s.noiseSuppression ? 0 : s.noiseSuppressionMode === 'strong' ? 2 : 1,
         autoGain,
-        manualGainDb: autoGain ? 0 : Math.round(db * 100) / 100,
+        manualGainDb: Math.round(db * 100) / 100,
         originalSound: !s.noiseSuppression && !autoGain && mic === 100 && !gateOn,
         gate: { enabled: gateOn, thresholdDb: clampGateDb(s.voiceGateManualDb) },
     };

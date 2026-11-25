@@ -27,7 +27,9 @@
  *
  * FAILED LOADS: a batch decrypt that fails (the `securekv:open` IPC rejecting,
  * or IndexedDB refusing the read) says nothing about what is on disk, so it must
- * never read as "this account has no data". See `unreadAccount`.
+ * never read as "this account has no data". See `unreadAccount`. A single
+ * record IndexedDB will not hand back is narrower: the rest loads, and only that
+ * record's writes are held. See UNREADABLE RECORDS below.
  *
  * WHERE THE CRYPTO LIVES — AND WHY THE FACADE DID NOT CHANGE
  * The records are AES-256-GCM, but this file no longer holds the key and never
@@ -60,7 +62,7 @@
 
 import { openDb, dropDbConnection, KV_STORE } from './attachmentCache';
 import {
-    STORE_LOAD_RETRY_DELAYS_MS, StoreLoadStageError, classifyStoreLoadError,
+    STORE_LOAD_RETRY_DELAYS_MS, StoreLoadStageError, classifyStoreLoadError, storeErrorName,
     type StoreLoadFailureInfo,
 } from './storeLoadRetry';
 
@@ -75,8 +77,24 @@ export interface StoreLoadFailureRecord extends Omit<StoreLoadFailureInfo, 'tran
     recovered: boolean;
 }
 
-/** The store's health as one label, for reports: see SecureLocalStore.loadHealth. */
-export type StoreHealthStatus = 'ok' | 'locked' | 'unread' | 'account_unread';
+/** The store's health as one label, for reports: see SecureLocalStore.loadHealth.
+ *  'partial' = it loaded, but some records could not be read (see `unreadableKeys`). */
+export type StoreHealthStatus = 'ok' | 'locked' | 'unread' | 'account_unread' | 'partial';
+
+/**
+ * Thrown by flushDurable() when some of the keys it was asked about are not on
+ * disk. `keys` are exactly those; every OTHER key it was asked about IS on disk,
+ * which is what lets the DM pull ACK the conversations that did store
+ * (dmInbound.persistIncomingDms) instead of holding back the whole batch.
+ */
+export class NotDurableError extends Error {
+    readonly keys: readonly string[];
+    constructor(keys: readonly string[]) {
+        super(`${keys.length} record(s) were not written to disk — not durable`);
+        this.name = 'NotDurableError';
+        this.keys = keys;
+    }
+}
 
 /**
  * Resolution state of the device master key for this session, as main reports
@@ -160,6 +178,104 @@ const DEFERRED_PREFIXES = ['cipherline_msgs_', 'cipherline_channel_msgs_'];
 const isDeferredKey = (key: string) => DEFERRED_PREFIXES.some(p => key.startsWith(p));
 
 /**
+ * UNREADABLE RECORDS — what the load does when IndexedDB lists a key but will
+ * not hand back its value.
+ *
+ * WHY THIS EXISTS (2026-11-23): a Windows user got StorageReadFailedScreen on
+ * every launch for a week. Chromium stores an IndexedDB value above a size
+ * threshold as its own file under `<origin>.indexeddb.blob/`, outside the
+ * LevelDB. When ONE such file is missing, quarantined, unreadable or cut short
+ * (antivirus, a cleaner, a sync tool, a crash mid-write), reading that ONE
+ * record fails — measured in Chromium 159 and in our own Electron 43:
+ *   missing file            → NotReadableError "Data lost due to missing file…"
+ *   truncated / no access   → UnknownError "Failed to read large IndexedDB value"
+ * and a cursor or getAll over the store fails as a whole with it, on every
+ * launch, while getAllKeys and a get() of any OTHER key still work. The load
+ * used to be that single cursor, so one bad file cost the whole store.
+ *
+ * So the load lists the keys first and reads the values in chunks, falling back
+ * to one key at a time for a chunk that fails (readAllRecords). A key whose
+ * value still cannot be read is UNREADABLE: it is skipped, the rest of the
+ * store loads, and for the rest of the session every write or delete of that
+ * key is held in memory (isWriteHeld) — the record on disk is never replaced,
+ * because it may still come back (restored from a quarantine, a lock released)
+ * and we cannot know it will not. flushDurable() refuses such a key, so a DM
+ * for that conversation is not ACKed and stays on the server.
+ *
+ * The hold is scoped to those exact keys, not the namespace: every other key
+ * loaded normally, so the reason `unreadAccount` holds a whole namespace (state
+ * built on a failed load) does not apply to them.
+ *
+ * Unless the key is CRITICAL — then the load fails exactly as it did before.
+ */
+
+/**
+ * Keys without which the store cannot know who is signed in, or as whom. If
+ * one is unreadable it would read as absent, the app would come up signed out,
+ * and the sign-in that follows registers a new device and writes new identity
+ * keys over records that may still be recoverable. So an unreadable one fails
+ * the whole load (StorageReadFailedScreen), as any read failure did before.
+ *
+ * Why not "the whole master tier": an unreadable record's tier is unknowable —
+ * the owner field lives inside the value that could not be read. The master
+ * tier holds two kinds of record: these pointers, and device-global settings
+ * and caches. The second kind falling back to defaults for one session, with
+ * every write to it held, loses nothing — and it includes one of the largest
+ * records in the store (`cipherline_game_art_v1`, up to ~3 MB of pictures),
+ * i.e. exactly the kind of record that lives in a blob file. Holding it beats
+ * locking the user out over a cache.
+ */
+const CRITICAL_KEYS = new Set<string>([
+    'cipherline_user_id',
+    'cipherline_token',
+    'cipherline_refresh_token',
+    'cipherline_device_id',
+    'cipherline_is_pairing',
+    'cipherline_private_key',
+    'cipherline_public_key',
+]);
+
+/**
+ * Per-account records whose ABSENCE makes the app act on OTHER data, so an
+ * unreadable one fails the account's load (the existing account-level failure:
+ * everything it writes is held) rather than being skipped:
+ *  - `cl_hx_<uid>`: "this device already holds history". Absent, the app says
+ *    "No history on this device" and offers to restore or pull history.
+ *  - the storage policy and the per-chat / per-server retention overrides:
+ *    absent, the defaults apply, and the retention sweep would delete readable
+ *    messages and attachments the user had chosen to keep.
+ * All small records (never blob files in practice), so this costs nothing in
+ * the case this mechanism exists for.
+ */
+const CRITICAL_ACCOUNT_PREFIXES = [
+    'cl_hx_',
+    'cipherline_storage_policy_',
+    'cipherline_conv_retention_',
+    'cipherline_server_retention_',
+];
+
+/**
+ * Values read per IndexedDB transaction by readAllRecords(). Bounds what one
+ * bad record costs the fast path (one chunk re-read key by key) without
+ * turning the boot read into one transaction per record.
+ */
+const READ_CHUNK = 64;
+
+/** Error name recorded for a value that read but is not a record (no bytes). */
+const MALFORMED_RECORD = 'MalformedRecord';
+
+/** What readAllRecords() found: the records, and the keys it could not read (key → error). */
+interface RecordRead {
+    records: Map<string, KvRecord>;
+    unreadable: Map<string, unknown>;
+}
+
+/** A value from `kv_enc` that has the shape of a record (bytes to decrypt). */
+function isKvRecordShape(v: unknown): v is KvRecord {
+    return v !== null && typeof v === 'object' && ArrayBuffer.isView((v as { b?: unknown }).b);
+}
+
+/**
  * Is this key NAMED for `userId`? Delimited so a short userId can't substring-
  * match a longer one — the same test `ownerFor` applies.
  *
@@ -177,6 +293,10 @@ const isDeferredKey = (key: string) => DEFERRED_PREFIXES.some(p => key.startsWit
  */
 const keyIsNamedFor = (key: string, userId: string): boolean =>
     key.includes(`_${userId}_`) || key.endsWith(`_${userId}`);
+
+/** Is `key` one of `userId`'s CRITICAL_ACCOUNT_PREFIXES records? */
+const isCriticalForAccount = (key: string, userId: string): boolean =>
+    CRITICAL_ACCOUNT_PREFIXES.some(p => key.startsWith(p)) && keyIsNamedFor(key, userId);
 
 /**
  * How many deferred history records `hydrateMessages()` decrypts before it
@@ -257,6 +377,16 @@ class SecureLocalStore {
      */
     private unreadAccount: string | null = null;
     private storeUnread = false;
+    /**
+     * Keys IndexedDB listed but would not hand back (see UNREADABLE RECORDS at
+     * the top of this file) → the error NAME, for diagnostics. Every write and
+     * delete of one of these is held for the session; the record on disk is
+     * never touched. Cleared for a key only when a later read of it succeeds
+     * and that value is the one in memory (onUserChanged), or by a wipe.
+     */
+    private unreadableKeys = new Map<string, string>();
+    private unreadableListeners = new Set<() => void>();
+    private unreadableNotified = false;
     private loadFailureListeners = new Set<() => void>();
     private loadRetryListeners = new Set<(attempt: number) => void>();
     /** Delays between load attempts; replaced only by tests. */
@@ -352,8 +482,19 @@ class SecureLocalStore {
         // starts from an empty map so nothing from a failed attempt survives.
         for (let attempt = 1; ; attempt++) {
             try {
-                await this.loadInitialRecords();
-                if (this.lastLoadFailure) this.lastLoadFailure = { ...this.lastLoadFailure, attempts: attempt, recovered: true };
+                // On the last attempt an unreadable record that looks
+                // transient is accepted as unreadable rather than retried.
+                const finalAttempt = this.loadRetryDelays[attempt - 1] === undefined;
+                const partial = await this.loadInitialRecords(finalAttempt);
+                if (partial) {
+                    // It loaded, minus the records in `unreadableKeys`. Recorded
+                    // as a read failure the load recovered from, so it reaches
+                    // diagnostics as `read/<ErrorName>` like any other.
+                    this.lastLoadFailure = { stage: 'read', name: partial, attempts: attempt, recovered: true };
+                    console.warn(`[secureLocalStore] ${this.unreadableKeys.size} record(s) could not be read (${partial}) — loaded the rest; writes to those records are held`);
+                } else if (this.lastLoadFailure) {
+                    this.lastLoadFailure = { ...this.lastLoadFailure, attempts: attempt, recovered: true };
+                }
                 break;
             } catch (e) {
                 const info = classifyStoreLoadError(e);
@@ -364,6 +505,7 @@ class SecureLocalStore {
                     for (const fn of [...this.loadRetryListeners]) { try { fn(attempt); } catch { /* isolate */ } }
                     this.map.clear();
                     this.deferred = [];
+                    this.unreadableKeys.clear();
                     this.activeUserId = null;
                     this.readyUserId = null;
                     // A connection that failed mid-read may be the stale one:
@@ -390,9 +532,35 @@ class SecureLocalStore {
         this.installQuitFlush();
     }
 
-    /** One attempt at hydrate()'s load: master tier, then the active account. Throws on failure. */
-    private async loadInitialRecords(): Promise<void> {
-        const records = [...(await this.readAllRecords())];
+    /**
+     * One attempt at hydrate()'s load: master tier, then the active account.
+     * Throws on failure. Resolves to null when everything loaded, or to the
+     * error NAME of the first unreadable record when the load succeeded
+     * without some records (see UNREADABLE RECORDS at the top of this file).
+     */
+    private async loadInitialRecords(finalAttempt: boolean): Promise<string | null> {
+        const read = await this.readAllRecords();
+        const records = [...read.records];
+
+        // An unreadable session pointer: the store cannot tell who is signed
+        // in. Fail the whole load, as before (CRITICAL_KEYS says why).
+        for (const [k, err] of read.unreadable) {
+            if (CRITICAL_KEYS.has(k)) throw new StoreLoadStageError('read', err);
+        }
+        // A record that may be readable in a moment (a file held at login, the
+        // same reasons storeLoadRetry.ts retries a whole-store refusal) gets
+        // the whole load retried while attempts remain. Accepting it as
+        // unreadable at once would hide that record for the whole session.
+        if (!finalAttempt) {
+            for (const err of read.unreadable.values()) {
+                const e = new StoreLoadStageError('read', err);
+                if (classifyStoreLoadError(e).transient) throw e;
+            }
+        }
+        // Held from here on, before anything below can fail the account's
+        // load: that failure holds only keys NAMED for the account, and an
+        // unreadable device-global record must stay protected either way.
+        this.markUnreadable(read.unreadable);
 
         // One IPC round trip per tier rather than one per record: main
         // decrypts the whole batch and returns the plaintexts together.
@@ -420,11 +588,35 @@ class SecureLocalStore {
         // subkey from each record's own owner field, so there is no key to
         // pass and no way for the two to disagree.
         if (this.activeUserId) {
+            // An unreadable record this account's state depends on (see
+            // CRITICAL_ACCOUNT_PREFIXES): fail the account's load, as before.
+            // Thrown with activeUserId set, so hydrate() files it against the
+            // account (everything it writes is held), not the whole store.
+            for (const [k, err] of read.unreadable) {
+                if (isCriticalForAccount(k, this.activeUserId)) throw new StoreLoadStageError('read', err);
+            }
             const mine = records.filter(([, rec]) => rec.o === this.activeUserId);
             this.deferred = mine.filter(([k]) => isDeferredKey(k));
             await decryptInto(mine.filter(([k]) => !isDeferredKey(k)));
         }
         this.readyUserId = this.activeUserId;
+        if (read.unreadable.size === 0) return null;
+        return storeErrorName(read.unreadable.values().next().value);
+    }
+
+    /**
+     * Hold every write to these keys for the session (see `unreadableKeys`).
+     * Listeners hear about it from notifyUnreadable(), once the load that
+     * found them has succeeded — a failed load has its own notice.
+     */
+    private markUnreadable(unreadable: ReadonlyMap<string, unknown>): void {
+        for (const [k, err] of unreadable) this.unreadableKeys.set(k, storeErrorName(err));
+    }
+
+    private notifyUnreadable(): void {
+        if (this.unreadableKeys.size === 0 || this.hasLoadFailure() || this.unreadableNotified) return;
+        this.unreadableNotified = true;
+        for (const fn of [...this.unreadableListeners]) { try { fn(); } catch { /* isolate */ } }
     }
 
     /**
@@ -695,6 +887,15 @@ class SecureLocalStore {
                     for (const k of [...this.tombstones]) if (keyIsNamedFor(k, prevId)) this.tombstones.delete(k);
                     this.unreadAccount = null;
                 }
+                // Same for the account's unreadable records: what was held for
+                // them was built without them, so it leaves with the account.
+                // The keys stay marked until a read of them succeeds.
+                for (const k of this.unreadableKeys.keys()) {
+                    if (!keyIsNamedFor(k, prevId)) continue;
+                    this.dirty.delete(k);
+                    this.dirtyOwner.delete(k);
+                    this.tombstones.delete(k);
+                }
                 for (const k of [...this.map.keys()]) {
                     if (k !== 'cipherline_user_id' && keyIsNamedFor(k, prevId)) this.map.delete(k);
                 }
@@ -710,7 +911,15 @@ class SecureLocalStore {
             // nothing, but leaving stale ciphertext queued is a trap.)
             this.deferred = [];
             if (nextId) {
-                const records = [...(await this.readAllRecords())];
+                const read = await this.readAllRecords();
+                // Same rules as hydrate(): every unreadable record is held, and
+                // an unreadable session pointer or a record this account's
+                // state depends on fails the account's load (the catch below).
+                this.markUnreadable(read.unreadable);
+                for (const [k, err] of read.unreadable) {
+                    if (CRITICAL_KEYS.has(k) || isCriticalForAccount(k, nextId)) throw new StoreLoadStageError('read', err);
+                }
+                const records = [...read.records];
                 // Exactly the inverse of the eviction above, by construction.
                 //
                 // `rec.o === nextId` alone was NOT that inverse, and the gap
@@ -738,10 +947,19 @@ class SecureLocalStore {
                 for (const [k, plain] of await this.openRecords(mine)) {
                     // Same rule as hydrateMessages(): never roll back a value
                     // written (or deleted) while this decrypt was in flight.
-                    if (!this.map.has(k) && !this.detached.has(k) && !this.tombstones.has(k)) this.map.set(k, plain);
+                    if (!this.map.has(k) && !this.detached.has(k) && !this.tombstones.has(k)) {
+                        this.map.set(k, plain);
+                        // Unreadable earlier, read now, and what is in memory
+                        // IS the record on disk: nothing built without it is
+                        // left to protect it from, so its writes may flow.
+                        // (Shadowed by a value written meanwhile, it stays
+                        // held: that value was built without the record.)
+                        this.unreadableKeys.delete(k);
+                    }
                 }
             }
             if (this.activeUserId === nextId && !this.storeUnread) this.readyUserId = nextId;
+            this.notifyUnreadable();
             // This path loads message history eagerly (an account switch is
             // already a full teardown/re-render, so there's no first-paint to
             // protect) — mark phase 2 satisfied so a later await is a no-op.
@@ -777,12 +995,42 @@ class SecureLocalStore {
      * the last boot-load failure (stage, error name, attempts, whether a retry
      * recovered it). Never a path, an id or a message.
      */
-    loadHealth(): { status: StoreHealthStatus; lastFailure: StoreLoadFailureRecord | null } {
+    loadHealth(): { status: StoreHealthStatus; lastFailure: StoreLoadFailureRecord | null; unreadableRecords: number } {
         const status: StoreHealthStatus = this.locked ? 'locked'
             : this.storeUnread ? 'unread'
             : this.unreadAccount !== null ? 'account_unread'
+            : this.unreadableKeys.size > 0 ? 'partial'
             : 'ok';
-        return { status, lastFailure: this.lastLoadFailure ? { ...this.lastLoadFailure } : null };
+        return {
+            status,
+            lastFailure: this.lastLoadFailure ? { ...this.lastLoadFailure } : null,
+            unreadableRecords: this.unreadableKeys.size,
+        };
+    }
+
+    // ── Unreadable records (see UNREADABLE RECORDS at the top of this file) ──
+
+    /** How many records IndexedDB listed but would not hand back this session. */
+    unreadableRecordCount(): number { return this.unreadableKeys.size; }
+
+    /** True when `key` is an unreadable record: present on disk, value unknown. */
+    isUnreadable(key: string): boolean { return this.unreadableKeys.has(key); }
+
+    /**
+     * True when any record under `prefix` is unreadable. For a caller that asks
+     * "is there anything stored under here?" — an unreadable record is
+     * something, even though getItem() and keysWithPrefix() cannot show it.
+     */
+    hasUnreadableWithPrefix(prefix: string): boolean {
+        for (const k of this.unreadableKeys.keys()) if (k.startsWith(prefix)) return true;
+        return false;
+    }
+
+    /** Be told when records could not be read: now if some were, else when it happens. */
+    onUnreadableRecords(fn: () => void): () => void {
+        if (this.unreadableKeys.size > 0 && !this.hasLoadFailure()) fn();
+        this.unreadableListeners.add(fn);
+        return () => { this.unreadableListeners.delete(fn); };
     }
 
     /** Be told each time the boot-time load is about to retry (`attempt` = the one that failed). */
@@ -812,9 +1060,10 @@ class SecureLocalStore {
         if (first) for (const fn of this.loadFailureListeners) fn();
     }
 
-    /** May this key not be written to disk, because of a failed load? */
+    /** May this key not be written to disk, because of a failed load or an unreadable record? */
     private isWriteHeld(key: string): boolean {
         if (this.storeUnread) return true;
+        if (this.unreadableKeys.has(key)) return true;
         return this.unreadAccount !== null && keyIsNamedFor(key, this.unreadAccount);
     }
 
@@ -849,6 +1098,8 @@ class SecureLocalStore {
         // The records those failures were about no longer exist.
         this.unreadAccount = null;
         this.storeUnread = false;
+        this.unreadableKeys.clear();
+        this.unreadableNotified = false;
         // Phase-2 state belongs to the account that was just wiped. Leaving it
         // set worked only by accident — hydrateMessages() short-circuits on the
         // now-null activeUserId — which is not something to rely on.
@@ -972,9 +1223,7 @@ class SecureLocalStore {
             throw new Error('secure store became locked — the write was not made durable');
         }
         const pending = keys.filter(k => this.dirty.has(k) || this.tombstones.has(k));
-        if (pending.length > 0) {
-            throw new Error(`${pending.length} record(s) were not written to disk — not durable`);
-        }
+        if (pending.length > 0) throw new NotDurableError(pending);
     }
 
     /** A method, not an inline check, so a lock that lands during an await is
@@ -1218,34 +1467,106 @@ class SecureLocalStore {
         return api.secureKvSeal(items);
     }
 
-    private async readAllRecords(): Promise<Map<string, KvRecord>> {
-        const out = new Map<string, KvRecord>();
+    /**
+     * Every record in `kv_enc`, plus the keys whose value could not be read.
+     *
+     * Keys first, then the values in chunks of READ_CHUNK, each chunk in its
+     * own transaction; a chunk that fails is read again one key per
+     * transaction, so one unreadable value costs that key and nothing else
+     * (UNREADABLE RECORDS at the top of this file has the measurements). One
+     * transaction per key, not one for the chunk: Chromium aborts the whole
+     * transaction when one get() fails, even with the error's default
+     * prevented.
+     *
+     * Still a WHOLE-store failure, as before: the open (stage 'open'), the key
+     * listing, and a transaction that cannot even be created (the connection
+     * is closing — every later read would fail the same way). storeLoadRetry
+     * decides which of those are worth another attempt.
+     */
+    private async readAllRecords(): Promise<RecordRead> {
         let db: IDBDatabase;
         try {
             db = await openDb();
         } catch (e) {
             throw new StoreLoadStageError('open', e);
         }
-        await new Promise<void>((resolve, reject) => {
+        const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
             const fail = (e: unknown) => reject(new StoreLoadStageError('read', e));
             let tx: IDBTransaction;
             try {
                 // Throws InvalidStateError synchronously when the connection is closing.
                 tx = db.transaction(KV_STORE, 'readonly');
             } catch (e) { fail(e); return; }
-            const store = tx.objectStore(KV_STORE);
-            const req = store.openCursor();
-            req.onsuccess = () => {
-                const cursor = req.result;
-                if (!cursor) { resolve(); return; }
-                out.set(String(cursor.key), cursor.value as KvRecord);
-                cursor.continue();
-            };
+            const req = tx.objectStore(KV_STORE).getAllKeys();
+            req.onsuccess = () => resolve(req.result);
             req.onerror = () => fail(req.error);
-            tx.onerror = () => fail(tx.error);
             tx.onabort = () => fail(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
         });
-        return out;
+
+        const records = new Map<string, KvRecord>();
+        const unreadable = new Map<string, unknown>();
+        const accept = (key: IDBValidKey, value: unknown) => {
+            // A key that vanished since the listing: absent, not unreadable.
+            if (value === undefined) return;
+            // A value that came back but is not a record (Chromium hands back
+            // null for a blob file overwritten with other bytes): nothing to
+            // decrypt, and nothing that may be written over either.
+            if (!isKvRecordShape(value)) {
+                unreadable.set(String(key), new DOMException('Stored value is not a record', MALFORMED_RECORD));
+                return;
+            }
+            records.set(String(key), value);
+        };
+        for (let i = 0; i < keys.length; i += READ_CHUNK) {
+            const chunk = keys.slice(i, i + READ_CHUNK);
+            const values = await this.readValues(db, chunk).catch((e: unknown) => {
+                if (e instanceof StoreLoadStageError) throw e;
+                return null;
+            });
+            if (values) {
+                chunk.forEach((k, j) => accept(k, values[j]));
+                continue;
+            }
+            for (const k of chunk) {
+                try {
+                    accept(k, (await this.readValues(db, [k]))[0]);
+                } catch (e) {
+                    if (e instanceof StoreLoadStageError) throw e;
+                    unreadable.set(String(k), e);
+                }
+            }
+        }
+        return { records, unreadable };
+    }
+
+    /**
+     * The values of `keys`, in order, read in ONE transaction. Rejects with the
+     * failing request's own error (NotReadableError, UnknownError…) when any
+     * read fails, and with a StoreLoadStageError when no transaction could be
+     * created at all (see readAllRecords for why that one is whole-store).
+     */
+    private readValues(db: IDBDatabase, keys: IDBValidKey[]): Promise<unknown[]> {
+        return new Promise<unknown[]>((resolve, reject) => {
+            let tx: IDBTransaction;
+            try {
+                tx = db.transaction(KV_STORE, 'readonly');
+            } catch (e) { reject(new StoreLoadStageError('read', e)); return; }
+            const store = tx.objectStore(KV_STORE);
+            const out = new Array<unknown>(keys.length);
+            let firstError: unknown = null;
+            keys.forEach((k, j) => {
+                const req = store.get(k);
+                req.onsuccess = () => { out[j] = req.result; };
+                req.onerror = (ev) => {
+                    if (firstError === null) firstError = req.error ?? new DOMException('Read failed', 'UnknownError');
+                    // Keep reading the rest where the engine allows it (Chromium
+                    // aborts the transaction regardless; see readAllRecords).
+                    ev.preventDefault();
+                };
+            });
+            tx.oncomplete = () => (firstError === null ? resolve(out) : reject(firstError));
+            tx.onabort = () => reject(firstError ?? tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
+        });
     }
 
     private ensureReady(): void {
@@ -1285,6 +1606,9 @@ class SecureLocalStore {
         this.readyUserId = null;
         this.unreadAccount = null;
         this.storeUnread = false;
+        this.unreadableKeys.clear();
+        this.unreadableListeners.clear();
+        this.unreadableNotified = false;
         this.loadFailureListeners.clear();
         this.loadRetryListeners.clear();
         this.lastLoadFailure = null;

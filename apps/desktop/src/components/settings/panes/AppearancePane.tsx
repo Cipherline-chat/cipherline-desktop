@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Monitor, Rocket, PanelBottomClose } from 'lucide-react';
+import { Monitor, Rocket, PanelBottomClose, GalleryHorizontal } from 'lucide-react';
 import { ClToggle } from '../../cl';
 import type { GifSettingsHook } from '../../../hooks/useGifSettings';
 import { BACKUP_RESTORED_EVENT } from '../../../services/backupRegistry';
 import { MessageStylesSettings } from './MessageStylesSettings';
 import { ThemePicker } from './ThemePicker';
+import { setEmbedCompact, useEmbedPrefs } from '../../../utils/embedPrefs';
 import {
     INITIAL_START_MINIMIZED, INITIAL_MINIMIZE_TO_TRAY, loginToggleLabel, loginToggleDesc,
     startMinimizedDesc, minimizeToTrayDesc, loginStateAfterSet, type LoginItemView,
@@ -22,6 +23,7 @@ interface AppearancePaneProps {
 export const AppearancePane: React.FC<AppearancePaneProps> = () => {
 
     const platform = window.electronAPI?.platform;
+    const embedPrefs = useEmbedPrefs();
     // null = not read yet (toggle disabled meanwhile, so it can't flash or be
     // flipped against an unknown state).
     const [loginState, setLoginState] = useState<LoginItemView | null>(null);
@@ -98,6 +100,24 @@ export const AppearancePane: React.FC<AppearancePaneProps> = () => {
                     ))}
                 </div>
             )}
+
+            {/* Link previews (utils/embedPrefs.ts): per device, not backed up. */}
+            <div className="sd-card" data-labels="Link previews|Compact embeds">
+                <h3>Link previews</h3>
+                <p className="sd-sub">How videos linked in messages appear. Nothing loads from a video's site until you press play.</p>
+                <div className="sd-row" style={{ borderTop: 'none' }}>
+                    <span className={`sd-tile${embedPrefs.compact ? '' : ' sd-tile--dim'}`}><GalleryHorizontal size={16} /></span>
+                    <div className="sd-rl">
+                        <b>Compact embeds</b>
+                        <span>{embedPrefs.compact
+                            ? 'Videos show as a small card and open into a player when you press play.'
+                            : 'Videos always show at full player size. Turn on to show them as a small card instead.'}</span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle checked={embedPrefs.compact} onChange={setEmbedCompact} aria-label="Compact embeds" />
+                    </div>
+                </div>
+            </div>
 
             {/* Motion settings live in Settings → Accessibility → Motion & effects
                 (owner 2026-11-21: no pointer card here). */}

@@ -1,0 +1,284 @@
+/*
+ * Link embeds that play in place (src/components/embeds/ClipCard.tsx) and the
+ * GIF-like video loops. Size follows the media (docs/plans/embeds.md §11): the
+ * card is exactly as wide as the media and the media box has the media's own
+ * aspect ratio (components/embeds/mediaSize.ts sets the px sizes inline).
+ *
+ *   .cl-ve--row    Compact idle: the owner's clip-card row (concept "video
+ *                  C2"), the thumbnail in the media's own shape.
+ *   .cl-ve--reel   Expanded, and playing in either layout: round-4 direction
+ *                  C (concepts/embeds-2026-11-23/round4/C-*). Idle, the poster
+ *                  IS the embed (site pill + duration on top, title + byline
+ *                  on a bottom gradient); playing, a caption strip joins under
+ *                  the player at the same width.
+ *
+ * Every colour that follows the theme is an app token; the only literal
+ * colours sit on top of pictures (play button, pills and captions on the
+ * picture, the player's black), dark in both themes the way every video
+ * player is. --cl-ve-glow is the page's own colour (validated #rrggbb from
+ * the message): a faint corner light and a soft coloured shadow, never a bar.
+ * No left accent rail (rejected: too Discord), and in light themes no outline
+ * at all (owner): the card is set off by its fill and a soft shadow.
+ */
+/* Colours that sit ON a picture or the player (play button, pills and captions on
+   the picture, the scrim, the player's black): the same in every theme, the way
+   every video player is, so they are fixed channels here rather than theme
+   tokens. Channels only ("r g b"), used as rgb(var(--…) / alpha). */
+:root {
+  --cl-ve-ink: 5 8 20;
+  --cl-ve-glass: 8 12 26;
+  --cl-ve-on-pic: 255 255 255;
+  --cl-ve-black: 11 13 20;
+  --cl-ve-void: 0 0 0;
+  --cl-ve-ring-gap: 11 15 30;
+  --cl-ve-ring: 37 224 200;
+}
+.cl-ve {
+  position: relative;
+  isolation: isolate;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  background: var(--cl-deep);
+  border: 1px solid rgb(var(--cl-bright-rgb) / 0.06);
+  border-radius: var(--cl-r-lg);
+  box-shadow: 0 8px 24px rgb(var(--cl-shade-rgb) / 0.16);
+  overflow: hidden;
+  font-family: var(--cl-font-body);
+  color: var(--cl-text);
+}
+/* the corner glow: the page's colour (else the brand's), lit from the top-left */
+.cl-ve::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(75% 130% at 0% 0%, color-mix(in srgb, var(--cl-ve-glow, var(--cl-lume)) 12%, transparent), transparent 72%);
+}
+.cl-ve--row { width: fit-content; max-width: min(100%, 460px); }
+.cl-ve-row { display: flex; gap: 12px; align-items: flex-start; }
+
+/* ── thumbnail / poster ── */
+.cl-ve-thumb {
+  position: relative;
+  flex: none;
+  max-width: 45%;
+  border-radius: var(--cl-r-sm);
+  overflow: hidden;
+  background: rgb(var(--cl-ve-black));
+  isolation: isolate;
+  cursor: pointer;
+}
+.cl-ve-frame {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+.cl-ve-frame.ready { opacity: 1; }
+.cl-ve-dim { position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, rgb(var(--cl-ve-ink) / .34), rgb(var(--cl-ve-ink) / .05) 62%); pointer-events: none; }
+.cl-ve-play {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 42px; height: 42px;
+  padding: 0;
+  border-radius: 999px;
+  display: grid; place-items: center;
+  cursor: pointer;
+  background: rgb(var(--cl-ve-glass) / .62);
+  border: 1.5px solid rgb(var(--cl-ve-on-pic) / .32);
+  backdrop-filter: blur(8px);
+  color: rgb(var(--cl-ve-on-pic));
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.cl-ve-play-ico { width: 40%; height: 40%; fill: currentColor; margin-left: 8%; }
+.cl-ve-play:hover { background: var(--cl-lume); border-color: var(--cl-lume); color: var(--cl-on-lume); }
+/* Dark gap ring then the brand ring: reads on any picture, light or dark. */
+.cl-ve-play:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(var(--cl-ve-ring-gap)), 0 0 0 6px rgb(var(--cl-ve-ring)); }
+.cl-ve-play[aria-busy="true"] { cursor: progress; }
+.cl-ve-spin {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  border: 2.5px solid rgb(var(--cl-ve-on-pic) / .25);
+  border-top-color: rgb(var(--cl-ve-on-pic));
+  animation: cl-ve-spin .8s linear infinite;
+}
+@keyframes cl-ve-spin { to { transform: rotate(360deg); } }
+.cl-ve-dur {
+  position: absolute; right: 6px; bottom: 6px;
+  font: 600 11px/1 var(--cl-font-mono);
+  color: rgb(var(--cl-ve-on-pic));
+  background: rgb(var(--cl-ve-ink) / .74);
+  padding: 4px 7px;
+  border-radius: var(--cl-r-pill);
+  letter-spacing: .02em;
+}
+
+/* ── text ── */
+.cl-ve-meta {
+  min-width: 0;
+  flex: 0 1 248px;
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 5px;
+  padding: 2px 4px 2px 0;
+}
+.cl-ve-fav { flex: none; border-radius: 5px; display: block; }
+.cl-ve-site {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 10px 2px 3px;
+  border-radius: var(--cl-r-pill);
+  background: rgb(var(--cl-bright-rgb) / 0.06);
+  font-size: 11.5px; line-height: 18px; font-weight: 800;
+  color: var(--cl-muted);
+  white-space: nowrap;
+}
+.cl-ve-site-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cl-ve-title {
+  font-family: var(--cl-font-display);
+  font-weight: var(--cl-w-display-bold, 600);
+  font-size: 16px; line-height: 20px;
+  color: var(--cl-text);
+  text-decoration: none;
+  display: -webkit-box; -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.cl-ve-clamp-1 { -webkit-line-clamp: 1; }
+.cl-ve-clamp-2 { -webkit-line-clamp: 2; }
+.cl-ve-clamp-3 { -webkit-line-clamp: 3; }
+.cl-ve-title:hover { color: var(--cl-lume-text); text-decoration: underline; }
+.cl-ve-title:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: 2px; border-radius: 4px; color: var(--cl-lume-text); }
+.cl-ve-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; max-width: 100%; margin-top: 1px; }
+.cl-ve-tag {
+  display: inline-flex; align-items: center;
+  font-size: 11.5px; line-height: 1; font-weight: 700;
+  color: var(--cl-muted);
+  padding: 4px 9px;
+  border-radius: var(--cl-r-pill);
+  background: rgb(var(--cl-bright-rgb) / 0.07);
+  white-space: nowrap;
+}
+.cl-ve-byline { font-size: 12px; font-weight: 700; color: var(--cl-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* Failure: what happened + the way out. */
+.cl-ve-error {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  font-size: 12px; font-weight: 600;
+  color: var(--cl-muted);
+}
+.cl-ve-error-over {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  padding: 16px;
+  text-align: center;
+}
+.cl-ve-error-over .cl-ve-error { justify-content: center; color: rgb(var(--cl-ve-on-pic) / .86); }
+.cl-ve-pill {
+  flex: none;
+  font: 700 12px var(--cl-font-body);
+  color: var(--cl-muted);
+  background: rgb(var(--cl-bright-rgb) / .08);
+  border: 0;
+  border-radius: 99px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.cl-ve-error-over .cl-ve-pill { color: rgb(var(--cl-ve-on-pic)); background: rgb(var(--cl-ve-on-pic) / .14); }
+.cl-ve-pill:hover { background: rgb(var(--cl-bright-rgb) / .14); color: var(--cl-text); }
+.cl-ve-pill:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: 2px; }
+
+/* Icon buttons under the player: open on site, collapse. */
+.cl-ve-ibtn {
+  flex: none;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cl-r-sm);
+  background: rgb(var(--cl-bright-rgb) / 0.06);
+  color: var(--cl-muted);
+  cursor: pointer;
+}
+.cl-ve-ibtn svg { width: 16px; height: 16px; }
+.cl-ve-ibtn:hover { background: rgb(var(--cl-bright-rgb) / 0.12); color: var(--cl-text); }
+.cl-ve-ibtn:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: 2px; }
+
+/* ── the reel (expanded, and playing in both layouts) ── */
+.cl-ve--reel {
+  padding: 0;
+  border: 0;
+  container-type: inline-size;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--cl-ve-glow, var(--cl-lume)) 18%, transparent), 0 6px 18px rgb(var(--cl-shade-rgb) / .22);
+}
+.cl-ve-player {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: rgb(var(--cl-ve-black));
+  isolation: isolate;
+}
+.cl-ve--reel:not(.cl-ve--playing) .cl-ve-player { cursor: pointer; }
+.cl-ve-player > iframe,
+.cl-ve-player > video {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  border: 0;
+  display: block;
+  background: rgb(var(--cl-ve-void));
+}
+.cl-ve--reel .cl-ve-play { width: 58px; height: 58px; }
+/* over the picture: site pill + duration on top, title + byline on a gradient at the bottom */
+.cl-ve-top {
+  position: absolute; left: 8px; right: 8px; top: 8px;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  pointer-events: none;
+}
+.cl-ve-grow { flex: 1; }
+.cl-ve-site--glass { background: rgb(var(--cl-ve-glass) / .62); color: rgb(var(--cl-ve-on-pic)); backdrop-filter: blur(8px); flex: 0 1 auto; }
+.cl-ve-site--glass rect { fill: rgb(var(--cl-ve-on-pic) / .2); }
+.cl-ve-site--glass path { fill: rgb(var(--cl-ve-on-pic)); }
+.cl-ve-dur--top { position: static; flex: none; }
+.cl-ve-cap {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 40px 12px 11px;
+  display: flex; flex-direction: column; gap: 4px;
+  background: linear-gradient(to top, rgb(var(--cl-ve-ink) / .9), rgb(var(--cl-ve-ink) / .6) 55%, rgb(var(--cl-ve-ink) / 0));
+  pointer-events: none;
+}
+.cl-ve-cap > * { pointer-events: auto; }
+.cl-ve-title--on-pic { color: rgb(var(--cl-ve-on-pic)); font-size: 17px; line-height: 21px; text-shadow: 0 1px 8px rgb(var(--cl-ve-void) / .5); }
+.cl-ve-title--on-pic:hover, .cl-ve-title--on-pic:focus-visible { color: rgb(var(--cl-ve-on-pic)); }
+.cl-ve-cap-by { font-size: 12px; font-weight: 700; color: rgb(var(--cl-ve-on-pic) / .82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a narrow box (a 9:16 video in a small column): a smaller caption */
+@container (max-width: 240px) {
+  .cl-ve-title--on-pic { font-size: 15px; line-height: 19px; }
+  .cl-ve-cap { padding: 34px 10px 9px; }
+}
+/* playing: the caption strip under the player, at the same width */
+.cl-ve-strip { display: flex; align-items: center; gap: 6px; padding: 9px 10px 10px 12px; min-width: 0; }
+.cl-ve-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+
+/* ── GIFs (linked .gif files and GIF-like loops): a picture, not a card ── */
+.cl-gif { position: relative; display: block; width: fit-content; max-width: 100%; }
+
+/* Light themes: no outlines on any link embed (owner, 2026-11-23). The embed
+   row (ChatPane) gets the class; inline borders of older embeds are cleared
+   too. Cards are set off by the white card on the cream page and a soft warm
+   shadow (round 3). That includes the generic link card's accent rail until
+   phase 3 replaces that card. The play button's ring and the spinner sit on
+   the picture, not the page, and keep theirs. */
+:root[data-scheme="light"] .cl-ve {
+  border: 0;
+  box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .08), 0 8px 22px rgb(var(--cl-shade-rgb) / .12);
+}
+/* the reel keeps its coloured glow in light themes too (no line, just light) */
+:root[data-scheme="light"] .cl-ve--reel {
+  box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .08), 0 10px 26px color-mix(in srgb, var(--cl-ve-glow, var(--cl-lume)) 20%, transparent);
+}
+:root[data-scheme="light"] .cl-embed-row *:not(.cl-ve-spin):not(.cl-ve-play) { border-color: transparent !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-ve-frame, .cl-ve-play { transition: none; }
+  .cl-ve-spin { animation-duration: 2.4s; }
+}

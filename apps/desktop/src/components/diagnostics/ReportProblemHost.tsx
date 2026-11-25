@@ -4,6 +4,7 @@ import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useNotificationPrefsSafe } from '../../contexts/NotificationContext';
 import { useToast } from '../../contexts/ToastContext';
 import secureLocalStore from '../../utils/secureLocalStore';
+import { APP_VERSION } from '../../constants';
 import { createScrubber } from '../../utils/diagnostics/scrub';
 import { setCaptureScrubber } from '../../utils/diagnostics/recentErrors';
 import { registerSensitiveTermsSource } from '../../utils/diagnostics/sensitiveTerms';
@@ -69,7 +70,7 @@ export const ReportProblemHost: React.FC = () => {
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
 
     const autoSend = useCallback(async (uid: string, tok: string, pending: PendingCrashEntry[]) => {
-        const plan = planAutoSend({ enabled: true, signedIn: true, pending, log: readAutoSendLog(uid), now: Date.now() });
+        const plan = planAutoSend({ enabled: true, signedIn: true, pending, log: readAutoSendLog(uid), now: Date.now(), currentVersion: APP_VERSION });
         if (plan.duplicates.length) await api?.diagClearPendingCrashes?.(plan.duplicates.map(p => p.signature)).catch(() => {});
         if (!plan.send.length) return;
         const prepared = await prepareReportInputs(liveRef.current);

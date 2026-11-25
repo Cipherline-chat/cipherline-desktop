@@ -6,9 +6,8 @@
  */
 import React, { useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { ClConfirm, useClTooltip } from '../cl';
+import { useClTooltip } from '../cl';
 import { highlight } from '../../utils/formatting/highlight';
-import { maskedLinkCheck } from '../../utils/formatting/linkSafety';
 import { openExternalLink } from '../../utils/openExternalLink';
 import { writeToClipboard } from '../../utils/clipboard';
 
@@ -55,19 +54,24 @@ export function CodeBlock({ lang, code, clipped }: { lang: string | null; code: 
     );
 }
 
-/** Longest destination shown in the hover tip / dialog before it is cut with an ellipsis. */
+/** Longest destination shown in the hover tip before it is cut with an ellipsis. */
 const SHOWN_URL_MAX = 300;
 const shortUrl = (u: string) => (u.length > SHOWN_URL_MAX ? `${u.slice(0, SHOWN_URL_MAX)}…` : u);
 
+/**
+ * A masked `[label](url)` link. The hover tip shows the real destination; a
+ * click goes through openExternalLink with the label, so the shared
+ * "You're leaving Cipherline" dialog shows the full URL and, when the label
+ * names a different site (utils/formatting/linkSafety.ts), says so — even for
+ * a trusted destination. (This used to raise its own ClConfirm; the shared
+ * dialog replaced it so every external link asks the same way.)
+ */
 export function MaskedLink({ url, labelText, children }: { url: string; labelText: string; children: React.ReactNode }) {
-    const [asking, setAsking] = useState(false);
     const tip = useClTooltip(shortUrl(url), { wide: true });
-    const check = useMemo(() => maskedLinkCheck(labelText, url), [labelText, url]);
-    const warn = check.deceptive || check.punycode;
-    const ask = (e: React.SyntheticEvent) => { e.stopPropagation(); e.preventDefault(); setAsking(true); };
-    const open = () => {
-        setAsking(false);
-        const r = openExternalLink(url);
+    const open = (e: React.SyntheticEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const r = openExternalLink(url, { label: labelText });
         if (!r.ok) console.warn(`[FormattedText] refused to open link (${r.reason})`);
     };
     return (
@@ -79,33 +83,12 @@ export function MaskedLink({ url, labelText, children }: { url: string; labelTex
                 className="cl-fmt-link"
                 data-href={url}
                 aria-describedby={tip.describedBy}
-                onClick={ask}
-                onKeyDown={(e) => { if (e.key === 'Enter') ask(e); }}
+                onClick={open}
+                onKeyDown={(e) => { if (e.key === 'Enter') open(e); }}
             >
                 {children}
             </span>
             {tip.tooltip}
-            {asking && (
-                <ClConfirm
-                    open
-                    onClose={() => setAsking(false)}
-                    onConfirm={open}
-                    danger={warn}
-                    title={warn ? "This link isn't what it says" : 'Open this link?'}
-                    confirmLabel={warn ? 'Open anyway' : 'Open link'}
-                    message={
-                        check.deceptive && check.labelHost ? (
-                            <>The text says <b>{check.labelHost}</b>, but the link opens <b>{check.targetHost || 'an address that can’t be read'}</b>.</>
-                        ) : check.punycode ? (
-                            <>This address uses look-alike characters: <b>{check.targetHost}</b>.</>
-                        ) : (
-                            <>This link opens <b>{check.targetHost}</b> in your browser.</>
-                        )
-                    }
-                >
-                    <div className="cl-fmt-dest" data-dest="">{shortUrl(url)}</div>
-                </ClConfirm>
-            )}
         </>
     );
 }

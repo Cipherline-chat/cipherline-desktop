@@ -284,7 +284,7 @@ export function pendingClaimNotices(authors: ClaimableAuthor[], seen: Set<string
     const out: Array<{ kind: 'auto' | 'claimable'; author: ClaimableAuthor }> = [];
     for (const a of authors) {
         if (seen.has(a.author_id) || (a.message_count === 0 && !hasGrants(a))) continue;
-        if (a.claimed && a.claim_source === 'auto') out.push({ kind: 'auto', author: a });
+        if (a.claimed && a.claim_source === 'auto' && a.member) out.push({ kind: 'auto', author: a });
         else if (!a.claimed && a.member) out.push({ kind: 'claimable', author: a });
     }
     return out;

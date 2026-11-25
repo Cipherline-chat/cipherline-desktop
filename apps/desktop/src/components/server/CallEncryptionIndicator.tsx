@@ -79,9 +79,16 @@ interface CallEncryptionIndicatorProps {
      *  'loading' and 'stalled' (the only modes rendered while CallPane is not
      *  mounted); unused for 'connected'/'degraded'. */
     onLeave?: () => void;
+    /** DM / group 'loading' / 'stalled' only: the call's key DID arrive, from a
+     *  device the sender-trust gate refused (utils/callKeyRefusal.ts). Replaces
+     *  the "hasn't reached this device" copy, which would send the user off to
+     *  redial when the fix is reviewing that device. `onReview` opens the chat
+     *  where the identity warning can be answered; answering it re-asks for the
+     *  key, which the same gate judges again. */
+    refusal?: { title: string; body: string; onReview?: () => void };
 }
 
-export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencryptedNames }: CallEncryptionIndicatorProps) => {
+export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencryptedNames, refusal }: CallEncryptionIndicatorProps) => {
     if (mode === 'mixed') {
         // Deliberately NOT a padlock of any colour. 'degraded' is amber and
         // still says "Encrypted" because the call genuinely is; this state is
@@ -133,6 +140,39 @@ export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencrypte
 
     const name = channelName?.trim() || 'this channel';
     const stalled = mode === 'stalled';
+
+    if (refusal && !channelName) {
+        // A refused key is not a wait: nothing more is coming until the person
+        // reviews the device. Shown at once (no 'loading' spinner first), with
+        // the review AND the leave both visible.
+        return (
+            <div className="shrink-0 px-2 pt-2 pb-1">
+                <div
+                    className="rounded-xl border p-2.5 bg-cl-raise"
+                    style={{ borderColor: 'rgb(var(--cl-glow-rgb) / .28)' }}
+                    role="status"
+                    aria-live="polite"
+                    data-call-key-refused
+                >
+                    <div className="flex items-start gap-2 mb-1">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-[1px]" style={{ color: 'var(--cl-glow-text)' }} />
+                        <span className="text-[12px] font-semibold text-cl-text">{refusal.title}</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-white/60">{refusal.body}</p>
+                    <div className="mt-2 flex flex-col gap-1.5">
+                        {refusal.onReview && (
+                            <ClButton variant="primary" size="sm" fullWidth onClick={refusal.onReview}>
+                                Review device
+                            </ClButton>
+                        )}
+                        <ClButton variant="danger" size="sm" fullWidth onClick={onLeave}>
+                            Leave call
+                        </ClButton>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     if (!stalled) {
         // 'loading' — compact single row: spinner, brief wording, small leave

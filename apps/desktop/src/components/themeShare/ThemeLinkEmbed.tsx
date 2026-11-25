@@ -5,8 +5,9 @@
  * Everything is decided on this device from the link itself: no fetch, no
  * server, no link preview. The fragment is decoded with exactly the import
  * dialog's rules (customTheme.ts decodeShareCode: colours only, a cleaned and
- * capped name, size cap, readability guard), so a crafted link can only ever
- * produce a valid, readable theme — or the small "can't be read" card.
+ * capped name, size cap), so a crafted link can only ever produce a valid
+ * theme — colours exactly as the sender picked them — or the small "can't be
+ * read" card.
  *
  * The card is framed by the CURRENT app theme (styles/theme-share.css reads the
  * app's tokens); the mini preview is painted from the SHARED theme's own
@@ -19,7 +20,7 @@
  * way, which also ends a preview).
  */
 import React, { useMemo, useState } from 'react';
-import { Eye, Link2Off, Palette, Sparkles } from 'lucide-react';
+import { Eye, Link2Off, Palette } from 'lucide-react';
 import { ClButton } from '../cl';
 import { useAuth } from '../../contexts/AuthContext';
 import { useContextMenu } from '../../hooks/useContextMenu';
@@ -42,7 +43,7 @@ export const ThemeLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
     const parsed = useMemo(() => parseThemeLink(url), [url]);
     if (parsed.kind === 'none') return null;
     if (parsed.kind === 'invalid') return <ThemeLinkUnreadable />;
-    return <ThemeLinkCard def={parsed.result.def} adjusted={parsed.result.adjustments.length > 0} />;
+    return <ThemeLinkCard def={parsed.result.def} />;
 };
 
 export const ThemeLinkUnreadable: React.FC = () => (
@@ -57,7 +58,7 @@ export const ThemeLinkUnreadable: React.FC = () => (
 
 type Status = { kind: 'ok' | 'err'; text: string } | null;
 
-const ThemeLinkCard: React.FC<{ def: CustomThemeDef; adjusted: boolean }> = ({ def, adjusted }) => {
+const ThemeLinkCard: React.FC<{ def: CustomThemeDef }> = ({ def }) => {
     const { userId, user } = useAuth();
     const uid = userId ?? user?.user_id ?? null;
     const lib = useCustomThemes(uid);
@@ -113,9 +114,6 @@ const ThemeLinkCard: React.FC<{ def: CustomThemeDef; adjusted: boolean }> = ({ d
                         <i key={k} className="tle-sw" style={{ background: def.colors[k] }} title={`${KNOB_LABELS[k].label} ${def.colors[k]}`} />
                     ))}
                 </div>
-                {adjusted && (
-                    <p className="tle-note"><Sparkles size={13} aria-hidden="true" />This theme was adjusted for readability.</p>
-                )}
                 {status && <p className={`tle-status${status.kind === 'err' ? ' tle-status--err' : ''}`} role="status">{status.text}</p>}
                 <div className="tle-foot">
                     <ClButton

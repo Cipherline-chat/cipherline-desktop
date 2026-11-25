@@ -72,6 +72,14 @@ export interface ClBannerProps {
     testId?: string;
     /** Extra `data-*` attributes on the root, keys without the `data-` prefix. */
     data?: Record<string, string>;
+    /**
+     * Opt-in expandable banner. It starts COLLAPSED (one line: glyph + title, or the
+     * body when there is no title, truncated, plus a chevron); a real button toggles
+     * it (aria-expanded; Enter/Space natively) to show the full text, actions and
+     * extra rows. The dismiss stays visible in both states. State is per mount, not
+     * persisted. Without this prop a banner renders exactly as before.
+     */
+    collapsible?: boolean;
 }
 
 // ── Stack ──────────────────────────────────────────────────────────────────
@@ -189,6 +197,11 @@ const DEFAULT_ICON: Record<ClBannerTone, React.ReactNode> = {
     success: <CheckCircle2 size={15} />,
 };
 
+const SR_ONLY: React.CSSProperties = {
+    position: 'absolute', width: 1, height: 1, margin: -1, padding: 0, overflow: 'hidden',
+    clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
+};
+
 const BannerDismiss: React.FC<{ label: string; disabled?: boolean; onDismiss: () => void }> = ({ label, disabled, onDismiss }) => {
     const { anchorProps, tooltip, describedBy } = useClTooltip(label);
     const { ref, ...handlers } = anchorProps;
@@ -213,9 +226,10 @@ const BannerDismiss: React.FC<{ label: string; disabled?: boolean; onDismiss: ()
 
 export const ClBanner: React.FC<ClBannerProps> = ({
     tone, title, description, icon, actions, onDismiss, dismissLabel = 'Dismiss', dismissDisabled,
-    children, id, priority, live, ariaLabel, inline, className, testId, data,
+    children, id, priority, live, ariaLabel, inline, className, testId, data, collapsible,
 }) => {
     const autoId = useId();
+    const [open, setOpen] = useState(false);
     const bannerId = id ?? autoId;
     // Inline banners never join the top-of-app stack.
     const slot = useStackSlot(bannerId, priority ?? TONE_PRIORITY[tone], !inline);
@@ -226,7 +240,11 @@ export const ClBanner: React.FC<ClBannerProps> = ({
     const dataAttrs: Record<string, string> = {};
     for (const [k, v] of Object.entries(data ?? {})) dataAttrs[`data-${k}`] = v;
     const glyph = icon === false ? null : (icon ?? DEFAULT_ICON[tone]);
-    const hasActions = (actions?.length ?? 0) > 0;
+    const collapsed = !!collapsible && !open;
+    const hasActions = (actions?.length ?? 0) > 0 && !collapsed;
+    const hasTitle = title != null && title !== false;
+    const hasDesc = description != null && description !== false;
+    const textId = `${bannerId}-text`.replace(/[^A-Za-z0-9_-]/g, '_');
 
     return (
         <div
@@ -241,12 +259,42 @@ export const ClBanner: React.FC<ClBannerProps> = ({
         >
             <div className="cl-banner__card">
                 {glyph && <span className="cl-banner__icon" aria-hidden>{glyph}</span>}
+                {collapsible ? (
+                    <button
+                        type="button"
+                        className="cl-banner__toggle"
+                        aria-expanded={!collapsed}
+                        aria-controls={textId}
+                        data-collapsed={collapsed ? '' : undefined}
+                        onClick={() => setOpen(o => !o)}
+                    >
+                        <span id={textId} className="cl-banner__text cl-banner__text--toggle">
+                            {collapsed ? (
+                                <span className={hasTitle ? 'cl-banner__title' : 'cl-banner__desc cl-banner__desc--solo'}>
+                                    {hasTitle ? title : description}
+                                </span>
+                            ) : (
+                                <>
+                                    {hasTitle && <span className="cl-banner__title">{title}</span>}
+                                    {hasDesc && (
+                                        <>{hasTitle ? ' ' : ''}<span className={hasTitle ? 'cl-banner__desc' : 'cl-banner__desc cl-banner__desc--solo'}>{description}</span></>
+                                    )}
+                                </>
+                            )}
+                        </span>
+                        <span className="cl-banner__chev" aria-hidden>
+                            {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                        </span>
+                        <span style={SR_ONLY}>{collapsed ? 'Expand announcement' : 'Collapse announcement'}</span>
+                    </button>
+                ) : (
                 <p className="cl-banner__text">
                     {title != null && title !== false && <span className="cl-banner__title">{title}</span>}
                     {description != null && description !== false && (
                         <>{title != null && title !== false ? ' ' : ''}<span className={title != null && title !== false ? 'cl-banner__desc' : 'cl-banner__desc cl-banner__desc--solo'}>{description}</span></>
                     )}
                 </p>
+                )}
                 {hasActions && (
                     <div className="cl-banner__actions">
                         {(actions ?? []).map((a, i) => (
@@ -273,7 +321,7 @@ export const ClBanner: React.FC<ClBannerProps> = ({
                         <BannerDismiss label={dismissLabel} disabled={dismissDisabled} onDismiss={onDismiss} />
                     </span>
                 )}
-                {children != null && children !== false && <div className="cl-banner__extra">{children}</div>}
+                {!collapsed && children != null && children !== false && <div className="cl-banner__extra">{children}</div>}
             </div>
         </div>
     );

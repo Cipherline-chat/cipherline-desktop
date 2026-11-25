@@ -6,6 +6,12 @@ import { restartApp } from '../utils/restartApp';
 interface Props {
     /** Carry on without this device's stored data for this session. */
     onContinue: () => void;
+    /**
+     * What failed, as `<stage>/<ErrorName>` (utils/storeHealthReport.ts
+     * storeFailureCode): labels only, so a user can screenshot it instead of
+     * sending a report. Not shown when absent.
+     */
+    code?: string | null;
 }
 
 type HostPlatform = 'windows' | 'mac' | 'linux';
@@ -17,7 +23,14 @@ const DATA_FOLDER: Record<HostPlatform, string> = {
     linux: '~/.config/Cipherline',
 };
 
-/** "If it keeps happening" steps, per platform. Short, calm, and nothing destructive. */
+/**
+ * "If it keeps happening" steps, per platform. Short, calm, and nothing destructive.
+ *
+ * The quarantine step is for a failure that survives every restart: Chromium
+ * keeps large records as separate files in the data folder, and one of those
+ * files going missing or unreadable (an antivirus quarantine is the usual way,
+ * on Windows) fails the read on every launch until the file is back.
+ */
 function readFailedTips(platform: HostPlatform): string[] {
     const quit = platform === 'mac'
         ? 'Quit Cipherline fully (⌘Q), then open it again.'
@@ -27,10 +40,16 @@ function readFailedTips(platform: HostPlatform): string[] {
         : platform === 'mac'
             ? 'If antivirus or a sync app scans your files, allow Cipherline’s data folder:'
             : 'If a sync or backup tool scans your files, allow Cipherline’s data folder:';
+    const quarantine = platform === 'windows'
+        ? 'Still happening? Check your antivirus’s quarantine (Windows Security: Protection history) for files from that folder, and restore them.'
+        : platform === 'mac'
+            ? 'Still happening? Check your antivirus or cleaner app for files it quarantined or removed from that folder, and restore them.'
+            : 'Still happening? Check whether a cleaner, sync or backup tool moved or removed files in that folder, and restore them.';
     return [
         quit,
         'Make sure your disk has free space.',
         `${watcher} ${DATA_FOLDER[platform]}`,
+        quarantine,
         'Don’t delete the app’s data or reinstall: your history is stored there.',
     ];
 }
@@ -56,7 +75,7 @@ function hostPlatform(): HostPlatform {
  * its IndexedDB backend for the life of the process, so a reload meets the same
  * failed backing store (see utils/restartApp.ts).
  */
-const StorageReadFailedScreen: React.FC<Props> = ({ onContinue }) => {
+const StorageReadFailedScreen: React.FC<Props> = ({ onContinue, code }) => {
     const [restarting, setRestarting] = useState(false);
     const tips = readFailedTips(hostPlatform());
     const retry = () => {
@@ -89,6 +108,14 @@ const StorageReadFailedScreen: React.FC<Props> = ({ onContinue }) => {
                     <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--cl-faint)' }}>
                         Nothing was deleted. Restarting Cipherline is usually all it takes.
                     </p>
+                    {code && (
+                        <p
+                            className="font-mono"
+                            style={{ fontSize: 11, color: 'var(--cl-faint)', marginTop: 8, userSelect: 'text', overflowWrap: 'anywhere' }}
+                        >
+                            Code: {code}
+                        </p>
+                    )}
                 </div>
 
                 <div

@@ -199,8 +199,9 @@ export function ServerStickersTab({ server, token, canManage }: { server: Server
                             <img src={pending.previewUrl} alt="" className="w-20 h-20 shrink-0 object-contain rounded bg-cl-raise/40" />
                             {draftFields(pending.draft, patch => setPending(p => p && { ...p, draft: { ...p.draft, ...patch } }), 'new-sticker', () => void confirmAdd())}
                             <div className="flex flex-col gap-1.5">
-                                <ClButton size="sm" onClick={() => void confirmAdd()} disabled={uploading}>{uploading ? 'Uploading…' : 'Add'}</ClButton>
-                                <ClButton size="sm" variant="ghost" onClick={() => setPending(null)} disabled={uploading}>Cancel</ClButton>
+                                {/* Both fill the column, so Add is exactly as wide as Cancel (owner 2026-11-23). */}
+                                <ClButton size="sm" fullWidth onClick={() => void confirmAdd()} disabled={uploading}>{uploading ? 'Uploading…' : 'Add'}</ClButton>
+                                <ClButton size="sm" variant="ghost" fullWidth onClick={() => setPending(null)} disabled={uploading}>Cancel</ClButton>
                             </div>
                         </div>
                     )}

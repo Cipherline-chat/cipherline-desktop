@@ -9,7 +9,16 @@
  *   • one send per crash SIGNATURE per AUTO_SEND_DEDUPE_MS — a crash that
  *     keeps happening is reported once, then quietly cleared;
  *   • newest first; anything over the cap stays pending for the next launch
- *     (or for a manual report).
+ *     (or for a manual report);
+ *   • never an `unclean_exit` recorded by ANOTHER app version (`stale`): a
+ *     record kept for a manual report survives updates, and without this an
+ *     update to a build with auto-send ON sent an 8-day-old "the previous
+ *     session didn't quit cleanly" from a version that no longer exists (prod
+ *     report 7fd79405: 0.1.0's session, sent by 0.1.3 five seconds after
+ *     launch). Installers end the running copy, so that is usually the update
+ *     itself, and either way nothing in it is actionable on the new build.
+ *     Such records stay pending for a manual report; they are just not sent
+ *     on their own.
  *
  * STORAGE: both keys are PER ACCOUNT in secureLocalStore (encrypted at rest).
  * Per account rather than per device because the report is linked to the
@@ -43,7 +52,17 @@ export function signatureHash(signature: string): string {
     return h.toString(16).padStart(8, '0');
 }
 
-export interface PendingLike { signature: string }
+export interface PendingLike {
+    signature: string;
+    crash?: { kind?: string; app_version_at_crash?: string };
+}
+
+/** An unclean exit recorded by a different (known) app version than the one running now. */
+export function isOtherVersionUncleanExit(p: PendingLike, currentVersion: string | undefined): boolean {
+    if (!currentVersion || currentVersion === '0.0.0') return false; // unknown build (dev): never hide anything
+    const v = p.crash?.app_version_at_crash;
+    return p.crash?.kind === 'unclean_exit' && typeof v === 'string' && v !== '' && v !== currentVersion;
+}
 
 export interface AutoSendPlan<T extends PendingLike> {
     /** Send these now (newest first). */
@@ -52,6 +71,8 @@ export interface AutoSendPlan<T extends PendingLike> {
     duplicates: T[];
     /** Over today's cap — leave pending. */
     deferred: T[];
+    /** An unclean exit of another app version — never auto-sent, left pending for a manual report. */
+    stale: T[];
 }
 
 export function planAutoSend<T extends PendingLike>(o: {
@@ -61,14 +82,17 @@ export function planAutoSend<T extends PendingLike>(o: {
     pending: readonly T[];
     log: readonly AutoSendLogEntry[];
     now: number;
+    /** The running app version (APP_VERSION). Omitted / '0.0.0' = unknown, no version filter. */
+    currentVersion?: string;
 }): AutoSendPlan<T> {
-    const plan: AutoSendPlan<T> = { send: [], duplicates: [], deferred: [] };
+    const plan: AutoSendPlan<T> = { send: [], duplicates: [], deferred: [], stale: [] };
     if (!o.enabled || !o.signedIn || o.pending.length === 0) return plan;
     const recent = o.log.filter(e => o.now - e.at < AUTO_SEND_WINDOW_MS && e.at <= o.now).length;
     let budget = Math.max(0, AUTO_SEND_DAILY_CAP - recent);
     const recentlySent = new Set(o.log.filter(e => o.now - e.at < AUTO_SEND_DEDUPE_MS).map(e => e.h));
     const planned = new Set<string>();
     for (const p of [...o.pending].reverse()) {
+        if (isOtherVersionUncleanExit(p, o.currentVersion)) { plan.stale.push(p); continue; }
         const h = signatureHash(p.signature);
         if (recentlySent.has(h) || planned.has(h)) { plan.duplicates.push(p); continue; }
         if (budget > 0) { plan.send.push(p); planned.add(h); budget--; } else plan.deferred.push(p);

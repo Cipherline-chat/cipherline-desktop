@@ -21,6 +21,7 @@ import { useNightDiveRuntime } from './hooks/useNightDive';
 import { NightDiveSea } from './components/NightDiveSea';
 import Dashboard from './components/Dashboard';
 import UpgradeRequiredOverlay from './components/UpgradeRequiredOverlay';
+import LeavingCipherlineHost from './components/LeavingCipherlineDialog';
 import { ClientControlGate } from './components/ClientControlGate';
 import { UpdateProvider } from './contexts/UpdateContext';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
@@ -279,6 +280,10 @@ function App() {
     <ToastProvider>
       {/* Message text size + the interface-size shortcut pill (Settings → Accessibility). */}
       <A11yRuntime />
+      {/* "You're leaving Cipherline": the one confirm every untrusted external
+          link goes through (utils/openExternalLink.ts). Mounted for sign-in
+          and dashboard alike; with no host mounted, untrusted links refuse. */}
+      <LeavingCipherlineHost />
       <UpdateProvider>
         <HydrationProvider>
           <AppInner />

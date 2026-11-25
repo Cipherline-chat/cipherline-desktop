@@ -1,5 +1,5 @@
 // Wave-3 dialogs harness: renders the REAL components over an app-like backdrop against stubbed
-// network / contexts / history-transfer key checks / electronAPI. Never loads Stripe.
+// network / contexts / electronAPI. Never loads Stripe.
 //   npx vite --config harness/dialogs-wave3.vite.config.ts      (serves :5327)
 //   node harness/dialogs-wave3-shots.mjs                        (env: OUT=<dir> LABEL=before|after ...)
 import { defineConfig } from 'vite'
@@ -23,8 +23,6 @@ export default defineConfig({
     { find: /^(\.\.?\/)+contexts\/AuthContext$/, replacement: stubs },
     { find: /^(\.\.?\/)+contexts\/ToastContext$/, replacement: stubs },
     { find: /^(\.\.?\/)+contexts\/SubscriptionContext$/, replacement: stubs },
-    { find: /^(\.\.?\/)+utils\/historyRequestProof$/, replacement: stubs },
-    { find: /^(\.\.?\/)+utils\/historyTransferKey$/, replacement: stubs },
     { find: /^(\.\.?\/)+(utils\/)?secureLocalStore$/, replacement: stubs },
     { find: 'mammoth', replacement: 'mammoth/mammoth.browser.min.js' },
     { find: 'exceljs', replacement: 'exceljs/dist/exceljs.min.js' },

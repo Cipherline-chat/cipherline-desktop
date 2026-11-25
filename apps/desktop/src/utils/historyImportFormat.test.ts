@@ -123,22 +123,3 @@ describe('importLocalHistory — the formats it does accept still import', () =>
         expect(mem.get(`cipherline_msgs_${UID}`)).toBe(JSON.stringify(bareDump));
     });
 });
-
-describe('the requesting device says WHY, instead of a generic failure', () => {
-    it('the mobile decline reason matches the string the mobile app sends', async () => {
-        const { HISTORY_REFUSED_MOBILE_TO_DESKTOP } = await import('./historyRequestProof');
-        // cipherline-mobile src/features/history-sync/requesterPlatform.ts,
-        // HISTORY_REFUSED_UNSUPPORTED_REQUESTER. A rename on either side must fail here.
-        expect(HISTORY_REFUSED_MOBILE_TO_DESKTOP).toBe('requester_cannot_import_mobile_history');
-    });
-
-    it('HistorySyncBanner routes a refused payload and the mobile decline to the explained state', async () => {
-        const { readFileSync } = await import('node:fs');
-        const { join } = await import('node:path');
-        const src = readFileSync(join(__dirname, '..', 'components', 'HistorySyncBanner.tsx'), 'utf8')
-            .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-        expect(src.length).toBeGreaterThan(1000);
-        expect(src).toContain('err instanceof HistoryPayloadRefusedError');
-        expect(src).toContain('historyDeclined.reason === HISTORY_REFUSED_MOBILE_TO_DESKTOP');
-    });
-});

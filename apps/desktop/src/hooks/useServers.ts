@@ -13,6 +13,7 @@ import { huddleJoinHeaders } from '../utils/callJoinFlow';
 import { removeParticipantFromCall, addSpawnedCall } from '../utils/joinView';
 import { keepGuestCallInSnapshot, mergeGuestCallRoster, dropGuestCall, type GuestCallRef } from '../utils/guestCallRoster';
 import { leaveRequestBody } from '../utils/endCallOnLeave';
+import { applyHuddleCallsLoadFailure, huddleCallsLoadFailureReason, participantEventNeedsReload } from '../utils/huddleCallsLoad';
 import type { DiscordTemplatePreview, DiscordTemplateImportRequest } from '../utils/discordTemplate';
 import type { GuildImportRequest, GuildPreview } from '../utils/discordImport/types';
 
@@ -199,6 +200,10 @@ export interface ServerMemberInfo {
     joined_at: string;
 }
 
+/** How long a `huddle:participant` join for an unknown call waits before the
+ *  map is checked again (see applyHuddleParticipant). */
+const UNKNOWN_CALL_RECHECK_MS = 1500;
+
 export function useServers(token: string | null, userId?: string | null, deviceId?: string | null) {
     const [servers, setServers] = useState<ServerInfo[]>([]);
     // Latest list for synchronous reads (removeServerLocal must return the
@@ -218,6 +223,10 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     /** Active Huddle calls keyed by huddle (channel) id. Updated reactively
      *  via the four `huddle:*` WS events; see useRealtime. */
     const [huddleCalls, setHuddleCalls] = useState<Record<string, HuddleCallInfo[]>>({});
+    // Latest map for synchronous reads outside a setState updater (the
+    // unknown-call check in applyHuddleParticipant).
+    const huddleCallsRef = useRef<Record<string, HuddleCallInfo[]>>({});
+    huddleCallsRef.current = huddleCalls;
     /**
      * Resolved server-level permission bitfield for the calling user, keyed
      * by server_id. Fetched from `GET /v1/servers/:id/me/permissions`.
@@ -423,22 +432,36 @@ export function useServers(token: string | null, userId?: string | null, deviceI
 
     /**
      * Pull the live list of calls under one Huddle. Called when the user
-     * opens a server (any `kind='huddle'` channel found prompts a fetch)
-     * and when the user navigates between servers. The fetch is best-effort:
-     * a 404 / 403 just leaves the bucket empty.
+     * opens a server (any `kind='huddle'` channel found prompts a fetch),
+     * when the user navigates between servers, and on reconnect.
+     *
+     * Only a 403 / 404 empties the channel. Any other failure (network drop,
+     * timeout, 429, 5xx) leaves the roster we have: emptying it on those is
+     * what made a live call vanish during a reconnect storm (owner report
+     * 2026-11-23, see utils/huddleCallsLoad.ts).
+     *
+     * Concurrent loads of the same channel share one request: a reconnect
+     * asks for the same channel from several places within a second, and
+     * every extra copy spent the route's rate-limit budget for nothing.
      */
     const loadHuddleCalls = useCallback(async (huddleId: string) => {
         if (!token) return;
         try {
-            const res = await axios.get(apiUrl`/huddles/${huddleId}/calls`, {
+            const res = await shareInflight(`huddle-calls:${token}:${huddleId}`, () => axios.get(apiUrl`/huddles/${huddleId}/calls`, {
                 headers: { Authorization: `Bearer ${token}` },
-            });
+                timeout: 15000,
+            }));
             setHuddleCalls(prev => ({ ...prev, [huddleId]: res.data ?? [] }));
             // Partial seed: replaces media only for the calls this list covers.
             applyCallMediaSeed(callMediaEntriesFromCalls(Array.isArray(res.data) ? res.data : []));
-        } catch {
-            // Non-fatal; clear stale entries.
-            setHuddleCalls(prev => ({ ...prev, [huddleId]: [] }));
+        } catch (err) {
+            setHuddleCalls(prev => {
+                const next = applyHuddleCallsLoadFailure(prev, huddleId, err);
+                if (next === prev && (prev[huddleId]?.length ?? 0) > 0) {
+                    console.warn(`[Huddles] calls list failed (${huddleCallsLoadFailureReason(err)}); keeping the roster we have`);
+                }
+                return next;
+            });
         }
     }, [token]);
 
@@ -519,13 +542,28 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         });
     }, []);
 
-    /** Apply a `huddle:participant` WS event (join or leave). */
+    /** Apply a `huddle:participant` WS event (join or leave).
+     *
+     *  A join for a call we do not have means our map lost a live call, and
+     *  the event alone cannot rebuild it: re-read that one channel (see
+     *  participantEventNeedsReload). */
     const applyHuddleParticipant = useCallback((
         huddleId: string,
         callId: string,
         userId: string,
         action: 'join' | 'leave',
     ) => {
+        if (participantEventNeedsReload(huddleCallsRef.current, huddleId, callId, action)) {
+            // Checked again a moment later, not acted on now: the server sends
+            // `call_spawned` right before the spawner's join, and when both land
+            // in one batch the spawn is not in the ref until the next render.
+            // Re-reading on every spawn would cost one GET per viewer per call.
+            setTimeout(() => {
+                if (participantEventNeedsReload(huddleCallsRef.current, huddleId, callId, action)) {
+                    void loadHuddleCalls(huddleId);
+                }
+            }, UNKNOWN_CALL_RECHECK_MS);
+        }
         setHuddleCalls(prev => {
             const bucket = prev[huddleId];
             if (!bucket) return prev;
@@ -537,7 +575,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
             });
             return { ...prev, [huddleId]: next };
         });
-    }, []);
+    }, [loadHuddleCalls]);
 
     /** POST a spawn-call request. Returns LiveKit connection details on success. */
     const spawnHuddleCall = useCallback(async (huddleId: string) => {

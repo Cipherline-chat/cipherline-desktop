@@ -79,6 +79,7 @@ describe('pendingClaimNotices: which notices to raise', () => {
             author({ author_id: 'seen', claimed: true, claim_source: 'auto' }),
             author({ author_id: 'manual', claimed: true, claim_source: 'manual' }),
             author({ author_id: 'outside', member: false }),
+            author({ author_id: 'autoOutside', member: false, claimed: true, claim_source: 'auto' }), // legacy claim in a server you are not in: no prompt
             author({ author_id: 'empty', claimed: true, claim_source: 'auto', message_count: 0 }),
         ];
         expect(pendingClaimNotices(list, new Set(['seen']))).toEqual([]);

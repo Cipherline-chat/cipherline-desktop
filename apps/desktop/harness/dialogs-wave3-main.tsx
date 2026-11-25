@@ -11,7 +11,7 @@ import axios from 'axios';
 
 /**
  * Wave-3 dialogs, REAL components over a dimmed app-like backdrop. Fakes: the network (axios adapter),
- * useAuth / useToast / useSubscription, the history-transfer key checks and window.electronAPI (aliases +
+ * useAuth / useToast / useSubscription and window.electronAPI (aliases +
  * stubs in dialogs-wave3-stubs.ts / the vite config). Stripe is never loaded (no billing dialogs here).
  *
  *   ?d=<name>[&...]   see DIALOGS below; extra params pick a state.
@@ -77,7 +77,6 @@ axios.defaults.adapter = async (config: any) => {
         return ok([{ device_id: 'aaaa1111', identity_key_pub_b64: fakeKey(11) }, { device_id: 'bbbb2222', identity_key_pub_b64: fakeKey(12) }]);
     }
     if (/\/devices$/.test(url)) return ok([{ device_id: 'dev-1', device_name: 'Desktop', platform: 'windows' }, { device_id: 'dev-2', device_name: 'Pixel 8', platform: 'android' }]);
-    if (/decline-history|deliver-history/.test(url)) return ok({});
     return ok({});
 };
 
@@ -168,10 +167,6 @@ const load = async () => {
         devremoved: async () => {
             const { DeviceRemovedNotice } = await import('../src/components/DeviceApprovalModal');
             return <DeviceRemovedNotice deviceName="Dawson’s MacBook Pro" onChangePassword={() => note('changepw')} onLater={() => note('later')} />;
-        },
-        history: async () => {
-            const { HistoryRequestModal } = await import('../src/components/HistoryRequestModal');
-            return <HistoryRequestModal request={{ device_id: 'req-1', device_name: 'Pixel 8', platform: 'android', requested_at: new Date().toISOString(), capability_sig_b64: 'x', capability_ts: 1 } as any} onClose={() => note('close')} />;
         },
         screenlock: async () => {
             const { default: ScreenLockSettings } = await import('../src/components/ScreenLockSettings');

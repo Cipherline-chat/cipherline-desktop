@@ -53,9 +53,11 @@ function cardBrandLabel(brand: string | null): string {
 
 /** Receipts are Stripe-hosted pages; open them in the real browser rather than
  *  re-rendering a PDF ourselves. Goes through the validated helper, which
- *  enforces the scheme before handing anything to the main process. */
+ *  enforces the scheme before handing anything to the main process. App-
+ *  authored (`source: 'app'`): the receipt URL comes from our server, not from
+ *  any message, so it skips the leaving-Cipherline dialog. */
 function openReceipt(url: string): void {
-    openExternalLink(url);
+    openExternalLink(url, { source: 'app' });
 }
 
 /** Confetti for the one ceremony button. Escalates nowhere — upgrading is the payoff. */

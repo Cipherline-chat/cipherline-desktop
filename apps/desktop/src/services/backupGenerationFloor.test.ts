@@ -45,6 +45,7 @@ const store = vi.hoisted(() => {
             isLocked: () => false,
             hasLoadFailure: () => false,
             isAccountReady: () => true,
+            unreadableRecordCount: () => 0,
         },
     };
 });

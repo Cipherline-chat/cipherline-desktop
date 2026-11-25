@@ -1384,14 +1384,13 @@ const AuthScreen: React.FC = () => {
                             // just show static instructions pointing at a "Settings →
                             // Storage → Export History" feature that doesn't exist
                             // anywhere in the app — a confirmed dead end. The REAL,
-                            // working "sync from another device" flow
-                            // (HistorySyncBanner.tsx, POST /v1/devices/history-request
-                            // over the live WS connection) can only run once this
-                            // device is actually logged in and connected — it can't
-                            // run from this pre-login screen. Proceed to login exactly
-                            // like "Start fresh" does; HistorySyncBanner detects the
-                            // empty local history on Dashboard mount and offers the
-                            // real sync flow automatically from there.
+                            // working "bring your history over" flow (the local-network
+                            // own-device transfer, components/near/SignInHistoryPrompt.tsx)
+                            // can only run once this device is actually logged in and
+                            // connected — it can't run from this pre-login screen.
+                            // Proceed to login exactly like "Start fresh" does;
+                            // SignInHistoryPrompt detects the empty local history on
+                            // Dashboard mount and offers the transfer from there.
                             markLocalHistory(pendingRegPayload.userId);
                             login(pendingRegPayload.token, pendingRegPayload.userId, pendingRegPayload.deviceId, false, pendingRegPayload.refresh_token);
                         }}

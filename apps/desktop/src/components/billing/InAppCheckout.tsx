@@ -295,7 +295,7 @@ const LoadError: React.FC<{ message: string; inline?: boolean; onRetry: () => vo
                     <ClButton fullWidth onClick={onRetry}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><RefreshCw size={16} /> Try again</span>
                     </ClButton>
-                    <ClButton variant="ghost" fullWidth onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL); }}>
+                    <ClButton variant="ghost" fullWidth onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL, { source: 'app' }); }}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Globe size={16} /> Open cipherline.chat/account</span>
                     </ClButton>
                     <ClButton variant="ghost" fullWidth onClick={onClose}>Not now</ClButton>
@@ -781,7 +781,7 @@ const CheckoutForm: React.FC<{
                 (see checkoutPaymentMethods.ts); point wallet users at the website. */}
             <p className="ckt-wallet-hint" data-testid="wallet-hint">
                 Prefer Apple Pay or Google Pay?{' '}
-                <button type="button" className="ckt-wallet-link" onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL); }}>
+                <button type="button" className="ckt-wallet-link" onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL, { source: 'app' }); }}>
                     Subscribe at cipherline.chat
                 </button>
             </p>

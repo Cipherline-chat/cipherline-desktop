@@ -381,6 +381,10 @@ describe('playback-path coverage scan', () => {
         'components/FileViewer.tsx': /ref=\{outputSinkRef\}/,
         'components/PinnedMessagesPanel.tsx': /ref=\{outputSinkRef\}/,
         'components/SharedContentModal.tsx': /ref=\{outputSinkRef\}/,
+        // Inline link video (docs/plans/embeds.md): a callback ref that also keeps the element for pause().
+        'components/embeds/VideoLinkEmbed.tsx': /videoRef\.current = el; outputSinkRef\(el\)[\s\S]*ref=\{attachVideo\}/,
+        // A post's video (X, Reddit; link embeds phase 4): the same callback-ref pattern.
+        'components/embeds/PostEmbedCard.tsx': /videoRef\.current = el; outputSinkRef\(el\)[\s\S]*ref=\{attach\}/,
     };
     // Not playback: never connected to an audible destination, or muted by design.
     const EXEMPT: Record<string, string> = {

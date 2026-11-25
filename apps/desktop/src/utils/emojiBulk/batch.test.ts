@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     deriveEmojiName, uniqueEmojiName, buildRows, validateRows, overSlotIds, retryAfterMs, runBatch,
-    serverCreateGapMs, type BulkRow, type RowStatus,
+    serverCreateGapMs, SERVER_CREATE_PER_MIN, type BulkRow, type RowStatus,
 } from './batch';
 import { EMOJI_NAME_RE } from '../emojiNames';
 
@@ -112,9 +112,12 @@ describe('retryAfterMs', () => {
 });
 
 describe('serverCreateGapMs', () => {
-    it('paces only bigger batches, under 20/min', () => {
-        expect(serverCreateGapMs(10)).toBe(0);
-        expect(serverCreateGapMs(11) * 20).toBeGreaterThan(60_000);
+    it('paces only bigger batches, under the server limit (60/min)', () => {
+        expect(SERVER_CREATE_PER_MIN).toBe(60);
+        expect(serverCreateGapMs(30)).toBe(0);
+        expect(serverCreateGapMs(31) * SERVER_CREATE_PER_MIN).toBeGreaterThan(60_000);
+        // ... but not by much: 100 emojis finish in under 2 minutes.
+        expect(serverCreateGapMs(100) * 100).toBeLessThan(120_000);
     });
 });
 

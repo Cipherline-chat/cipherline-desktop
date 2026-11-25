@@ -12,6 +12,11 @@ import '../src/utils/clPhysics';
 import { loadWebFonts } from '../src/utils/webFonts';
 import { secureLocalStore } from '../src/utils/secureLocalStore';
 import { NIGHT_DIVE_EVENT, applyDepth, type NightDiveDetail } from '../src/utils/nightDive';
+import { useNightDiveTitleBarSync } from '../src/hooks/useNightDive';
+import { titleBarColoursFor } from '../electron/night-dive-chrome';
+import { BOOT_PALETTES } from '../electron/theme-boot';
+import { applyTheme } from '../src/theme/engine';
+import { DARK_THEME } from '../src/theme/themes';
 
 /**
  * Night dive harness: REAL HomePanel / ChatPane / FriendsPane / SettingsScreen /
@@ -31,9 +36,14 @@ loadWebFonts();
 const q = new URLSearchParams(location.search);
 const view = q.get('view') ?? 'home';
 const bare = q.has('bare');
+// The real app always has data-theme (theme/engine.ts); night-dive.css's
+// "every theme except plain Dark" block keys on it, so without it the shell
+// would paint the non-Dark (never-diving) title bar.
+applyTheme(DARK_THEME);
 applyDepth(document.documentElement, q.get('depth') === 'night');
 
 (window as any).__events = [] as NightDiveDetail[];
+(window as any).__nightDiveSent = [] as boolean[];
 window.addEventListener(NIGHT_DIVE_EVENT, (e) => (window as any).__events.push((e as CustomEvent).detail));
 (window as any).__dive = (active: boolean) => {
     applyDepth(document.documentElement, active);
@@ -65,6 +75,12 @@ function installElectronStub() {
         get(_t, prop: string) {
             if (excluded.has(prop)) return undefined;
             if (prop === 'platform') return 'win32';
+            // Night dive -> main (preload setNightDive): recorded, and run through
+            // main's REAL decision so a probe can compare it with the painted bar.
+            if (prop === 'setNightDive') return (active: boolean) => {
+                (window as any).__nightDiveSent.push(active);
+                (window as any).__captionColour = titleBarColoursFor(BOOT_PALETTES.dark, active).color;
+            };
             if (/^on[A-Z]/.test(prop)) return () => () => {};
             return (..._args: unknown[]) => Promise.resolve(values[prop]);
         },
@@ -144,17 +160,21 @@ const ListCard: React.FC<{ title: string; items: { name: string; sub?: string; a
     </div>
 );
 
-const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <div data-layout="drift" className="w-screen h-screen flex flex-col bg-cl-abyss text-white overflow-hidden font-sans relative">
-        <div className="drag-region h-[34px] w-full shrink-0 flex items-center px-3 bg-cl-abyss">
-            <span className="text-cl-faint" style={{ fontFamily: 'var(--cl-font-display)', fontSize: 13, fontWeight: 600 }}>cipherline</span>
+const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    // The same hook Dashboard mounts: tells (the stub of) main when the bar is dark.
+    useNightDiveTitleBarSync();
+    return (
+        <div data-layout="drift" className="w-screen h-screen flex flex-col bg-cl-abyss text-white overflow-hidden font-sans relative">
+            <div className="drag-region h-[34px] w-full shrink-0 flex items-center px-3 bg-cl-abyss">
+                <span className="text-cl-faint" style={{ fontFamily: 'var(--cl-font-display)', fontSize: 13, fontWeight: 600 }}>cipherline</span>
+            </div>
+            <div className="flex flex-1 overflow-hidden app-mainrow">
+                <Rail />
+                {children}
+            </div>
         </div>
-        <div className="flex flex-1 overflow-hidden app-mainrow">
-            <Rail />
-            {children}
-        </div>
-    </div>
-);
+    );
+};
 
 const Divider = () => <div className="app-div1" style={{ width: 10, flexShrink: 0 }}><div className="w-full h-full" /></div>;
 

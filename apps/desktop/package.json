@@ -2,7 +2,7 @@
   "name": "desktop",
   "desktopName": "cipherline.desktop",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "Apache-2.0",
   "homepage": "https://cipherline.chat",
   "main": "dist-electron/entry.js",
@@ -47,6 +47,14 @@
       {
         "from": "build-assets/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "build/Release",
+        "to": ".",
+        "filter": [
+          "near-helper",
+          "near-helper.exe"
+        ]
       }
     ],
     "protocols": [
@@ -104,7 +112,8 @@
         "NSMicrophoneUsageDescription": "Cipherline needs microphone access for voice and video calls.",
         "NSCameraUsageDescription": "Cipherline needs camera access for video calls.",
         "NSAudioCaptureUsageDescription": "Cipherline needs system audio access to include sound when you share your screen.",
-        "NSAppleEventsUsageDescription": "Cipherline reads the song playing in Spotify or Music for your “Listening to” status (Settings, Connections)."
+        "NSAppleEventsUsageDescription": "Cipherline reads the song playing in Spotify or Music for your “Listening to” status (Settings, Connections).",
+        "NSLocalNetworkUsageDescription": "Cipherline uses your local network to move your message history directly between your own devices."
       }
     },
     "linux": {
@@ -204,6 +213,7 @@
     "livekit-client": "^2.17.2",
     "lucide-react": "^0.577.0",
     "mammoth": "^1.12.0",
+    "psl": "^1.15.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

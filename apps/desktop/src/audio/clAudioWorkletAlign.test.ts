@@ -2,13 +2,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { CL_AUDIO_WORKLET_SOURCE } from '../utils/clAudioWorkletSource';
 import { clAudioWasmBytes } from '../utils/clAudioWasm';
 import { CL_AUDIO_PRIME_SAMPLES, CL_AUDIO_ENGINE_DELAY_SAMPLES, CL_NATIVE_JITTER_FRAMES, CL_STRONG_ENGINE_DELAY_SAMPLES, clNativeStrongLatencySamples } from '../utils/clAudioLatency';
+import { Rnnoise } from '@shiguredo/rnnoise-wasm';
 import { loadModuleWorklet, waitFor, measureLag, SR, Q, type Proc } from './audit/chainHarness';
 
 /**
  * TIME ALIGNMENT of Strong's hand-off (clAudioWorklet.js, "TIME ALIGNMENT"), proven with the REAL worklet, the REAL wasm as the
- * in-page Light engine, and a SECOND real instance of the same wasm as Strong's worker engine (3072 samples of delay against
- * Light's 480). When a Strong frame is late the worklet plays the Light frame of the same slot; if the two engines delayed audio
- * differently that would repeat or skip 54 ms. Each test measures, by cross-correlation against the input, WHICH moment of the
+ * in-page Light engine, and a SECOND real instance of the same wasm as Strong's worker engine, fed by the real
+ * `@shiguredo/rnnoise-wasm` exactly as workers/clAudioStrong.worker.ts does (since 2026-11-24): 960 samples of delay against
+ * Light's 480 (FastEnhancer's was 3072). When a Strong frame is late the worklet plays the
+ * Light frame of the same slot; if the two engines delayed audio differently that would repeat or skip audio. Each test measures, by cross-correlation against the input, WHICH moment of the
  * input a stretch of output holds, for stretches played from Strong and stretches played from Light.
  */
 vi.setConfig({ testTimeout: 120_000 });
@@ -55,18 +57,25 @@ interface StrongExports {
     cla_new(rate: number): number; cla_in_ptr(c: number): number; cla_out_ptr(c: number): number; cla_push(c: number, n: number): number;
     cla_set_settings(c: number, noise: number, ag: number, mg: number, orig: number, idle: number): number;
     cla_delay_samples(c: number): number; cla_test_assume_speech(on: number): void;
+    cla_set_external_strong(c: number, on: number): number; cla_ext_ptr(c: number): number; cla_set_ext(c: number, vad: number): number;
 }
-/** What the worker runs: a second instance of the engine, asked for Strong, fed 480-sample frames in order. */
+/** What the worker runs: RNNoise (rnnoise-wasm) on each frame, handed to a second instance of the engine asked for Strong, fed 480-sample frames in order. */
 async function strongHost() {
-    const { instance } = await WebAssembly.instantiate(clAudioWasmBytes(), {});
+    const [{ instance }, rn] = await Promise.all([WebAssembly.instantiate(clAudioWasmBytes(), {}), Rnnoise.load()]);
     const e = instance.exports as unknown as StrongExports;
     e.cla_test_assume_speech(1);
     const c = e.cla_new(48000);
+    expect(e.cla_set_external_strong(c, 1)).toBe(1);
     expect(e.cla_set_settings(c, 2, 1, 0, 0, 1)).toBe(1);
-    const ip = e.cla_in_ptr(c), op = e.cla_out_ptr(c);
+    const ip = e.cla_in_ptr(c), op = e.cla_out_ptr(c), xp = e.cla_ext_ptr(c);
+    const ds = rn.createDenoiseState(), scratch = new Float32Array(FRAME);
     return {
         delay: e.cla_delay_samples(c),
         process(pcm: Float32Array): Float32Array {
+            for (let i = 0; i < FRAME; i++) scratch[i] = pcm[i] * 32768;
+            const vad = ds.processFrame(scratch);
+            const x = new Float32Array(e.memory.buffer, xp, FRAME); for (let i = 0; i < FRAME; i++) x[i] = scratch[i] / 32768;
+            expect(e.cla_set_ext(c, vad)).toBe(1);
             new Float32Array(e.memory.buffer, ip, FRAME).set(pcm);
             const n = e.cla_push(c, FRAME);
             if (n !== FRAME) throw new Error('engine answered ' + n);
@@ -185,7 +194,7 @@ describe('Strong hand-off is time-aligned with the Light safety net (real workle
         expect(mixed.st.underrun).toBeGreaterThan(300);
     });
 
-    it('control: WITHOUT the alignment the same mix is 2592 samples (54 ms) apart, so the test above can see a misalignment', async () => {
+    it('control: WITHOUT the alignment the same mix is 480 samples (10 ms) apart (the extra frame rnnoise-wasm waits), so the test above can see a misalignment', async () => {
         const x = speech(9);
         const BF = 150;
         const host = await strongHost();
@@ -195,7 +204,7 @@ describe('Strong hand-off is time-aligned with the Light safety net (real workle
         // measured against a window wide enough to hold both
         const wide = (k: number) => { const a = blockStart(k, BF) + 3500 - (NATP + 3072 + 45); return measureLag(x, y, a, 40000, 6000); };
         const strongLag = wide(1), lightLag = wide(2);
-        expect(Math.abs(strongLag - lightLag - 2592)).toBeLessThanOrEqual(8);
+        expect(Math.abs(strongLag - lightLag - (CL_STRONG_ENGINE_DELAY_SAMPLES - CL_AUDIO_ENGINE_DELAY_SAMPLES.light))).toBeLessThanOrEqual(8);
     });
 
     it('a late frame is replaced by exactly the audio it would have been: a delayed echo host plays bit-exactly, Light fills the rest', async () => {
@@ -235,7 +244,7 @@ describe('Strong hand-off is time-aligned with the Light safety net (real workle
 
     it('a worker that reports a different delay than the one the worklet aligned to is refused (the alignment would be wrong)', async () => {
         const { p, port } = await setup();
-        port.onmessage!({ data: { t: 'ready', delaySamples: 480, effectiveNoise: 2 } });
+        port.onmessage!({ data: { t: 'ready', delaySamples: 3072, effectiveNoise: 2 } }); // e.g. a worker still on FastEnhancer (3072) against a page that expects rnnoise-wasm (960)
         const failed = ofType(p, 'nativeFailed');
         expect(failed).toHaveLength(1);
         expect(failed[0]).toMatchObject({ reason: 'delay-mismatch' });

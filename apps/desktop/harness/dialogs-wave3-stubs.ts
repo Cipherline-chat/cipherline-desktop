@@ -3,8 +3,6 @@
 // One module, several vite aliases — each alias points at a named export bundle below
 // through a tiny re-export file so the real components import their usual names.
 
-const q = new URLSearchParams(location.search);
-
 // ── contexts/AuthContext ──
 export const useAuth = () => ({
     token: 'harness-token', userId: 'me', deviceId: 'dev-1',
@@ -18,19 +16,6 @@ export const useToast = () => ({ push: (t: unknown) => { ((window as any).__toas
 
 // ── contexts/SubscriptionContext ──
 export const useSubscription = () => ({ openInAppCheckout: () => { (window as any).__checkout = true; } });
-
-// ── utils/historyRequestProof ──
-export const HISTORY_REFUSED_LEGACY_REQUESTER = 'requester_cannot_receive_wrapped_key';
-export const verifyHistoryRequestAdvertisement = () => (q.get('verdict') === 'refused' ? { ok: false, reason: 'missing' } : { ok: true }) as any;
-
-// ── utils/historyTransferKey ──
-export async function fetchOwnDeviceKeyBundle() {
-    const v = q.get('verdict');
-    if (v === 'checking') return new Promise<never>(() => {});
-    if (v === 'error') throw new Error('network');
-    return { device_id: 'req-1', identity_key_pub_b64: 'AAAA' } as any;
-}
-export async function wrapHistoryTransferKey() { return {} as any; }
 
 // ── utils/secureLocalStore: in-memory, always hydrated (the real one needs the Electron keystore) ──
 const mem = new Map<string, string>();

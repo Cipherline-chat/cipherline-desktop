@@ -25,6 +25,7 @@ import { computeDnd } from './useDndState';
 import { playSound } from '../utils/notificationSounds';
 import { resolveNotification, gateOnOtherDeviceAttention, type NotifDecision } from '../utils/notificationDecision';
 import { isMobileAttentive } from '../utils/remoteAttention';
+import { isSessionSilent } from '../utils/sessionLock';
 import { toPlainText } from '../utils/messagePreviewText';
 import {
     selectNotificationAvatarId, getNotificationIconDataUrl, createToastSequencer,
@@ -156,6 +157,7 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
         const decision = gateOnOtherDeviceAttention(resolved, {
             category: payload.category,
             mobileAttentive: isMobileAttentive(),
+            sessionSilent: isSessionSilent(),
         });
 
         // 3. Sound — plays even when the window is focused, as long as it isn't

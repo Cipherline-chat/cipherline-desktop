@@ -13,6 +13,8 @@ import type { StoreHealthStatus, StoreLoadFailureRecord } from './secureLocalSto
 export interface StoreHealth {
     status: StoreHealthStatus;
     lastFailure: StoreLoadFailureRecord | null;
+    /** Records the load skipped because IndexedDB would not hand them back. A count, never a key. */
+    unreadableRecords?: number;
 }
 
 const NAME_RE = /^[A-Za-z]{1,40}$/;
@@ -28,10 +30,32 @@ function safeFailure(f: StoreLoadFailureRecord | null): StoreLoadFailureRecord |
     };
 }
 
-/** Detail for a `store_load_failed` beta event, or null when the load never failed. */
-export function storeLoadFailedEvent(health: StoreHealth): { stage: string; name: string; attempts: number; recovered: boolean } | null {
+/** A small non-negative count, or 0. */
+function safeCount(n: unknown): number {
+    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.min(99_999, Math.round(n)) : 0;
+}
+
+/**
+ * Detail for a `store_load_failed` beta event, or null when the load never
+ * failed. `unreadable` is present only when the load skipped records (a
+ * partial load: stage `read`, recovered, see secureLocalStore UNREADABLE RECORDS).
+ */
+export function storeLoadFailedEvent(health: StoreHealth): { stage: string; name: string; attempts: number; recovered: boolean; unreadable?: number } | null {
     const f = safeFailure(health.lastFailure);
-    return f ? { stage: f.stage, name: f.name, attempts: f.attempts, recovered: f.recovered } : null;
+    if (!f) return null;
+    const unreadable = safeCount(health.unreadableRecords);
+    return { stage: f.stage, name: f.name, attempts: f.attempts, recovered: f.recovered, ...(unreadable ? { unreadable } : {}) };
+}
+
+/**
+ * The short code StorageReadFailedScreen shows under its text, e.g.
+ * `read/NotReadableError`: the stage and the error NAME, the same labels as
+ * the report (never a message, a path or an id), so a user can screenshot it
+ * instead of sending a report. Null when there is nothing to show.
+ */
+export function storeFailureCode(health: StoreHealth): string | null {
+    const f = safeFailure(health.lastFailure);
+    return f ? `${f.stage}/${f.name}` : null;
 }
 
 export type StorageReportStatus = StoreHealthStatus | 'corrupted';
@@ -50,5 +74,7 @@ export function storeHealthSettings(health: StoreHealth, corrupted: boolean): Re
         out.storage_load_attempts = f.attempts;
         out.storage_load_recovered = f.recovered;
     }
+    const unreadable = safeCount(health.unreadableRecords);
+    if (unreadable) out.storage_unreadable_records = unreadable;
     return out;
 }

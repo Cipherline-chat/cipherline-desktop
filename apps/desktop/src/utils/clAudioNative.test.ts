@@ -44,14 +44,14 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
         vi.stubGlobal('Worker', undefined);
         const m = await load();
         expect(await m.nativeEngineStatus()).toEqual({ available: false, reason: 'no-bridge' });
-        expect(await m.openNativePort(50)).toBeNull();
-        await expect(m.closeNativeEngine()).resolves.toBeUndefined();
+        expect(await m.openNativeEngine(50)).toBeNull();
+        expect(FakeWorker.made).toBe(0);
     });
 
     it('open: starts the worker, hands it the engine bytes (transferred), waits for ready, gives it one end of a channel and returns the other', async () => {
         stubPlatform();
         const m = await load();
-        const p = m.openNativePort(1000);
+        const p = m.openNativeEngine(1000);
         await tick();
         const w = FakeWorker.last!;
         const init = w.sent[0].data as { type: string; wasm: ArrayBuffer };
@@ -61,17 +61,60 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
         expect(w.sent[0].transfer).toEqual([init.wasm]);
         expect(Object.keys(init).sort()).toEqual(['type', 'wasm']);   // no model URL, no engine URL: nothing to fetch
         w.onmessage!({ data: { type: 'ready', delaySamples: CL_STRONG_ENGINE_DELAY_SAMPLES } });
-        expect(await p).toEqual({ id: 'worklet-end' });
+        expect((await p)!.port).toEqual({ id: 'worklet-end' });
         expect(w.sent[1]).toEqual({ data: { type: 'open' }, transfer: [{ id: 'worker-end' }] });
-        // a second open in the same call reuses the running worker
-        expect(await m.openNativePort(1000)).toEqual({ id: 'worklet-end' });
         expect(FakeWorker.made).toBe(1);
+    });
+
+    // Report 348d6f9b (2026-11-25): the Settings page's mic preview builds its own voice processor with the call's settings. It used to be
+    // handed the call's (one, shared) worker, whose open closes the previous port: the call's Strong went silent (paused, Light), the
+    // preview's close terminated the worker under the call, and the next settings change on the call timed out into "Switched to Light".
+    it('two owners (a call and the Settings preview) get two workers: one owner\'s open, close or failure never touches the other', async () => {
+        stubPlatform();
+        const m = await load();
+        const pCall = m.openNativeEngine(1000);
+        await tick();
+        const wCall = FakeWorker.last!;
+        wCall.onmessage!({ data: { type: 'ready' } });
+        const call = (await pCall)!;
+        const callExit = vi.fn();
+        call.onExit(callExit);
+
+        const pPreview = m.openNativeEngine(1000);
+        await tick();
+        const wPreview = FakeWorker.last!;
+        expect(wPreview).not.toBe(wCall);
+        expect(FakeWorker.made).toBe(2);
+        wPreview.onmessage!({ data: { type: 'ready' } });
+        const preview = (await pPreview)!;
+        // the preview's open went to ITS worker; the call's worker was asked to open exactly once
+        expect(wCall.sent.filter(x => (x.data as { type: string }).type === 'open')).toHaveLength(1);
+        expect(wPreview.sent.filter(x => (x.data as { type: string }).type === 'open')).toHaveLength(1);
+
+        // closing the preview stops only the preview's worker, and quietly
+        preview.close();
+        expect(wPreview.terminated).toBe(true);
+        expect(wCall.terminated).toBe(false);
+        expect(callExit).not.toHaveBeenCalled();
+
+        // a preview worker dying is not the call's business either
+        const p3 = m.openNativeEngine(1000);
+        await tick();
+        const w3 = FakeWorker.last!;
+        w3.onmessage!({ data: { type: 'ready' } });
+        const third = (await p3)!;
+        const thirdExit = vi.fn();
+        third.onExit(thirdExit);
+        w3.onmessage!({ data: { type: 'failed', error: 'engine stopped' } });
+        expect(thirdExit).toHaveBeenCalledWith('engine-failed');
+        expect(callExit).not.toHaveBeenCalled();
+        expect(wCall.terminated).toBe(false);
     });
 
     it('open is null, and the worker is stopped, when it reports failure or does not get ready in time', async () => {
         stubPlatform();
         let m = await load();
-        let p = m.openNativePort(1000);
+        let p = m.openNativeEngine(1000);
         await tick();
         FakeWorker.last!.onmessage!({ data: { type: 'failed', error: 'engine failed to build' } });
         expect(await p).toBeNull();
@@ -79,7 +122,7 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
 
         vi.useFakeTimers();
         m = await load();
-        p = m.openNativePort(1000);
+        p = m.openNativeEngine(1000);
         await vi.advanceTimersByTimeAsync(1001);
         expect(await p).toBeNull();
         expect(FakeWorker.last!.terminated).toBe(true);
@@ -88,26 +131,29 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
     it('a worker that dies mid-call tells the listeners once; close stops it quietly', async () => {
         stubPlatform();
         const m = await load();
-        const p = m.openNativePort(1000);
+        const p = m.openNativeEngine(1000);
         await tick();
         const w = FakeWorker.last!;
         w.onmessage!({ data: { type: 'ready' } });
-        await p;
+        const e = (await p)!;
         const cb = vi.fn();
-        const off = m.onNativeEngineExit(cb);
+        const off = e.onExit(cb);
         w.onmessage!({ data: { type: 'failed', error: 'engine stopped' } });
+        w.onmessage!({ data: { type: 'failed', error: 'engine stopped' } });
+        expect(cb).toHaveBeenCalledTimes(1);
         expect(cb).toHaveBeenCalledWith('engine-failed');
         expect(w.terminated).toBe(true);
         off();
 
-        const p2 = m.openNativePort(1000);
+        const p2 = m.openNativeEngine(1000);
         await tick();
         const w2 = FakeWorker.last!;
         w2.onmessage!({ data: { type: 'ready' } });
-        await p2;
+        const e2 = (await p2)!;
         const cb2 = vi.fn();
-        m.onNativeEngineExit(cb2);
-        await m.closeNativeEngine();
+        e2.onExit(cb2);
+        e2.close();
+        e2.close();
         expect(w2.terminated).toBe(true);
         expect(cb2).not.toHaveBeenCalled();
     });
@@ -120,11 +166,11 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
         expect(wantsNativeStrong({ audioEngine: 'legacy', noiseSuppression: true, noiseSuppressionMode: 'strong' })).toBe(false);
     });
 
-    it('Strong\'s delay is the buffering every mode pays, the reserved hand-off frames, the models\' own 3072 samples and the unreported look-ahead', () => {
+    it('Strong\'s delay is the buffering every mode pays, the reserved hand-off frames, the model\'s own 960 samples and the unreported look-ahead', () => {
         const samples = CL_AUDIO_PRIME_SAMPLES + 480 * CL_NATIVE_JITTER_FRAMES + CL_STRONG_ENGINE_DELAY_SAMPLES + CL_AUDIO_UNREPORTED_SAMPLES;
         expect(clNativeStrongLatencySamples()).toBe(samples);
         expect(clNativeStrongLatencyMs()).toBeCloseTo(samples / 48, 6);
-        expect(Math.round(clNativeStrongLatencyMs())).toBe(104);
+        expect(Math.round(clNativeStrongLatencyMs())).toBe(60);
     });
 
     it('a worker that cannot get the engine bytes ends the open with null, and is stopped', async () => {
@@ -132,7 +178,7 @@ describe('page side of Strong (worker): every failure is "keep the engine\'s own
         vi.resetModules();
         vi.doMock('./clAudioSources', () => ({ loadClAudioWasmBytes: async () => { throw new Error('no engine'); } }));
         const m = await import('./clAudioNative');
-        expect(await m.openNativePort(1000)).toBeNull();
+        expect(await m.openNativeEngine(1000)).toBeNull();
         expect(FakeWorker.last!.terminated).toBe(true);
         vi.doUnmock('./clAudioSources');
     });

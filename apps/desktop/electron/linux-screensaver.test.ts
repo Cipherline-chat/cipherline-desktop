@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { watchLinuxScreenLock, SCREENSAVER_WATCH_SCRIPT, type WatchSpawn } from './linux-screensaver';
+import { watchLinuxScreenLock, SCREENSAVER_WATCH_SCRIPT, logindSessionPath, parseScreenLockLine, type WatchSpawn } from './linux-screensaver';
 
 /**
  * The Linux screen-lock watcher (`gdbus monitor` on org.freedesktop.ScreenSaver).
@@ -49,6 +49,50 @@ describe('watchLinuxScreenLock (unit, injected spawn)', () => {
         f.stdout.write('/org/freedesktop/ScreenSaver: org.freedesktop.ScreenSaver.ActiveChanged (tr');
         f.stdout.write('ue,)\n/org/freedesktop/ScreenSaver: org.freedesktop.ScreenSaver.ActiveChanged (false,)\nnoise\n');
         expect(ev).toEqual(['lock', 'unlock']);
+    });
+
+    it('GNOME: org.gnome.ScreenSaver.ActiveChanged is a lock edge too, and the wrapper monitors that name', () => {
+        expect(SCREENSAVER_WATCH_SCRIPT).toContain('gdbus monitor --session --dest org.gnome.ScreenSaver');
+        const f = fakeSpawn();
+        const ev: string[] = [];
+        watchLinuxScreenLock(() => ev.push('lock'), () => ev.push('unlock'), { platform: 'linux', spawn: f.spawnFn });
+        f.stdout.write('/org/gnome/ScreenSaver: org.gnome.ScreenSaver.ActiveChanged (true,)\n/org/gnome/ScreenSaver: org.gnome.ScreenSaver.ActiveChanged (false,)\n');
+        expect(ev).toEqual(['lock', 'unlock']);
+    });
+
+    it("logind LockedHint on OUR session is a lock edge; another session's is ignored (negative control)", () => {
+        expect(SCREENSAVER_WATCH_SCRIPT).toContain('gdbus monitor --system --dest org.freedesktop.login1');
+        const f = fakeSpawn();
+        const ev: string[] = [];
+        watchLinuxScreenLock(() => ev.push('lock'), () => ev.push('unlock'), { platform: 'linux', spawn: f.spawnFn, sessionId: '2' });
+        const line = (path: string, v: string) => `${path}: org.freedesktop.DBus.Properties.PropertiesChanged ('org.freedesktop.login1.Session', {'LockedHint': <${v}>}, @as [])\n`;
+        f.stdout.write(line('/org/freedesktop/login1/session/_36', 'true'));   // someone else's session
+        expect(ev).toEqual([]);
+        f.stdout.write(line('/org/freedesktop/login1/session/_32', 'true'));
+        f.stdout.write(line('/org/freedesktop/login1/session/_32', 'false'));
+        expect(ev).toEqual(['lock', 'unlock']);
+    });
+
+    it('two sources reporting the same edge forward it once; an unlock with no lock is dropped', () => {
+        const f = fakeSpawn();
+        const ev: string[] = [];
+        watchLinuxScreenLock(() => ev.push('lock'), () => ev.push('unlock'), { platform: 'linux', spawn: f.spawnFn, sessionId: '2' });
+        f.stdout.write('/x: org.freedesktop.ScreenSaver.ActiveChanged (false,)\n');
+        f.stdout.write('/x: org.freedesktop.ScreenSaver.ActiveChanged (true,)\n');
+        f.stdout.write("/org/freedesktop/login1/session/_32: org.freedesktop.DBus.Properties.PropertiesChanged ('org.freedesktop.login1.Session', {'LockedHint': <true>}, @as [])\n");
+        f.stdout.write('/x: org.freedesktop.ScreenSaver.ActiveChanged (false,)\n');
+        expect(ev).toEqual(['lock', 'unlock']);
+    });
+
+    it('logind session paths follow sd-bus escaping (matches busctl on a real box: id 2 -> _32, 1245 -> _31245)', () => {
+        expect(logindSessionPath('2')).toBe('/org/freedesktop/login1/session/_32');
+        expect(logindSessionPath('1245')).toBe('/org/freedesktop/login1/session/_31245');
+        expect(logindSessionPath('c1')).toBe('/org/freedesktop/login1/session/c1');
+        expect(logindSessionPath('')).toBeNull();
+        expect(logindSessionPath(undefined)).toBeNull();
+        expect(logindSessionPath('../x')).toBeNull();
+        // No known own session (XDG_SESSION_ID unset): logind lines are never trusted.
+        expect(parseScreenLockLine("/org/freedesktop/login1/session/_32: PropertiesChanged ('x', {'LockedHint': <true>}, @as [])", null)).toBeNull();
     });
 
     it('cleanup closes the pipe (the wrapper exits on EOF) and signals it, once', () => {

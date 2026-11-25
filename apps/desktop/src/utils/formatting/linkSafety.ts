@@ -11,8 +11,9 @@
  * punycode and no longer matches the Latin destination. A destination that is
  * itself an internationalised (punycode) host is flagged too.
  *
- * FormattedText always confirms before opening a masked link and shows the
- * real destination; a `deceptive` result turns that confirm into a warning.
+ * `hostNamedBy` also feeds the shared leaving-Cipherline dialog
+ * (utils/externalLinks/describeLink.ts), which spells out a label/destination
+ * mismatch and always asks before opening such a link.
  */
 
 /** One whitespace-separated word of a label that names a host: `paypal.com`, `https://paypal.com/x`. */

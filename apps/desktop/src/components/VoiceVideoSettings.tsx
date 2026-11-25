@@ -750,7 +750,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
         if (m === 'auto') voice.setEchoCancellationAuto();
         else voice.setEchoCancellation(m === 'on');
     };
-    // Strong's worker (FastEnhancer, utils/clAudioNative.ts): null while the probe is in flight
+    // Strong's worker (rnnoise-wasm, utils/clAudioNative.ts): null while the probe is in flight
     const [nativeStrong, setNativeStrong] = useState<NativeStatus | null>(null);
     useEffect(() => {
         let live = true;
@@ -905,7 +905,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 <Row
                     label="Input volume"
                     labels={['Microphone level']}
-                    note={settings.volumeNormalization ? 'Not used while Auto gain control is on.' : undefined}
+                    note={settings.volumeNormalization ? 'With Auto gain control on, raise this only if your mic is still too quiet.' : undefined}
                     info="How loud your mic is sent. Remembered per microphone."
                 >
                     <VolumeSlider value={settings.micVolume} onChange={voice.setMicVolume} resetValue={DEFAULT_VOICE_SETTINGS.micVolume} max={MIC_VOLUME_MAX} />

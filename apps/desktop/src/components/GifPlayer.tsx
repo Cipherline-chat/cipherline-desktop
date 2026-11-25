@@ -18,12 +18,20 @@
  * When paused the canvas is shown and the `<img>` is hidden (display:none),
  * which also stops Chromium from ticking the GIF's animation loop — saving CPU.
  * When playing the img is shown and the canvas is hidden.
+ *
+ * `videoSrc` (a clmedia:// stream from the main process): the same GIF rule
+ * for a GIF published as a muted mp4 loop (Tenor, Giphy, Imgur .gifv links,
+ * embeds/GifLoopEmbed). A paused <video> already holds its frame, so no canvas.
+ *
+ * While the window is unfocused in the "Always" mode the GIF freezes and a
+ * small "GIF" tag (aria-hidden) sits bottom-left, so a still frame does not
+ * read as a photo (round 3, owner 2026-11-23). Every GifPlayer shows it.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Play, Pause } from 'lucide-react';
-import { useWindowFocus } from '../hooks/useWindowFocus';
-import { useImageMode, imagePlays } from '../utils/a11y/motionPrefs';
-import { safeImageSrc } from '../utils/safeMediaUrl';
+import { useGifPlayback } from '../hooks/useGifPlayback';
+import { safeClmediaUrl } from '../utils/safeMediaUrl';
+import { safeBlobUrl, safeImageSrc } from '../utils/safeMediaUrl';
 
 export interface GifPlayerProps {
     src: string;
@@ -44,44 +52,46 @@ export interface GifPlayerProps {
     referrerPolicy?: React.HTMLAttributeReferrerPolicy;
     /** Extra style for the wrapper (e.g. fill a grid cell). */
     wrapperStyle?: React.CSSProperties;
+    /** A GIF published as a muted video loop: a clmedia:// URL from main. Replaces `src`. */
+    videoSrc?: string;
+    /** The loop's natural size once known (videoSrc only). */
+    onVideoSize?: (width: number, height: number) => void;
 }
 
 
 const BADGE_ICON: React.CSSProperties = { color: '#fff', fill: '#fff' };
 
 export const GifPlayer: React.FC<GifPlayerProps> = ({
-    src, alt, imgStyle, draggable = false, onClick, onLoad, onLoadImg, onError, referrerPolicy, wrapperStyle,
+    src, alt, imgStyle, draggable = false, onClick, onLoad, onLoadImg, onError, referrerPolicy, wrapperStyle, videoSrc, onVideoSize,
 }) => {
-    // Settings → Accessibility → Animated images (Always / On hover / Never).
-    // The legacy "Automatically play GIFs" toggle and reduced motion both fold
-    // into this mode (utils/a11y/motionPrefs.ts effectiveImageMode).
-    const mode = useImageMode('gif');
-    const windowFocused = useWindowFocus();
-    const [isHovered, setIsHovered] = useState(false);
-    const [badgeFocused, setBadgeFocused] = useState(false);
-    /** Click / Enter on the play badge: plays (or pauses) this one GIF. */
-    const [manualPlay, setManualPlay] = useState(false);
     const [imgLoaded, setImgLoaded] = useState(false);
+    // Settings → Accessibility → Animated images (Always / On hover / Never),
+    // window focus, hover and the per-GIF play badge: hooks/useGifPlayback.ts,
+    // shared with the GIF-like video loops (embeds/GifLoopEmbed).
+    const { shouldPlay, showPlayIcon, showFrozenTag, manualPlay, toggleManualPlay, hoverProps, badgeFocusProps } = useGifPlayback(imgLoaded);
 
     // Only a validated image URL (blob:, data:image/*, KLIPY / Cipherline media
     // https) is ever given to <img>. A rejected, non-empty src is reported the
     // same way a failed load is, so callers show their existing fallback.
-    const safeSrc = safeImageSrc(src);
+    const safeSrc = videoSrc === undefined ? safeImageSrc(src) : undefined;
+    // A loop is a clmedia:// stream from main, or (2026-11-24) the sender's decrypted copy of it: a blob: minted here.
+    const safeVideo = videoSrc === undefined ? undefined : (safeClmediaUrl(videoSrc) ?? safeBlobUrl(videoSrc));
     useEffect(() => {
-        if (src && !safeSrc) onError?.();
+        if (videoSrc !== undefined ? !safeVideo : (src && !safeSrc)) onError?.();
         // eslint-disable-next-line react-hooks/exhaustive-deps -- fire per rejected src, not per render of an inline onError
-    }, [src, safeSrc]);
+    }, [src, safeSrc, videoSrc, safeVideo]);
+
+    // Video loop: the GIF rule plays / pauses it (a paused video keeps its frame).
+    const videoRef = useRef<HTMLVideoElement>(null);
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v || !safeVideo) return;
+        if (shouldPlay) void v.play().catch(() => { /* not ready yet; autoPlay / the next change retries */ });
+        else v.pause();
+    }, [shouldPlay, safeVideo, imgLoaded]);
 
     const imgRef    = useRef<HTMLImageElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-
-    /** shouldPlay = true → show <img> (animates); false → show <canvas> (frozen). */
-    const shouldPlay = windowFocused && imagePlays(mode, isHovered || badgeFocused, manualPlay);
-
-    // Play icon: only shown when the user has opted out of autoPlay and the
-    // cursor is not over the GIF.  Window-unfocus pauses the GIF silently —
-    // no icon needed there since it resumes automatically on refocus.
-    const showPlayIcon = imgLoaded && mode !== 'always' && !(mode === 'hover' && isHovered && !badgeFocused);
 
     // ── Frame capture ─────────────────────────────────────────────────────────
 
@@ -126,34 +136,51 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
         <div
             style={{ position: 'relative', display: 'inline-block', ...wrapperStyle }}
             onClick={onClick}
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
+            {...hoverProps}
         >
-            {/* Animated GIF — shown when playing */}
-            <img
-                ref={imgRef}
-                src={safeSrc}
-                alt={alt ?? ''}
-                draggable={draggable}
-                decoding="async"
-                style={{ ...imgStyle, display: shouldPlay ? 'block' : 'none' }}
-                onLoad={handleImgLoad}
-                onError={onError}
-                referrerPolicy={referrerPolicy}
-            />
+            {videoSrc !== undefined ? (safeVideo ? (
+                <video
+                    ref={videoRef}
+                    src={safeVideo}
+                    muted
+                    loop
+                    playsInline
+                    autoPlay={shouldPlay}
+                    preload="auto"
+                    disablePictureInPicture
+                    aria-label={alt || 'GIF'}
+                    style={{ ...imgStyle, display: 'block' }}
+                    onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) onVideoSize?.(v.videoWidth, v.videoHeight); }}
+                    onLoadedData={() => { setImgLoaded(true); onLoad?.(); }}
+                    onError={onError}
+                />
+            ) : null) : (<>
+                {/* Animated GIF — shown when playing */}
+                <img
+                    ref={imgRef}
+                    src={safeSrc}
+                    alt={alt ?? ''}
+                    draggable={draggable}
+                    decoding="async"
+                    style={{ ...imgStyle, display: shouldPlay ? 'block' : 'none' }}
+                    onLoad={handleImgLoad}
+                    onError={onError}
+                    referrerPolicy={referrerPolicy}
+                />
 
-            {/* Frozen frame canvas — shown when paused */}
-            <canvas
-                ref={canvasRef}
-                style={{
-                    ...imgStyle,
-                    display: (!shouldPlay && imgLoaded) ? 'block' : 'none',
-                    borderRadius: imgStyle?.borderRadius,
-                }}
-            />
+                {/* Frozen frame canvas — shown when paused */}
+                <canvas
+                    ref={canvasRef}
+                    style={{
+                        ...imgStyle,
+                        display: (!shouldPlay && imgLoaded) ? 'block' : 'none',
+                        borderRadius: imgStyle?.borderRadius,
+                    }}
+                />
+            </>)}
 
             {/* Skeleton while the image hasn't loaded yet and we're paused */}
-            {!imgLoaded && !shouldPlay && (
+            {!imgLoaded && !shouldPlay && videoSrc === undefined && (
                 <div style={{
                     ...imgStyle,
                     display: 'flex',
@@ -168,37 +195,56 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
             {/* Top-right play badge. A real button so it can be reached and
                 operated from the keyboard: in "On hover" mode focusing it plays
                 the GIF, in "Never" mode Enter / click plays or pauses this one. */}
-            {showPlayIcon && (
-                <button
-                    type="button"
-                    className="gif-play-badge"
-                    aria-label={manualPlay ? 'Pause animation' : 'Play animation'}
-                    aria-pressed={manualPlay}
-                    onClick={e => { e.stopPropagation(); setManualPlay(m => !m); }}
-                    onFocus={() => setBadgeFocused(true)}
-                    onBlur={() => setBadgeFocused(false)}
+            {showPlayIcon && <GifPlayBadge playing={manualPlay} onToggle={toggleManualPlay} {...badgeFocusProps} />}
+
+            {/* Frozen only because the window lost focus ("Always" mode): say it is a GIF. */}
+            {showFrozenTag && (
+                <span
+                    className="gif-frozen-tag"
+                    aria-hidden="true"
                     style={{
-                        position: 'absolute',
-                        top: 6,
-                        right: 6,
-                        background: 'rgb(var(--cl-shade-rgb) / 0.6)',
-                        backdropFilter: 'blur(3px)',
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        borderRadius: '50%',
-                        width: 24,
-                        height: 24,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
+                        position: 'absolute', left: 7, bottom: 7, pointerEvents: 'none',
+                        font: '700 10.5px/1 var(--cl-font-mono)', letterSpacing: '.06em', color: BADGE_ICON.color,
+                        background: 'rgb(var(--cl-shade-rgb) / 0.62)', backdropFilter: 'blur(4px)',
+                        padding: '4px 6px', borderRadius: 6,
                     }}
-                >
-                    {manualPlay
-                        ? <Pause size={11} style={BADGE_ICON} />
-                        : <Play size={11} style={{ ...BADGE_ICON, marginLeft: 1 }} />}
-                </button>
+                >GIF</span>
             )}
         </div>
     );
 };
+
+/** Top-right play badge. A real button so it can be reached and operated from
+ *  the keyboard: in "On hover" mode focusing it plays the GIF, in "Never" mode
+ *  Enter / click plays or pauses this one. Shared with embeds/GifLoopEmbed. */
+export const GifPlayBadge: React.FC<{ playing: boolean; onToggle: () => void; onFocus: () => void; onBlur: () => void }> = ({ playing, onToggle, onFocus, onBlur }) => (
+    <button
+        type="button"
+        className="gif-play-badge"
+        aria-label={playing ? 'Pause animation' : 'Play animation'}
+        aria-pressed={playing}
+        onClick={e => { e.stopPropagation(); onToggle(); }}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            background: 'rgb(var(--cl-shade-rgb) / 0.6)',
+            backdropFilter: 'blur(3px)',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            borderRadius: '50%',
+            width: 24,
+            height: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+        }}
+    >
+        {playing
+            ? <Pause size={11} style={BADGE_ICON} />
+            : <Play size={11} style={{ ...BADGE_ICON, marginLeft: 1 }} />}
+    </button>
+);

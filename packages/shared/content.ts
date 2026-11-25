@@ -2,6 +2,7 @@ import type { StickerPayload } from './stickers';
 import type { KlipyGifMedia } from './klipy';
 import type { CardStyle } from './card-style';
 import type { ImportedFrom } from './import-history';
+import type { LinkEmbed } from './link-embeds';
 
 /**
  * Embedded mention tokens stored in message text (encrypted):
@@ -164,9 +165,17 @@ export function isMessageSize(v: unknown): v is MessageSize {
  * reader draws the sticker image large and ignores `text`, which holds the
  * fallback `[Sticker: <name>]` (stickerFallbackText) that a client predating
  * stickers shows instead. Full contract and validation: stickers.ts.
+ *
+ * `embeds` (additive, optional; 2026-11-23) carries link previews the SENDER's
+ * device built (title, description, colour, a re-encoded thumbnail as an
+ * encrypted attachment or a tiny inline image, a clip's video, a YouTube id).
+ * Readers draw them with no request to the linked site, and MUST validate
+ * them with `sanitizeLinkEmbeds` against the links they find in `text`
+ * themselves. An `edit` may carry them too (withEditEmbeds). An older client
+ * ignores the field and shows the bare link. Contract: link-embeds.ts.
  */
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle; imported_from?: ImportedFrom; sticker?: StickerPayload }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle; imported_from?: ImportedFrom; sticker?: StickerPayload; embeds?: LinkEmbed[] }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -221,8 +230,11 @@ export type ClientContent =
     /** An edit carries the complete new text AND its complete `channel_refs`
      *  (absent = the edited text names no channel). See ChannelRef. */
     /** `card_style` on an edit: absent = keep the original's style; `null` =
-     *  remove it; a valid style = replace it (card-style.ts withEditCardStyle). */
-    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle | null }
+     *  remove it; a valid style = replace it (card-style.ts withEditCardStyle).
+     *  `embeds_only: true`: the sender's app attaching a late link preview (same
+     *  text, only `embeds` added); readers leave it unmarked only when
+     *  link-embeds.ts isEmbedsOnlyEdit holds. */
+    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle | null; embeds?: LinkEmbed[] | null; embeds_only?: true }
     | { client_msg_id?: string; type: 'delete'; target_id: string }
     | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove'; personal_emojis?: PersonalEmojiPayload[] }
     /**

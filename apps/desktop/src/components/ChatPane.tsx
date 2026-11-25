@@ -18,7 +18,18 @@ import {
 import { MascotEmpty } from './MascotEmpty';
 import { MemoRow } from './MemoRow';
 import { saveReceivedFile } from './executableDownloadGuard';
-import { extractYouTubeId } from '../utils/youtubeLink';
+import { MessageEmbed } from './embeds/MessageEmbed';
+// Sender-built link previews (docs/plans/embeds.md phase 3).
+import { SenderEmbed } from './embeds/SenderEmbed';
+import { senderEmbedsFor } from './embeds/senderEmbeds';
+import { ComposerEmbedPreviews } from './embeds/ComposerEmbedPreviews';
+import { useComposerEmbeds, awaitFinalPreview, SEND_DEADLINE_MS } from '../hooks/useComposerEmbeds';
+import { runLateAttach, type LateAttachJob } from '../utils/linkEmbeds/lateAttach';
+import { linkPreviewsEnabled } from '../hooks/usePrivacySettings';
+import { finalizeEmbeds, takeAndFinalize } from '../utils/linkEmbeds/prepare';
+import { createThumbUploader } from '../utils/linkEmbeds/uploadThumb';
+import { sanitizeLinkEmbeds, type LinkEmbed } from '@cipherline/shared';
+import { EmbedPlaybackContext, PlaybackScope } from './embeds/embedPlayback';
 import { safeDisplayFilename } from '../utils/fileSafety';
 import { useShallowStable } from '../hooks/useShallowStable';
 import { useLiveCallbacks } from '../hooks/useLiveCallbacks';
@@ -48,8 +59,6 @@ import { sendFailureDetail } from '../utils/betaDiagnostics/sanitize';
 import { watchPendingSend, reportStaleEpochRefused } from '../utils/betaDiagnostics/detectors';
 import { acquireDecryptedMedia, peekDecryptedMedia, putDecryptedMediaBlob, releaseDecryptedMedia } from '../utils/decryptedMediaCache';
 import { backgroundCacheEncryptedAttachment } from '../utils/attachmentBackgroundCache';
-import { peekRemoteImage, acquireRemoteImage, releaseRemoteImage, loadRemoteImage, rememberRemoteImageSize, type RemoteImage } from '../utils/remoteImageCache';
-import { inlineImageBox } from '../utils/inlineImageBox';
 import { buildRowSaveIndex, retentionShared, rowSaveKey } from '../utils/rowSaveState';
 import { useKeepMountedForExit } from '../hooks/useKeepMountedForExit';
 import { useEscape } from '../hooks/useEscape';
@@ -73,7 +82,7 @@ import { PrioritySemaphore } from '../utils/avatarWarmQueue';
 import { trackActivity } from '../utils/freezeLog';
 import type { ClientContent, KlipyGifRef, MessageFont } from '@cipherline/shared';
 import { cardStyleOfContent, cardStyledFlag } from '@cipherline/shared';
-import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
+import { Permissions, parseKlipyGifRef } from '@cipherline/shared';
 import { requestMoment, mentionMoment, selfReact } from '../utils/moments';
 import { noteAchievementMessage } from '../utils/achievements/tracker';
 import { mentionTokenMatcher, type MentionTokenMatch, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole, mentionTokenLabel } from '../utils/mentionTokens';
@@ -159,17 +168,13 @@ import { addToMyStickersItem } from './stickers/stickerActions';
 import { buildStickerContent, stickerRefOf, stickerReportText, type StickerRef } from '../utils/stickers/wire';
 import { serverStickerAsPersonal } from '../utils/stickers/bytes';
 import { rememberRecentSticker } from '../utils/stickers/recent';
-import KlipyGifEmbed, { KlipyLinkEmbed } from './KlipyGifEmbed';
-import { useGifFavorite } from '../hooks/useGifFavorite';
+import KlipyGifEmbed from './KlipyGifEmbed';
 import { addKlipyFavorite, findKlipyFavorite, loadFavorites, removeFavorite } from '../utils/gifStorage';
-import { ImageLightbox } from './ImageLightbox';
-import { GifPlayer } from './GifPlayer';
 import PinnedMessagesPanel from './PinnedMessagesPanel';
 import SaveCoachMark from './SaveCoachMark';
 import { nudges } from '../utils/firstWeekNudgeStore';
-import { isImageUrl, isGifUrl, shouldAutoLoadImage } from '../utils/imageHosts';
-import { acquireAutoLoadSlot } from '../utils/autoLoadLimiter';
-import { usePrivacySettings } from '../hooks/usePrivacySettings';
+import { isBareMediaLinkMessage } from '../utils/formatting/bareMediaLink';
+import { setMediaCopyUploadLimit } from '../utils/linkEmbeds/mediaCopy';
 
 import { API_BASE, MAX_TEXT_MESSAGE_LENGTH } from '../constants';
 import { apiUrl } from '../utils/apiPath';
@@ -239,6 +244,7 @@ import { inviteCodeFromUrl, stripBareCardLinks } from '../utils/formatting/invit
 import { embedKindOf } from '../utils/formatting/embedKind';
 import { ThemeLinkEmbed } from './themeShare/ThemeLinkEmbed';
 import { fontField, fontStackFor, messageFontOf } from '../utils/formatting/messageFont';
+import { shortenLinkText, shortLinkAnchorProps, handleMessageCopy } from '../utils/formatting/linkDisplay';
 import { MESSAGE_BODY_CLASS, MESSAGE_BODY_LINE_HEIGHT, messageSizeOf, sizeField, sizeScaleFor } from '../utils/formatting/messageSize';
 import { messageBodyFontSize, msgTextEm, msgTextPx } from '../utils/a11y/messageTextSize';
 import { MessageCard } from './messageCard/MessageCard';
@@ -342,7 +348,7 @@ function formatStagedSize(bytes: number): string {
     return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[u]}`;
 }
 
-// extractYouTubeId lives in ../utils/youtubeLink (host-pinned, unit-tested).
+// YouTube / inline video embeds live in ./embeds (one playing per chat view).
 
 // isImageUrl / isGifUrl live in utils/imageHosts.ts (pure + unit-tested
 // there) — kept out of this file so the detection logic doesn't require
@@ -411,16 +417,20 @@ function renderTextWithLinks(text: string, onInviteClick?: (code: string) => voi
                 openUrl(url);
             }
         };
+        // Long bare links read shortened; the full URL stays the click target, the
+        // tooltip, the accessible name and what Ctrl+C copies (utils/formatting/linkDisplay.ts).
+        const display = shortenLinkText(url);
         parts.push(
             <span
                 key={`link-${match.index}`}
+                {...shortLinkAnchorProps(url, display)}
                 role="link"
                 tabIndex={0}
                 onClick={handleClick}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleClick(e); }}
                 className="text-cl-lume-text hover:underline underline-offset-2 break-all cursor-pointer"
             >
-                {url}
+                {display.text}
             </span>
         );
         lastIndex = match.index + url.length;
@@ -1282,276 +1292,6 @@ export { messageTextMentionsUser, messageTextMentionsRole };
 
 // extractMentionsFromText now lives in ../utils/mentionTokens, next to the parser it walks.
 
-/** YouTube embed or generic link card shown below a message. */
-/** Renders a direct image/GIF link inline, with a save button for GIFs.
- *
- *  Images are fetched through the Electron main process (net.fetch) so that
- *  CORS restrictions and hotlink-protection headers on third-party hosts never
- *  block either display or save.  The blob URL created on load is reused for
- *  saving, so there is only one network round-trip per image.
- */
-const ImageLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
-    const isGif = isGifUrl(url);
-    // Seeded from the session image cache (utils/remoteImageCache): an image
-    // already fetched this session shows on the first paint of a remount, at
-    // its remembered size — no refetch, no skeleton, no layout jump.
-    const [entry, setEntry]         = useState<RemoteImage | null>(() => peekRemoteImage(url));
-    const blobUrl = entry?.url ?? null;
-    const blobObj = entry?.blob ?? null;
-    const [errored, setErrored]     = useState(false);
-    const { saved, busy: saving, toggle: toggleFavorite } = useGifFavorite(
-        isGif ? blobObj : null,
-        url.split('/').pop()?.split('?')[0] || 'image.gif',
-    );
-    const [lightboxOpen, setLightboxOpen] = useState(false);
-    // Privacy: do NOT auto-fetch remote URLs from message bodies by default —
-    // that would leak a zero-click read-receipt + IP to whoever sent the
-    // link. `imageAutoLoad` narrows this per the user's setting: 'known'
-    // (default) auto-loads only a curated set of third-party CDNs that
-    // aren't the sender and so can't exploit that leak (see utils/
-    // imageHosts.ts); 'always'/'never' are the two blunt ends. A click
-    // always loads immediately regardless of the setting.
-    // Already in memory (fetched earlier this session, by auto-load or a
-    // click) → no new request can happen, so nothing to decide.
-    const [shouldLoad, setShouldLoad] = useState(() => !!peekRemoteImage(url));
-    // Tracks whether the current `shouldLoad=true` came from auto-load
-    // (subject to the concurrency limiter below) or a user click (never
-    // queued — they're waiting on it right now).
-    const autoTriggeredRef = useRef(false);
-    const { settings: privacySettings } = usePrivacySettings();
-
-    const hostname = useMemo(() => {
-        try { return new URL(url).hostname; } catch { return ''; }
-    }, [url]);
-
-    // Decide once per url/setting whether this embed should auto-load.
-    useEffect(() => {
-        if (shouldLoad || errored) return;
-        const eligible = shouldAutoLoadImage(privacySettings.imageAutoLoad, hostname);
-        if (eligible) {
-            autoTriggeredRef.current = true;
-            setShouldLoad(true);
-        }
-        // Only re-evaluate when the URL or the setting changes — `shouldLoad`/
-        // `errored` are read, not depended on, to avoid re-arming after a
-        // user later flips the setting back while this embed is mounted.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [url, hostname, privacySettings.imageAutoLoad]);
-
-    // Fetch (after the user opts in, or after an eligible auto-load) via
-    // main process to bypass CORS/hotlink. Auto-triggered fetches go
-    // through a small concurrency limiter so a busy channel can't fire
-    // dozens of simultaneous main-process fetches at once; a manual click
-    // always runs immediately.
-    useEffect(() => {
-        if (!shouldLoad) return;
-        let cancelled = false;
-        let held = false;
-        let release: (() => void) | null = null;
-        // A hold that arrives after unmount is handed straight back.
-        const take = (e: RemoteImage) => {
-            if (cancelled) { releaseRemoteImage(url); return; }
-            held = true;
-            setEntry(e);
-        };
-        (async () => {
-            try {
-                const hit = acquireRemoteImage(url);
-                if (hit) { take(hit); return; }
-                if (autoTriggeredRef.current) {
-                    release = await acquireAutoLoadSlot();
-                    if (cancelled) return;
-                }
-                take(await loadRemoteImage(url, (u) => window.electronAPI!.fetchBinary(u)));
-            } catch (err) {
-                if (!cancelled) {
-                    console.warn('[ImageLinkEmbed] Failed to load image:', url, err);
-                    setErrored(true);
-                }
-            } finally {
-                release?.();
-            }
-        })();
-        return () => {
-            cancelled = true;
-            // The cache owns the URL now; it is revoked when evicted.
-            if (held) releaseRemoteImage(url);
-        };
-    }, [url, shouldLoad]);
-    // Reserve the image's real box once its size is known (320×300 cap,
-    // same as the CSS limits below), so a remount doesn't jump. Width +
-    // aspect ratio, never a fixed height: the size lands by mutating the cache
-    // entry, so the box first appears on the row's NEXT render, and it must lay
-    // out exactly like the image without it (utils/inlineImageBox).
-    const box = inlineImageBox(entry?.width, entry?.height);
-    const onImgLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
-        const img = e.currentTarget;
-        if (img.naturalWidth && img.naturalHeight) rememberRemoteImageSize(url, img.naturalWidth, img.naturalHeight);
-    };
-
-    const handleSave = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        void toggleFavorite();
-    };
-
-    if (errored) return null;
-
-    return (
-        <div className="mt-2 img-link-wrap" data-cl-copy-image={blobUrl ?? undefined} style={{ position: 'relative', display: 'inline-block', maxWidth: 320 }}>
-            {/* Privacy: click-to-load placeholder — no network request until the
-                user opts in, so a linked image can't beacon their IP on render. */}
-            {!shouldLoad && !blobUrl && (
-                <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setShouldLoad(true); }}
-                    title={(() => { try { return new URL(url).hostname; } catch { return url; } })()}
-                    style={{ width: 200, height: 120, borderRadius: 10, background: 'rgb(var(--cl-bright-rgb) / 0.05)', border: '1px solid rgb(var(--cl-bright-rgb) / 0.08)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'rgb(var(--cl-bright-rgb) / 0.6)' }}
-                >
-                    <ImageIcon className="w-5 h-5 text-white/40" />
-                    <span style={{ fontSize: 12 }}>Load image</span>
-                    <span style={{ fontSize: 10, opacity: 0.6, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {(() => { try { return new URL(url).hostname; } catch { return ''; } })()}
-                    </span>
-                </button>
-            )}
-            {/* Skeleton while fetching */}
-            {shouldLoad && !blobUrl && (
-                <div style={{ width: 200, height: 120, borderRadius: 10, background: 'rgb(var(--cl-bright-rgb) / 0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Clock className="w-5 h-5 text-white/30 animate-pulse" />
-                </div>
-            )}
-            {blobUrl && (isGif ? (
-                <GifPlayer
-                    src={blobUrl}
-                    imgStyle={{ maxWidth: '100%', maxHeight: 300, borderRadius: 10, display: 'block', ...(box ?? {}) }}
-                    onClick={(e) => { e.stopPropagation(); setLightboxOpen(true); }}
-                    onLoadImg={onImgLoad}
-                />
-            ) : (
-                <img
-                    src={blobUrl}
-                    alt=""
-                    draggable={false}
-                    decoding="async"
-                    onLoad={onImgLoad}
-                    style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 10, display: 'block', cursor: 'zoom-in', ...(box ?? {}) }}
-                    onClick={(e) => { e.stopPropagation(); setLightboxOpen(true); }}
-                />
-            ))}
-            {lightboxOpen && blobUrl && (
-                <ImageLightbox
-                    src={blobUrl}
-                    externalUrl={url}
-                    filename={url.split('/').pop()?.split('?')[0] || 'image'}
-                    onClose={() => setLightboxOpen(false)}
-                />
-            )}
-            {/* Save button — GIFs only, revealed on hover. Plain <button>, not
-                ClButton — ClButton's `style` prop lands on the outer wrapper
-                span, not the inner .cap that actually renders, so shrinking
-                below the kit's default 46px silently failed. Sizing/position/
-                hover-reveal now live in .img-gif-save-btn (index.css). */}
-            {isGif && blobUrl && (
-                <button
-                    type="button"
-                    onClick={handleSave}
-                    title={saved ? 'Remove from favorites' : 'Favorite GIF'}
-                    aria-label={saved ? 'Remove from favorites' : 'Favorite GIF'}
-                    className={`img-gif-save-btn${saved ? ' saved' : ''}${saving ? ' saving' : ''}`}
-                >
-                    <Bookmark
-                        className="w-4 h-4"
-                        style={{ color: saved ? '#fff' : '#e5e7eb', fill: saved ? '#fff' : 'none' }}
-                    />
-                </button>
-            )}
-        </div>
-    );
-};
-
-const MessageEmbed: React.FC<{ url: string }> = ({ url }) => {
-    const ytId = extractYouTubeId(url);
-
-    if (ytId) {
-        // aspect-ratio gives correct 16:9 height without the padding-top % trick.
-        // width:100% resolves against the definite parent width (content column
-        // now uses flex-1); maxWidth caps the player at 400px on wide layouts.
-        return (
-            <div
-                className="mt-2 overflow-hidden rounded-xl bg-black"
-                style={{
-                    width: '100%',
-                    maxWidth: '400px',
-                    aspectRatio: '16 / 9',
-                    boxShadow: '0 4px 24px rgb(var(--cl-shade-rgb) / 0.4)',
-                }}
-            >
-                <iframe
-                    style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
-                    // origin= is YouTube's documented way for embedders to declare their parent origin;
-                    // without it, the player falls back to a referer-based probe that fails when our
-                    // page-level Referrer-Policy is 'no-referrer' (privacy default). Passing origin
-                    // explicitly lets the player accept the embed regardless of referer header policy.
-                    src={`https://www.youtube-nocookie.com/embed/${ytId}?origin=${encodeURIComponent(window.location.origin)}`}
-                    // Send a referrer that contains only scheme+host (no path) to YouTube. Overrides
-                    // the page-level 'no-referrer' for just this iframe; without this the embed
-                    // rejects with "Video player configuration error" / error 153 in packaged builds.
-                    referrerPolicy="strict-origin-when-cross-origin"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    title="YouTube video"
-                    loading="lazy"
-                />
-            </div>
-        );
-    }
-
-    // Direct image/GIF link — render inline instead of a link card.
-    if (isImageUrl(url)) {
-        // KLIPY media links follow KLIPY's rules (opt-in, direct load, no stored bytes).
-        if (isKlipyMediaUrl(url)) return <KlipyLinkEmbed url={url} />;
-        return <ImageLinkEmbed url={url} />;
-    }
-
-    // Generic link card — domain + URL, no third-party metadata fetching.
-    let domain = url;
-    let pathname = '';
-    try {
-        const parsed = new URL(url);
-        domain = parsed.hostname.replace(/^www\./, '');
-        pathname = parsed.pathname !== '/' ? parsed.pathname : '';
-    } catch { /* keep url as domain */ }
-
-    return (
-        <div
-            role="link"
-            tabIndex={0}
-            onClick={(e) => { e.stopPropagation(); openUrl(url); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); openUrl(url); } }}
-            className="mt-2 cursor-pointer no-underline"
-            style={{ width: '100%', maxWidth: '360px' }}
-        >
-            {/* Accent rail was rgba(88,166,255) — a GitHub blue that appears
-                nowhere else in Cipherline and clashed with the lume accent used
-                by every other embed. On the token now, as is the icon/domain
-                colour (was a hardcoded #25E0C8 duplicate of --cl-lume). */}
-            <div
-                className="flex items-start gap-3 px-3 py-2.5 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] transition-colors"
-                style={{ borderLeft: '3px solid var(--cl-lume)' }}
-            >
-                <LinkIcon className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--cl-lume-text)', opacity: 0.7 }} />
-                <div className="flex flex-col gap-0.5 min-w-0">
-                    <span className="text-[12px] font-semibold truncate" style={{ color: 'var(--cl-lume-text)' }}>{domain}</span>
-                    {pathname && (
-                        <span className="text-[11px] text-cl-faint truncate">{pathname}</span>
-                    )}
-                    <span className="text-[11px] text-cl-faint truncate">{url.length > 55 ? url.slice(0, 55) + '…' : url}</span>
-                </div>
-            </div>
-        </div>
-    );
-};
-
 /** Stable default for `historyGaps` (DMs/groups have none). */
 const NO_HISTORY_GAPS: HistoryGap[] = [];
 const NO_KEY_RUNS: ReadonlyMap<string, number> = new Map();
@@ -1803,6 +1543,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         ? { roleIds: [] as string[], roles: [] as Array<{ role_id: string; name: string; color: number }>, serverId: activeChannel.server_id }
         : undefined;
     const toast = useToast();
+    // One playing link embed (YouTube / inline video) per chat view (components/embeds/embedPlayback).
+    const embedPlaybackScope = useMemo(() => new PlaybackScope(), []);
     // "Message yourself": a one-member DM. Derived from the chat's own shape
     // (`other_user_id` is YOUR id) so it holds for every way the chat can be
     // opened. `affordances` is the single list of what such a chat does not do.
@@ -1813,6 +1555,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // Free tier caps uploads at 100 MB (paid/trial = 2 GB). Server enforces it
     // on initiate; this is the friendly pre-upload check + upgrade nudge.
     const { maxUploadBytes, isFreeTier, promptUpgrade } = useSubscription();
+    // Copies of expiring linked media (utils/linkEmbeds/mediaCopy.ts) never exceed the account's per-file limit.
+    useEffect(() => { setMediaCopyUploadLimit(maxUploadBytes); }, [maxUploadBytes]);
 
     // ── Pinned messages panel: keep mounted through its exit animation ────────
     // `pinnedSidebarExpanded` flips false the instant the user toggles the
@@ -2790,6 +2534,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     /** True when EMBED_LINKS denies this user from sending, AND they currently have
      *  a URL in the textarea. Drives an inline warning + send-button disable. */
     const blockedByEmbed = isServerChannel && !canEmbed && hasUrlInInput;
+    // Link previews for the message being written (hooks/useComposerEmbeds):
+    // built on THIS device while typing, shown above the composer with an ×,
+    // sent inside the encrypted message. Off with Settings → Privacy →
+    // "Generate link previews", and never where links may not be sent.
+    const linkPreviews = useComposerEmbeds(
+        inputText,
+        hasUrlInInput && !blockedByEmbed && linkPreviewsEnabled() && typeof window !== 'undefined' && !!window.electronAPI?.unfurlLink,
+    );
     // ────────────────────────────────────────────────────────────────────────
     const [sentFriendRequests, setSentFriendRequests] = useState<Set<string>>(new Set());
     /** Pending block / remove-friend confirmation from the DM header menu (FriendActionDialog). */
@@ -5652,6 +5404,87 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         else onMessageSent({ ...del, conversation_id: activeChat.id });
     };
 
+    /**
+     * The `embeds` for a message about to be sent / saved (packages/shared
+     * link-embeds.ts): the composer's ready previews (waiting at most
+     * SEND_DEADLINE_MS for ones still building), thumbnails inline or uploaded
+     * as encrypted attachments, checked with the reader's own validator. An
+     * EDIT keeps the original's preview for a link whose new one is not ready
+     * (or when previews are off), and drops the ones whose link is gone or that
+     * were removed with ×. Never throws: a failure sends no preview.
+     */
+    const outgoingLinkEmbeds = async (wireText: string, editTargetId: string | null, onLate?: (urls: string[]) => void): Promise<LinkEmbed[]> => {
+        try {
+            const urls = embedUrlsOf(wireText);
+            if (urls.length === 0) return [];
+            const upload = token
+                ? createThumbUploader({ token, apiBase: API_BASE, ...(activeChannel ? { channelId: activeChannel.channel_id } : { conversationId: activeChat.id }) })
+                : null;
+            const built = await takeAndFinalize(wireText, linkPreviews.take, upload, SEND_DEADLINE_MS, editTargetId ? undefined : onLate);
+            if (!editTargetId) return built;
+            const original = messages.find(m => m.id === editTargetId)?.content;
+            const kept = sanitizeLinkEmbeds(original?.embeds, urls);
+            const merged = urls
+                .map(u => built.find(e => e.url === u) ?? (linkPreviews.isDismissed(u) ? undefined : kept.find(e => e.url === u)))
+                .filter((e): e is LinkEmbed => !!e);
+            return sanitizeLinkEmbeds(merged, urls);
+        } catch {
+            return [];
+        }
+    };
+
+    /**
+     * A preview that was not ready at send (a slow page, or a page snapshot
+     * still being taken) is ATTACHED to the sent message when it arrives,
+     * within LATE_EMBED_WAIT_MS: an embeds-only edit (same text, refs, font
+     * and size; `embeds_only: true`) that readers do not mark "(edited)"
+     * (link-embeds.ts isEmbedsOnlyEdit). Given up when the chat changed, the
+     * message was edited / had a preview removed meanwhile, never delivered,
+     * or nothing better came. Never throws, never toasts.
+     */
+    const lateEmbedCtxRef = useRef<{ convKey: string; messages: readonly { id: string; content?: unknown; send_state?: string }[]; send: (c: ClientContent) => Promise<void> } | null>(null);
+    useLayoutEffect(() => {
+        lateEmbedCtxRef.current = {
+            convKey: activeChannel ? `c:${activeChannel.channel_id}` : `d:${activeChat.id}`,
+            messages,
+            send: (c) => sendClientContent(c),
+        };
+    });
+    const attachLateEmbeds = async (job: LateAttachJob & { convKey: string; clientMsgId: string }) => {
+        try {
+            await runLateAttach(job, {
+                awaitFinal: awaitFinalPreview,
+                finalize: finalizeEmbeds,
+                findRow: () => {
+                    const ctx = lateEmbedCtxRef.current;
+                    if (!ctx || ctx.convKey !== job.convKey) return null;
+                    return ctx.messages.find((m) => m.id === job.clientMsgId || (m.content as { client_msg_id?: unknown } | undefined)?.client_msg_id === job.clientMsgId) ?? null;
+                },
+                send: async (edit) => {
+                    const ctx = lateEmbedCtxRef.current;
+                    if (!ctx || ctx.convKey !== job.convKey) return;
+                    await ctx.send(edit as ClientContent);
+                },
+            });
+        } catch (err) {
+            console.warn('[embeds] late preview not attached:', err instanceof Error ? err.message : String(err));
+        }
+    };
+
+    /** Own message: "Remove embed" — an edit with the same text, font, size and links, minus that preview. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- message rows are untyped REST/WS payloads (tracked typing debt)
+    const removeLinkEmbed = (msg: { id: string; content: any }, url: string) => {
+        const c = msg.content;
+        if (!c || c.type !== 'text') return;
+        const rest = sanitizeLinkEmbeds(c.embeds, embedUrlsOf(String(c.text ?? ''))).filter(e => e.url !== url);
+        void dispatchAction({
+            type: 'edit', target_id: msg.id, text: c.text,
+            ...(Array.isArray(c.channel_refs) && c.channel_refs.length > 0 ? { channel_refs: c.channel_refs } : {}),
+            ...fontField(messageFontOf(c)), ...sizeField(messageSizeOf(c)),
+            embeds: rest,
+        });
+    };
+
     const handleSendAll = async (e?: React.FormEvent, opts?: { everyoneConfirmed?: boolean }) => {
         e?.preventDefault();
         // A shortcut typed right up to the send (`**bold**` then Enter) converts
@@ -5836,13 +5669,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // #channel links: server channels only, and only the picked /
                 // seeded names still present in the final text.
                 const channelRefs = activeChannel ? collectChannelRefs(wireText, channelRefMapRef.current) : [];
+                // Sender-built link previews (bounded wait; see outgoingLinkEmbeds).
+                // A preview still coming (late) is attached after the send (attachLateEmbeds).
+                let lateUrls: string[] = [];
+                const linkEmbeds = await outgoingLinkEmbeds(wireText, editingId, (u) => { lateUrls = u; });
+                let sentTextClientId: string | null = null;
+                const embedsField = linkEmbeds.length > 0 ? { embeds: linkEmbeds } : {};
+                linkPreviews.reset();
                 if (editingId) {
                     // Edit path is the same regardless of conversation type —
                     // dispatchAction internally branches on `activeChannel`
                     // and routes through the channel Sender Key + the channel
                     // edit endpoint when applicable. An edit carries its
                     // complete channel_refs (none = the field is omitted).
-                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleEditField(editCardTouched, outgoingCard) });
+                    // An edit always states its embeds (rebuilt; [] = none), so readers drop stale ones.
+                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleEditField(editCardTouched, outgoingCard), embeds: linkEmbeds });
                     setEditingId(null);
                 } else if (activeChannel) {
                     // ── Sender Keys channel message path ──────────────────────────────
@@ -5892,9 +5733,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         });
                         return;
                     }
+                    if (!bareInviteCode) sentTextClientId = safeUUID;
                     const msgContent: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
-                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard) };
+                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard), ...embedsField };
                     // Big room + @everyone/@here (confirmed above): this row lands
                     // with an impact instead of the usual entrance.
                     if (bigRoomMass && mentionsEveryone) impactSlot.arm(ownRowKey(safeUUID));
@@ -5949,9 +5791,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     // Moment: @yourself in a DM / group — the parsed mention types only.
                     const dmMentionMo = mentionMoment(mentions, { me: user?.user_id, othersInServer: null });
                     if (dmMentionMo) requestMoment(dmMentionMo);
+                    if (!bareInviteCode) sentTextClientId = safeUUID;
                     const content: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
-                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard) };
+                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard), ...embedsField };
                     const sentMsg = {
                         id: content.client_msg_id!,
                         content,
@@ -5981,6 +5824,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
                         onMessageSent(serverTs ? { ...sentMsg, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) } : sentMsg);
                     }
+                }
+                if (!editingId && sentTextClientId && lateUrls.length > 0) {
+                    void attachLateEmbeds({
+                        convKey: activeChannel ? `c:${activeChannel.channel_id}` : `d:${activeChat.id}`,
+                        clientMsgId: sentTextClientId,
+                        text: wireText,
+                        sent: linkEmbeds,
+                        late: lateUrls,
+                        upload: token ? createThumbUploader({ token, apiBase: API_BASE, ...(activeChannel ? { channelId: activeChannel.channel_id } : { conversationId: activeChat.id }) }) : null,
+                    });
                 }
 
                 if (!earlyReleased) {
@@ -6850,7 +6703,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         requestDelete, startEdit, beginReply, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
         openUndeliveredMenu, retrySend, discardUnsent, onNavigateToChannel, retryReaction,
         onKeyChangeResolved, onPinMessage, onUnpinMessage, onServerSaveMessage, onServerUnsaveMessage,
-        onOpenProfile, onInviteJoin, onInviteCodeClick, handleShareSafetyCodeBack,
+        onOpenProfile, onInviteJoin, onInviteCodeClick, handleShareSafetyCodeBack, removeLinkEmbed,
         saveMessage: retention.saveMessage, unsaveMessage: retention.unsaveMessage,
         saveAttachment: retention.saveAttachment, unsaveAttachment: retention.unsaveAttachment,
     });
@@ -7695,7 +7548,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             requestDelete, startEdit, beginReply, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
                             openUndeliveredMenu, retrySend, discardUnsent, retryReaction,
                             onPinMessage, onUnpinMessage, onKeyChangeResolved, onServerSaveMessage, onServerUnsaveMessage,
-                            onInviteJoin, handleShareSafetyCodeBack: shareSafetyCodeBack,
+                            onInviteJoin, handleShareSafetyCodeBack: shareSafetyCodeBack, removeLinkEmbed,
                         } = rowLive;
                         const retention = {
                             saveMessage: rowLive.saveMessage, unsaveMessage: rowLive.unsaveMessage,
@@ -8378,7 +8231,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 {/* Discord-style: avatar always on the left, regardless of author. */}
                                 {avatarEl}
 
-                                <div className="relative flex flex-col min-w-0 flex-1">
+                                <div className="cl-msg-col relative flex flex-col min-w-0 flex-1">
 
                                     {/* Grouped message gutter — floats in the avatar gutter to the left.
                                         Server-saved and pinned icons are always visible; compact expiry
@@ -8533,8 +8386,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         <StickerMessage sticker={stickerRefOf(msg.content)!} token={token} />
                                     ) : msg.content?.type === 'text' ? (
                                         <>
-                                            {/* Hide the link text when the whole message is just a bare image URL or
-                                                a bare Cipherline invite URL — the embed below will render instead. */}
+                                            {/* A bare Cipherline invite / theme URL: its card below replaces the text.
+                                                A bare PICTURE link keeps its text, hidden by CSS only while its
+                                                picture really shows (utils/formatting/bareMediaLink.ts): a failed,
+                                                pending or blocked embed never leaves an empty row. */}
                                             {(() => {
                                                 const sourceText: string = typeof msg.content.text === 'string' ? msg.content.text : '';
                                                 // Bare invite / theme URLs that get a card below are not shown as
@@ -8543,9 +8398,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 // message collapse, jumbo emoji) sees this post-removal text.
                                                 const rawText: string = stripBareCardLinks(sourceText);
                                                 const trimmed = rawText.trim();
-                                                const isBareImageUrl = /^https?:\/\/\S+$/.test(trimmed) && isImageUrl(trimmed);
                                                 const inviteOnly = sourceText.trim() !== '' && trimmed === '';
-                                                if (isBareImageUrl || inviteOnly) return null;
+                                                if (inviteOnly) return null;
+                                                // An undelivered message keeps its text (its "!" lives there).
+                                                const bareMedia = !undelivered && isBareMediaLinkMessage(rawText, msg.content.embeds);
 
                                                 // Past LONG_MESSAGE_THRESHOLD the body is collapsed behind
                                                 // an expand / full-screen footer (components/LongMessage).
@@ -8611,12 +8467,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 // reactions and the hover toolbar stay outside it.
                                                 const card = resolveMessageCard(msg.content, cardModeFor(cardCtx, isShownPlain(msg.id)));
                                                 const cardColor = cardTextColor(card);
-                                                return (
+                                                const body = (
                                                     <MessageCard resolved={card}>
                                                     <div
                                                         // Clips sideways only (styles/formatting.css .cl-msg-body):
                                                         // an inline emoji's top drawing above the first line is not cut.
                                                         className={MESSAGE_BODY_CLASS}
+                                                        // Ctrl+C over a shortened link copies its full URL.
+                                                        onCopy={handleMessageCopy}
                                                         // The sender's message font (validated allowlist; bundled faces only).
                                                         data-msg-font={messageFontOf(msg.content) ?? undefined}
                                                         data-msg-size={!emojiOnly && msgSize ? msgSize : undefined}
@@ -8664,16 +8522,26 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     </div>
                                                     </MessageCard>
                                                 );
+                                                return bareMedia ? <div className="cl-bare-media-text">{body}</div> : body;
                                             })()}
-                                            {/* URL embeds — invite cards, YouTube player, or generic link card */}
+                                            {/* URL embeds — invite cards, YouTube / video players, images, or generic link card */}
                                             {(() => {
                                                 const text: string = msg.content.text ?? '';
                                                 // Bare URLs + masked-link destinations; never a URL in
                                                 // code, in a spoiler, or written as <url> (utils/formatting/plainText).
-                                                const unique = embedUrlsOf(text).slice(0, 3);
+                                                const allUrls = embedUrlsOf(text);
+                                                // Previews the SENDER built inside the encrypted message, validated
+                                                // against the links THIS reader finds in the text (a forged one for a
+                                                // link that isn't there is ignored). A link without one keeps today's
+                                                // local embed (the first three, as before). Theme and invite links are
+                                                // always drawn locally, before any sender preview is considered.
+                                                const sent = senderEmbedsFor(text, msg.content.embeds, allUrls);
+                                                const unique = allUrls.slice(0, sent.length > 0 ? 5 : 3);
                                                 if (unique.length === 0) return null;
+                                                let localCount = 0;
                                                 return (
-                                                    <div className="flex flex-col gap-1 w-full items-start">
+                                                    <EmbedPlaybackContext.Provider value={embedPlaybackScope}>
+                                                    <div className="cl-embed-row flex flex-col gap-1 w-full items-start">
                                                         {unique.map((u, i) => {
                                                             // A theme link renders from its own fragment, on this device:
                                                             // decided first, so it never reaches the image / link fetchers.
@@ -8690,9 +8558,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                                     />
                                                                 );
                                                             }
+                                                            const fromSender = sent.find(e => e.url === u);
+                                                            if (fromSender) {
+                                                                return (
+                                                                    <SenderEmbed
+                                                                        key={i}
+                                                                        embed={fromSender}
+                                                                        onRemove={isMe && !undelivered ? () => removeLinkEmbed(msg, u) : undefined}
+                                                                    />
+                                                                );
+                                                            }
+                                                            if (++localCount > 3) return null;
                                                             return <MessageEmbed key={i} url={u} />;
                                                         })}
                                                     </div>
+                                                    </EmbedPlaybackContext.Provider>
                                                 );
                                             })()}
                                         </>
@@ -8880,8 +8760,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         no text node — a bare image link, an invite card. */}
                                     {undelivered && (() => {
                                         const t = String(msg.content?.text ?? '').trim();
+                                        // A bare picture link keeps its text while undelivered (bareMediaLink.ts).
                                         const textShown = msg.content?.type === 'text'
-                                            && !(/^https?:\/\/\S+$/.test(t) && isImageUrl(t))
                                             && !(t !== '' && stripBareCardLinks(t).trim() === '');
                                         return textShown ? null : (
                                             <div className="mt-1">
@@ -9351,6 +9231,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     </div>
                                 </div>
                             )}
+
+                            {/* Link previews being built for this message, each with an × (useComposerEmbeds). */}
+                            <ComposerEmbedPreviews embeds={linkPreviews} />
 
                             {/* Big paste (once per session): a short chip, then gone. */}
                             {pasteChip && <div className="cmp-chip" aria-hidden="true" data-paste-chip="">{pasteChip}</div>}

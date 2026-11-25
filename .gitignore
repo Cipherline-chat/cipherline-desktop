@@ -2,6 +2,7 @@ node_modules/
 release/
 dist/
 dist-electron/
+target/
 *.log
 .env
 .env.*

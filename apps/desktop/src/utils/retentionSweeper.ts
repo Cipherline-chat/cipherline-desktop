@@ -36,6 +36,8 @@ export const CONTROL_TYPES: ReadonlySet<string> = new Set([
     'channel_key', 'channel_message',
     // A request for a call's media key: handled when it arrives, never a row.
     'call_key_request',
+    // Own-device transfer setup (contract section 7): sent between this account's devices, never a row.
+    'near_offer', 'near_answer', 'near_msg',
 ]);
 
 /**

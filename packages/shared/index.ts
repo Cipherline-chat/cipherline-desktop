@@ -36,3 +36,4 @@ export * from './card-style';
 export * from './import-history';
 export * from './channel-settings';
 export * from './stickers';
+export * from './link-embeds';

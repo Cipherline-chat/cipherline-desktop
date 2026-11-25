@@ -146,7 +146,7 @@ describe('inventory: every leave entry point and what it sends', () => {
         expect(conf).not.toMatch(/handleLeaveRef\.current = \(\) => handleLeave\((?!false\))/);
         expect(conf).toContain('const handleLeave = (deliberate: boolean = false) => {');
         // LiveKit onDisconnected (drop / kicked / server removal): onDisconnect() with NO args
-        const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={(err) => {');
+        const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={onRoomError}');
         expect(disc).toContain('if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));');
         // never deliberate, never 'last person': the only argument it may pass is the third (displaced by this account's other connection)
         expect(disc).not.toMatch(/onDisconnect\((?!undefined, undefined, )[^)]/);

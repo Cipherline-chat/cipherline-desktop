@@ -213,10 +213,11 @@ describe('every backup entry point is covered', () => {
     it('"Back up now" refuses with the message before it caches the passphrase', () => {
         const src = read('../components/BackupSection.tsx');
         const fn = src.slice(src.indexOf('const onBackupNow = useCallback'));
-        const guard = fn.indexOf('if (backupStoreBlock(userId))');
+        const guard = fn.indexOf('const block = backupStoreBlock(userId);');
         expect(guard).toBeGreaterThan(-1);
         expect(guard).toBeLessThan(fn.indexOf('setCachedPassword('));
-        expect(fn.slice(guard, guard + 300)).toContain('BACKUP_STORE_UNREADABLE_MESSAGE');
+        expect(fn.slice(guard, guard + 300)).toContain('if (block)');
+        expect(fn.slice(guard, guard + 300)).toContain('backupStoreBlockMessage(block)');
     });
 
     it('there is no backup-on-quit path that could bypass runBackup', () => {

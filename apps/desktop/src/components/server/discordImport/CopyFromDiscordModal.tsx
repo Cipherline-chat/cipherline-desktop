@@ -8,6 +8,7 @@ import { DiscordGuildImport, type DiscordGuildImportHost } from '../DiscordGuild
 import { createDiscordHistoryHost } from '../../../utils/discordImport/history/host';
 import { getDiscordImportApi } from '../../../utils/discordImport/types';
 import type { CopyTargetChannel } from '../../../utils/discordImport/copyMapping';
+import { openExternalLink } from '../../../utils/openExternalLink';
 import '../../../styles/dialog-server.css';
 
 /**
@@ -74,7 +75,7 @@ export const CopyFromDiscordModal: React.FC<CopyFromDiscordModalProps> = ({ serv
                     onBack={handleClose}
                     onClose={handleClose}
                     onOpenServer={async (id, n) => { await onOpenServer(id, n); handleClose(); }}
-                    onOpenExternal={(url) => { void window.electronAPI?.openExternal(url); }}
+                    onOpenExternal={(url) => { openExternalLink(url, { source: 'app' }); }}
                 />
             )}
         </ClModal>

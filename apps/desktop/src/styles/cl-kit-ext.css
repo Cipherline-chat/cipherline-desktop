@@ -22,6 +22,35 @@
   .clb.w-full{display:block;width:100%;min-width:0}
   .clb.w-full .cap{width:100%;box-sizing:border-box}
 
+  /* Depth sheets follow the CAP, not the wrapper. The guide sizes l1/l2 to
+     `.clb` (absolute, inset:0) and the cap to its own label, which only agree
+     while `.clb` shrink-wraps. Any flex/grid parent with the default
+     `align-items:stretch` stretches `.clb` (a flex item is blockified, so its
+     inline-block shrink-wrap is gone) while `.cap` keeps its natural size —
+     the sheets then fill the stretched box and show as a second, darker teal
+     slab beside or under the cap. Seen as: Server Settings > Stickers "Add"
+     stacked over a wider "Cancel" (owner 2026-11-23, "the add button looks
+     broken"), the Invites "Generate" button, the website's account rows.
+     Fix at the primitive: `.clb` is a one-cell grid that never grows its own
+     track (`justify/align-content:start` keep the auto track at the cap's
+     size, exactly inline-block's shrink-to-fit, wrapping included), and the
+     sheets are placed in that cell, so an absolutely positioned grid child's
+     containing block IS the cell = the cap. Stretching the wrapper now only
+     moves empty space, never the sheets. `.w-full` keeps display:block (its
+     cap is 100% wide, so sheets and cap already agree). The END lines are
+     explicit on purpose: `grid-area:1/1` leaves them `auto`, and an
+     absolutely positioned child with an auto end line resolves to the
+     container's padding edge, i.e. the stretched box again (measured).
+     Tracks are floored at min-content: with a bare `auto` track the cap's
+     overflow:hidden gives it a zero automatic minimum, so `.clb` would
+     start shrinking (and ellipsizing) in tight flex rows where inline-block
+     never did — measured on the Stickers tab's "Upload stickers" (164 ->
+     101 px). minmax(min-content,auto) keeps inline-block's exact min/max
+     sizes: no cap moved by even 0.6 px across the kit gallery and the
+     Stickers tab at 1000 and 1366 px, while the "Add" slab went away. */
+  .clb{display:inline-grid;grid-template:minmax(min-content,auto)/minmax(min-content,auto);justify-content:start;align-content:start}
+  .clb>.l,.clb>.cap{grid-area:1/1/2/2}
+
   /* The guide's .cap has no white-space rule, so a button sitting in a row
      tight enough to squeeze its label (a two-button dialog footer, mainly)
      can wrap to two lines while its sibling doesn't - the row height then
@@ -422,6 +451,10 @@
 .clb--ok .cap{background-color:#22c55e;background-image:radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgba(255,255,255,.32),rgba(255,255,255,0) 75%);color:#04210f}
 .clb.w-full{display:block;width:100%;min-width:0}
 .clb.w-full .cap{width:100%;box-sizing:border-box}
+/* Global twin of the scoped depth-sheets-follow-the-cap rule above (same
+   Chromium @scope fallback reason as this block). */
+.clb{display:inline-grid;grid-template:minmax(min-content,auto)/minmax(min-content,auto);justify-content:start;align-content:start}
+.clb>.l,.clb>.cap{grid-area:1/1/2/2}
 /* wake-pop: keyframes are global (line 34-36 of cl-kit.css); wire rules globally too.
    Strip bg/shadow/color from transition so they snap instantly to the enabled values
    (rather than spending 300-350ms transitioning through the disabled appearance while

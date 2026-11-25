@@ -1,16 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Image as ImageIcon } from 'lucide-react';
+import { X, Image as ImageIcon, ExternalLink, Download } from 'lucide-react';
 import { ClButton } from './cl';
 import { useEscape } from '../hooks/useEscape';
 import { useContextMenu } from '../hooks/useContextMenu';
 import { useToast } from '../contexts/ToastContext';
 import { copyImageWithToast } from '../utils/copyImage';
+import { openExternalLink } from '../utils/openExternalLink';
+import { saveReceivedFile } from './executableDownloadGuard';
 
 interface ImageLightboxProps {
     src: string;
     alt?: string;
     filename?: string;
+    /** The link this image came from: shows "Open original" (and "Save" for a local blob: image). */
     externalUrl?: string;
     /** Set to 'no-referrer' for third-party hosts (e.g. KLIPY) that must not learn the app origin. */
     referrerPolicy?: React.ImgHTMLAttributes<HTMLImageElement>['referrerPolicy'];
@@ -20,7 +23,7 @@ interface ImageLightboxProps {
 const ZOOM_SCALE     = 2.5;   // scale applied on click-to-zoom
 const DRAG_THRESHOLD = 4;     // px movement to differentiate click vs drag
 
-export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename, referrerPolicy, onClose }) => {
+export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename, externalUrl, referrerPolicy, onClose }) => {
     const [phase, setPhase]         = useState<'in' | 'idle' | 'out'>('in');
     const [zoomed, setZoomed]       = useState(false);
     const [dragging, setDragging]   = useState(false);
@@ -184,14 +187,40 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
                         : 'lb-bg-in  0.22s ease forwards',
                 }}
             >
-                <ClButton
-                    icon
-                    variant="ghost"
-                    onClick={(e) => { e.stopPropagation(); dismiss(); }}
-                    tooltip="Close (Esc)"
-                >
-                    <X size={16} strokeWidth={2.5} />
-                </ClButton>
+                <div style={{ display: 'flex', gap: 6 }}>
+                    {/* A linked image: the link itself, and the bytes already
+                        loaded (a blob: URL, so Save makes no new request). */}
+                    {externalUrl && (
+                        <ClButton
+                            icon
+                            variant="ghost"
+                            onClick={(e) => { e.stopPropagation(); openExternalLink(externalUrl); }}
+                            tooltip="Open original"
+                            ariaLabel="Open original"
+                        >
+                            <ExternalLink size={16} strokeWidth={2.25} />
+                        </ClButton>
+                    )}
+                    {externalUrl && src.startsWith('blob:') && (
+                        <ClButton
+                            icon
+                            variant="ghost"
+                            onClick={(e) => { e.stopPropagation(); void saveReceivedFile(src, filename || 'image'); }}
+                            tooltip="Save"
+                            ariaLabel="Save image"
+                        >
+                            <Download size={16} strokeWidth={2.25} />
+                        </ClButton>
+                    )}
+                    <ClButton
+                        icon
+                        variant="ghost"
+                        onClick={(e) => { e.stopPropagation(); dismiss(); }}
+                        tooltip="Close (Esc)"
+                    >
+                        <X size={16} strokeWidth={2.5} />
+                    </ClButton>
+                </div>
             </div>
 
             {/* Image — above backdrop, below X button */}

@@ -1,11 +1,11 @@
 import React, { useDeferredValue, useId, useMemo, useState } from 'react';
-import { Palette, Share2, Sparkles } from 'lucide-react';
+import { Palette, Share2 } from 'lucide-react';
 import { ClButton, ClInput, ClModal, ClSegment, ClToggle } from '../../cl';
 import { DialogBody, DialogFooter, DialogHeader } from '../../dialog/DialogFrame';
 import { ColourSwatchButton } from '../ui/ColourPicker';
 import { contrastRatio } from '../../../theme/contrast';
 import {
-    CUSTOM_THEME_KNOBS, CUSTOM_THEME_NAME_MAX, KNOB_LABELS, auditTheme, deriveCustomTheme, formatRatio,
+    CUSTOM_THEME_KNOBS, CUSTOM_THEME_NAME_MAX, KNOB_LABELS, deriveCustomTheme, formatRatio,
     knobsFromTheme, normalizeCustomTheme, type CustomThemeBase, type CustomThemeDef, type CustomThemeKnob,
 } from '../../../theme/customTheme';
 import { CUSTOM_THEME_PRESETS } from '../../../theme/customPresets';
@@ -19,11 +19,10 @@ import { CustomThemePreview } from './CustomThemePreview';
  * nine colours (Cipherline's own colour picker) and Glow. Right: a live
  * preview of the app painted from the theme as it will be saved.
  *
- * The readability guard (theme/customTheme.ts) runs on every change: a pick
- * that would be hard to read is shown as picked in its swatch, but the
- * preview and the saved theme use the nudged colour, and the row says
- * "Adjusted for readability (4.6:1)". Save is refused if the full audit
- * fails (it cannot, by construction; the check stays as the last gate).
+ * Every colour is used EXACTLY as picked — in the preview, in the saved
+ * theme and in the app (owner, 2026-11-23: "let people do whatever they
+ * want"). Nothing is adjusted for contrast and nothing blocks Save. The small
+ * ratio next to Text / Secondary text / Text on accent is information only.
  */
 
 interface Props {
@@ -37,7 +36,7 @@ interface Props {
     onShare?: () => void;
 }
 
-/** Knobs whose contrast the row reports even when untouched. */
+/** Knobs whose row shows a contrast ratio — information only, never a gate. */
 const RATIO_ROWS: Partial<Record<CustomThemeKnob, (c: CustomThemeDef['colors']) => { bg: string; what: string }>> = {
     text: (c) => ({ bg: c.panel, what: 'on panels' }),
     muted: (c) => ({ bg: c.panel, what: 'on panels' }),
@@ -51,16 +50,10 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
     const nameId = useId();
 
     const result = useMemo(() => normalizeCustomTheme(draft), [draft]);
-    const adjusted = useMemo(() => {
-        const m = new Map<CustomThemeKnob, { to: string; ratio: number; against: string }>();
-        if (result.ok) for (const a of result.adjustments) m.set(a.knob, a);
-        return m;
-    }, [result]);
     const saved = result.ok ? result.def : null;
     const theme = useMemo(() => (saved ? deriveCustomTheme(saved) : null), [saved]);
     const previewTheme = useDeferredValue(theme);
-    const failures = theme ? auditTheme(theme) : [];
-    const canSave = !!saved && failures.length === 0;
+    const canSave = !!saved;
 
     const setColor = (k: CustomThemeKnob, hex: string) => setDraft((d) => (d.colors[k] === hex ? d : { ...d, colors: { ...d.colors, [k]: hex } }));
     const setBase = (base: CustomThemeBase) => setDraft((d) => {
@@ -76,13 +69,10 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
         if (!onSave(saved)) setSaveError(mode === 'create' ? 'Could not save: your themes are still loading, or you already have 24.' : 'Could not save this theme.');
     };
 
-    const nAdjusted = adjusted.size;
     const hint = saveError
         ? <span className="cte-hint cte-hint--err">{saveError}</span>
         : !saved ? <span className="cte-hint cte-hint--err">These colours cannot be used.</span>
-            : nAdjusted > 0
-                ? <span className="cte-hint"><Sparkles size={13} aria-hidden="true" /> {nAdjusted === 1 ? '1 colour was' : `${nAdjusted} colours were`} adjusted so text stays readable.</span>
-                : <span className="cte-hint">Every colour passes the readability check.</span>;
+            : undefined;
 
     return (
         <ClModal
@@ -96,7 +86,7 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
             <DialogHeader
                 icon={<Palette size={18} />}
                 title={mode === 'create' ? 'Create theme' : 'Edit theme'}
-                subtitle="Pick a few colours. Cipherline works out the rest and keeps every text readable."
+                subtitle="Pick a few colours. Cipherline works out the rest and uses yours exactly as picked."
                 trailing={mode === 'edit' && onShare ? <ClButton variant="ghost" size="sm" onClick={onShare}><Share2 size={14} /> Share</ClButton> : undefined}
             />
             <DialogBody className="cte-body">
@@ -140,12 +130,11 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
                         </div>
                         <div className="cte-colors" role="group" aria-label="Colours">
                             {CUSTOM_THEME_KNOBS.map((k) => {
-                                const adj = adjusted.get(k);
                                 const ratioOf = RATIO_ROWS[k];
                                 const used = saved?.colors[k] ?? draft.colors[k];
                                 const r = ratioOf && saved ? ratioOf(saved.colors) : null;
                                 return (
-                                    <div key={k} className={`cte-row${adj ? ' cte-row--adj' : ''}`} data-knob={k}>
+                                    <div key={k} className="cte-row" data-knob={k}>
                                         <ColourSwatchButton
                                             value={draft.colors[k]}
                                             label={KNOB_LABELS[k].label}
@@ -159,17 +148,7 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
                                             <span>{KNOB_LABELS[k].hint}</span>
                                         </div>
                                         <div className="cte-row-val">
-                                            {adj && k !== 'bg' && k !== 'panel' && k !== 'surface' ? (
-                                                <span className="cte-adj" role="status">
-                                                    <i className="cte-adj-sw" style={{ background: adj.to }} aria-hidden="true" />
-                                                    Adjusted for readability ({formatRatio(adj.ratio)})
-                                                </span>
-                                            ) : adj ? (
-                                                <span className="cte-adj" role="status">
-                                                    <i className="cte-adj-sw" style={{ background: adj.to }} aria-hidden="true" />
-                                                    {draft.base === 'dark' ? 'Darkened for a dark theme' : 'Lightened for a light theme'}
-                                                </span>
-                                            ) : r ? (
+                                            {r ? (
                                                 <span className="cte-ratio" title={`Contrast ${r.what}`}>{formatRatio(contrastRatio(used, r.bg))}</span>
                                             ) : null}
                                             <code className="cte-hex">{used.toUpperCase()}</code>
@@ -178,12 +157,6 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
                                 );
                             })}
                         </div>
-                        {theme && theme.palette['lume-text'] !== theme.palette.lume && (
-                            <p className="cte-note">
-                                <i className="cte-adj-sw" style={{ background: theme.palette['lume-text'] }} aria-hidden="true" />
-                                Links and mentions use a {draft.base === 'dark' ? 'lighter' : 'darker'} shade of your accent ({formatRatio(contrastRatio(theme.palette['lume-text'], theme.palette.deep))} on panels).
-                            </p>
-                        )}
                         <div className="cte-row cte-row--toggle">
                             <div className="cte-row-text">
                                 <b id={`${nameId}-glow`}>Glow</b>
@@ -191,7 +164,7 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
                             </div>
                             <ClToggle checked={draft.glow} onChange={(v: boolean) => setDraft((d) => ({ ...d, glow: v }))} aria-label="Glow" />
                         </div>
-                        <p className="cte-fine">Verified, warning and status colours always keep their meaning: they follow your backgrounds for contrast but are not part of a theme.</p>
+                        <p className="cte-fine">Verified, warning and status colours are not part of a theme: they keep their meaning and stay visible on your backgrounds.</p>
                     </div>
                     <div className="cte-preview-col">
                         <div className="cte-preview-label" aria-hidden="true">Preview</div>

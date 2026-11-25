@@ -10,6 +10,25 @@ import { ProfileCardLinks } from './ProfileCardParts';
 import { buildProfileCardData } from './profile/buildProfileCardData';
 import { ProfileLinksEditor } from './settings/panes/ProfileLinksEditor';
 import { LINK_PLATFORMS, PROFILE_LINKS_MAX, type ProfileLink } from '../utils/profileLinks';
+import { confirmLeave, getLeaveSnapshot, registerLeaveHost } from '../utils/externalLinks/leaveGate';
+import { setUserGestureProbeForTests } from '../utils/externalLinks/shellOpen';
+
+/** A real click carries a user gesture; the leaving-Cipherline dialog host is
+ *  mounted app-wide. Returns the URL the gate asked about, then "presses Visit". */
+function viaLeaveDialog(click: () => void): string | null {
+    setUserGestureProbeForTests(() => true);
+    const off = registerLeaveHost();
+    try {
+        click();
+        const req = getLeaveSnapshot();
+        if (!req) return null;
+        confirmLeave(req.id);
+        return req.model.href;
+    } finally {
+        off();
+        setUserGestureProbeForTests(null);
+    }
+}
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.hoisted(() => {
@@ -84,15 +103,15 @@ describe('ProfileCardLinks click -> safe open path', () => {
         expect(onOpen).toHaveBeenCalledTimes(1);
         expect(onOpen).toHaveBeenCalledWith({ platform: 'x', handle: 'jack' });
     });
-    it('by default a click reaches electronAPI.openExternal with the template URL (and Discord opens nothing)', () => {
+    it('by default a click reaches electronAPI.openExternal with the template URL, through the leaving dialog (and Discord opens nothing)', () => {
         const openExternal = vi.fn().mockResolvedValue(undefined);
         const original = window.electronAPI;
         window.electronAPI = { ...(window.electronAPI ?? {}), openExternal } as typeof window.electronAPI;
         try {
             act(() => root.render(h(ProfileCardLinks, { links: LINKS })));
-            act(() => { host.querySelector<HTMLButtonElement>('[data-platform="github"]')!.click(); });
+            expect(viaLeaveDialog(() => act(() => { host.querySelector<HTMLButtonElement>('[data-platform="github"]')!.click(); }))).toBe('https://github.com/gaben');
             expect(openExternal).toHaveBeenCalledWith('https://github.com/gaben');
-            act(() => { host.querySelector<HTMLElement>('[data-platform="discord"]')!.click(); });
+            expect(viaLeaveDialog(() => act(() => { host.querySelector<HTMLElement>('[data-platform="discord"]')!.click(); }))).toBeNull();
             expect(openExternal).toHaveBeenCalledTimes(1);
         } finally { window.electronAPI = original; }
     });

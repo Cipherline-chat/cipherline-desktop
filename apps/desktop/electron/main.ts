@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, net, powerMonitor, shell, globalShortcut, Menu, MenuItem, clipboard, nativeImage, systemPreferences, screen, sharedTexture, powerSaveBlocker } from 'electron';
+// clmedia:// (link-embed media streaming, electron/media-embed/media-protocol.ts).
+import { protocol } from 'electron';
 import {
   createHdrShareController, decideHdrShare, parseHdrDisplays, parseHdrSharePref, parseNumberEnv,
   screenIndexFromSourceId, type HdrNative, type SharedTextureLike,
@@ -18,7 +20,7 @@ import { devUploadTrustedCas } from './dev-upload-tls';
 import type { AppUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execFile } from 'child_process';
+import { execFile, spawn as spawnChild } from 'child_process';
 import { collectAudioOutputFacts } from './audio-output-facts';
 import * as os from 'os';
 import * as nodeCrypto from 'crypto';
@@ -42,6 +44,12 @@ import { AUTO_RETRY_ARG, shouldWatchWallet, startWalletWatcher, type WalletWatch
 import { keyringNoticeGuard } from './keyring-notice-guard';
 import { clearMarker, readBootId, readMarker, shouldPreannounce, writeMarker } from './keyring-marker';
 import { registerDiscordImportIpc } from './discord-import/ipc';
+import { registerLinkEmbedIpc } from './media-embed/ipc';
+import { attachHtmlFullscreen, type HtmlFullscreenHandle } from './html-fullscreen';
+import { MediaRegistry, CLMEDIA_SCHEME } from './media-embed/media-registry';
+import { createClmediaHandler } from './media-embed/media-protocol';
+import { registerUnfurlIpc } from './unfurl/ipc';
+import { createPageSnapshotter } from './unfurl/page-snapshot';
 import { createQuitGuard, shouldAskBeforeClose } from './discord-import/quit-guard';
 import { KEYRING_ACTION_CHANNEL, KEYRING_RETRY_COOLDOWN_MS, KEYRING_STATUS_CHANNEL, parseKeyringAction, relaunchOptions } from './keyring-ipc';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
@@ -81,6 +89,7 @@ import { setupTray, updateTrayMenu, getTray, setTrayCallState, setTrayQuitConfir
 import type { TrayMenuState } from './tray';
 import { THEME_STORE_KEY, bootPalette, isBootThemePreference, type BootPalette } from './theme-boot';
 import { titleBarOverlayFor } from './window-chrome';
+import { NIGHT_DIVE_CHANNEL, createNightDiveState, titleBarColoursFor } from './night-dive-chrome';
 import {
   CUSTOM_THEME_PREF, THEME_CUSTOM_STORE_KEY, createWindowThemePreview, paletteForState, parseCustomBootPayload,
   readDeviceThemeStateWithCustom, type CustomAwareThemeState,
@@ -102,11 +111,18 @@ function deviceThemeState(): CustomAwareThemeState {
   return readDeviceThemeStateWithCustom(() => secureStore.get(THEME_STORE_KEY), () => secureStore.get(THEME_CUSTOM_STORE_KEY), systemDark, systemMoreContrast);
 }
 
+/**
+ * The renderer's night dive (00:00-05:00 in plain Dark darkens the app's title
+ * bar): memory only, reset on every page load. The caption overlay follows it
+ * (electron/night-dive-chrome.ts has the why and the colour).
+ */
+const nightDive = createNightDiveState();
+
 /** Window background + the native caption overlay (Windows and Linux; electron/window-chrome.ts). */
 function paintWindowColors(colors: BootPalette): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try { mainWindow.setBackgroundColor(colors.windowBackground); } catch { /* tearing down */ }
-  const overlay = titleBarOverlayFor(process.platform, colors.titleBar);
+  const overlay = titleBarOverlayFor(process.platform, titleBarColoursFor(colors, nightDive.active()));
   if (overlay) {
     try { mainWindow.setTitleBarOverlay(overlay); } catch { /* no overlay */ }
   }
@@ -120,6 +136,11 @@ function paintWindowColors(colors: BootPalette): void {
  * window colours on the preview.
  */
 const windowThemePreview = createWindowThemePreview(paintWindowColors, () => paletteForState(deviceThemeState(), bootPalette));
+
+/** Repaint the device's real theme colours, unless a live preview owns the window. */
+function repaintWindowColors(): void {
+  if (!windowThemePreview.active()) paintWindowColors(paletteForState(deviceThemeState(), bootPalette));
+}
 
 /** Repaint what main owns (window background, Windows caption overlay) and tell the renderer. */
 function paintWindowTheme(state: CustomAwareThemeState): void {
@@ -273,6 +294,8 @@ import { classifyEnvNow, deadSessionFrom } from './unclean-exit-classify';
 import { UncleanLedgerStore, UNCLEAN_LEDGER_FILE, judgeUncleanExit, suppressedCounts, withDismissed, withReviewed } from './unclean-exit-ledger';
 import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
+import { createNearBridge, NEAR_ACTIONS } from './near-bridge';
+import { resolveNearHelper } from './near-helper-path';
 import { applyAvatarKey } from './avatar-key-policy';
 import { isNativeShareEncoderEnabled } from './native-share-encoder';
 import { registerNativeShareIpc } from './native-share-ipc';
@@ -1588,7 +1611,17 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
   // during live dragging) and immediately on close so the last position is
   // always captured even if the app is force-quit.
   let _saveStateTimer: ReturnType<typeof setTimeout> | null = null;
+  // A page's fullscreen request (a video's button, YouTube's, the call overlay)
+  // is real OS fullscreen over the whole display, and leaving it restores the
+  // exact previous window state (electron/html-fullscreen.ts).
+  const htmlFullscreen: HtmlFullscreenHandle = attachHtmlFullscreen(mainWindow, {
+    displayBoundsFor: (b) => screen.getDisplayMatching(b).bounds,
+    defer: (fn, ms) => { setTimeout(fn, ms); },
+    log: (line) => console.log(line),
+  });
   const debouncedSaveState = () => {
+    // Never persist the fullscreen size as the window's own.
+    if (htmlFullscreen.active() || mainWindow?.isFullScreen()) return;
     if (_saveStateTimer) clearTimeout(_saveStateTimer);
     _saveStateTimer = setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) saveWindowState(mainWindow);
@@ -2622,6 +2655,20 @@ ipcMain.handle('attribution:peek-clipboard', () => {
   }
 });
 
+// clmedia:// — inline video/image streaming for link embeds
+// (electron/media-embed/media-protocol.ts). Electron requires custom schemes
+// to be declared before the app is ready, and only once. `stream` lets
+// <video> issue Range requests against it (start fast, seek); it does NOT
+// bypass the CSP (media-src/img-src list `clmedia:` explicitly), gets no
+// fetch() support (only media elements load it), and serves nothing but
+// URLs the renderer registered through validated IPC. `corsEnabled` (2026-11-24,
+// embeds-always-thumb) lets a `crossOrigin` <video> load it so the SENDER's
+// frame grab can draw a frame onto a canvas; the handler answers CORS for the
+// app's own renderer origin only (createClmediaHandler `allowOrigin`).
+protocol.registerSchemesAsPrivileged([
+  { scheme: CLMEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: false, corsEnabled: true, bypassCSP: false } },
+]);
+
 // Register as the default handler for the cipherline:// URI scheme.
 // On macOS this must happen before app.whenReady.
 //
@@ -3204,8 +3251,13 @@ app.whenReady().then(async () => {
     // automatically (vs. requiring a click) is host-based and lives in
     // src/utils/imageHosts.ts + usePrivacySettings' `imageAutoLoad` — a CSP
     // change is neither necessary nor sufficient for it.
-    `img-src 'self' data: blob: https://media.cipherline.chat https://*.stripe.com https://*.link.com ${KLIPY_CSP_IMG}`,
-    "media-src 'self' blob:",
+    // clmedia: — link-embed media streamed by the main process
+    // (electron/media-embed/media-protocol.ts). Not an internet origin: it
+    // serves only URLs the renderer registered over validated IPC, each one
+    // SSRF-checked, cookie-less and type/size-capped, so listing it here does
+    // not open img-src/media-src to arbitrary hosts.
+    `img-src 'self' data: blob: clmedia: https://media.cipherline.chat https://*.stripe.com https://*.link.com ${KLIPY_CSP_IMG}`,
+    "media-src 'self' blob: clmedia:",
     "font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com data:",
     // Inline PDF preview uses <embed type="application/pdf" src="blob:…"> in
     // FileViewer.tsx. object-src governs <embed>/<object>; without blob: here
@@ -3216,6 +3268,10 @@ app.whenReady().then(async () => {
     // script-src which doesn't include blob:, and the worker silently fails.
     "worker-src 'self' blob:",
     // youtube-nocookie.com for privacy-preserving YouTube embeds in chat messages.
+    // clips.twitch.tv / player.twitch.tv / www.tiktok.com (link embeds phase 4): the
+    // Twitch and TikTok players, mounted only when the viewer presses play, their URL
+    // built by the renderer from {provider, id} (src/utils/linkEmbeds/players.ts
+    // PLAYER_FRAME_ORIGINS mirrors these three exact origins; never a wildcard).
     // blob: because Chromium's built-in PDF viewer renders <embed type="application/pdf">
     // as a frame (even though <embed> is an object tag) — without blob: here, PDF
     // previews fail with "Refused to frame 'blob:…'" despite object-src allowing blob:.
@@ -3231,7 +3287,7 @@ app.whenReady().then(async () => {
     // the sign-up form embeds; Cloudflare rejects 127.0.0.1 as a widget hostname, so the
     // widget runs there (components/TurnstileFrame.tsx). challenges.cloudflare.com — the
     // widget's own iframe.
-    "frame-src https://www.youtube-nocookie.com blob: https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat",
+    "frame-src https://www.youtube-nocookie.com https://clips.twitch.tv https://player.twitch.tv https://www.tiktok.com blob: https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -3375,7 +3431,22 @@ app.whenReady().then(async () => {
   // (index.html's boot backdrop) is already in the stored theme.
   // A page (re)load also ends a live preview (renderer memory only): the
   // reloaded page boots in the stored theme, so the window must too.
-  ipcMain.on('theme:get-sync', (e) => { windowThemePreview.end(); e.returnValue = deviceThemeState(); });
+  // The same (re)load also drops the night-dive caption colour (memory only):
+  // the boot backdrop is the day navy, and the new page announces its own
+  // state (src/hooks/useNightDive.ts useNightDiveTitleBarSync). Dropped FIRST,
+  // so a preview's end repaints without it, and the window is painted once.
+  ipcMain.on('theme:get-sync', (e) => {
+    const nightDropped = nightDive.reset();
+    if (!windowThemePreview.end() && nightDropped) repaintWindowColors();
+    e.returnValue = deviceThemeState();
+  });
+  // Night dive (renderer -> main, fire-and-forget): exactly `true` / `false`
+  // from the main window, anything else is dropped. Repaints only on a change
+  // and never over a live preview (the preview's end repaints with it).
+  ipcMain.on(NIGHT_DIVE_CHANNEL, (e, active: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || e.sender !== mainWindow.webContents) return;
+    if (nightDive.set(active)) repaintWindowColors();
+  });
   ipcMain.handle('theme:set', (_e, pref: unknown): CustomAwareThemeState => {
     if (!isBootThemePreference(pref)) throw new Error('theme:set expects a built-in theme id or system');
     try { secureStore.set(THEME_STORE_KEY, pref); } catch { /* store locked: this session only */ }
@@ -3482,44 +3553,6 @@ app.whenReady().then(async () => {
       return { identityPub, sig };
     } catch (e) {
       console.error('[device-register-proof] failed', e);
-      return null;
-    }
-  });
-
-  // ── C-2b: history-sync capability advertisement ─────────────────────────
-  // Signs the canonical advertisement with this device's Signal identity key,
-  // so the approver can tell a genuine "I can receive a WRAPPED transfer key"
-  // from a boolean the relaying server flipped. See the long rationale in
-  // apps/desktop/src/utils/historyRequestProof.ts.
-  //
-  // Same key, same primitive and the same `:`-joined layout as the
-  // registration proof above — only the domain-separation prefix differs, so
-  // neither proof can be replayed as the other. The capability token
-  // (`wrapped`) is INSIDE the signed message; that is what makes the flag
-  // untamperable rather than merely advisory.
-  //
-  // The template literal below is duplicated from
-  // `historyRequestProofMessage` in that util rather than imported: an import
-  // across the electron/ ⇄ src/ boundary re-roots the emitted dist-electron
-  // tree and breaks packaging ("main.js not found in archive"), and only a
-  // STAGING desktop build catches it. `historyRequestProof.test.ts` scans THIS
-  // source text and fails if the two spellings drift.
-  //
-  // Returns null rather than an unsigned advertisement when the identity is
-  // unavailable — the renderer must then refuse to send the request rather
-  // than fall back, because an unsigned request is exactly what the approver
-  // now declines.
-  ipcMain.handle('crypto:history-request-proof', async (event, userId: string, requestingDeviceId: string, ts: number) => {
-    try {
-      await ensureSignalIdentity(); // idempotent — generates on first run
-      const identityPub = getLocalIdentityPub();
-      if (!identityPub) return null;
-      const msg = `cipherline-history-request:v1:${userId}:${requestingDeviceId}:${identityPub}:wrapped:${ts}`;
-      const sig = signIdentityMessage(msg);
-      if (!sig) return null;
-      return { identityPub, sig };
-    } catch (e) {
-      console.error('[history-request-proof] failed', e);
       return null;
     }
   });
@@ -3744,6 +3777,59 @@ app.whenReady().then(async () => {
   ipcMain.handle('link:end', () => {
     endLinkSession();
   });
+
+  // ── Local history transfer between this account's own devices ("near" own-device role) ───────────────────────────────
+  // The protocol runs in a small Rust helper process (apps/desktop-host/near-helper), a child of THIS process over stdio,
+  // started on demand and stopped when idle. This file only wires it up; validation and the password gate are in
+  // near-bridge.ts. ONLY the own-device transfer members are served (the proximity sign-in members are not registered, so
+  // the preload answers them "not available"). `nearProbe` reports available only when the helper binary is present AND
+  // starts, so a build without the helper keeps the app exactly as it was. Registered on win32 too (the helper has a Windows
+  // build: Wi-Fi/Ethernet allow-list, no Bluetooth, password gate). Nothing here reaches a private address (the helper does all
+  // LAN work; main only calls the public API for the step-up check): no net-guard exemption. The renderer only calls any of
+  // this unconditionally: it is the only way history moves between devices (the server-relayed sync was removed 2026-11-24).
+  {
+    const nearHelperBin = () => resolveNearHelper({
+      isPackaged: IS_PACKAGED,
+      envHelper: process.env.CIPHERLINE_NEAR_HELPER,
+      resourcesPath: process.resourcesPath,
+      devTargetDir: path.join(__dirname, '../../desktop-host/near-helper/target'),
+      // an empty file is never a helper (defence in depth: scripts/build-near-helper.sh packages nothing when the build failed)
+      exists: (p) => { try { return fs.statSync(p).size > 0; } catch { return false; } },
+    })?.path ?? null;
+    const nearBridge = createNearBridge({
+      resolveBinary: nearHelperBin,
+      spawn: (cmd, args, o) => spawnChild(cmd, args, o),
+      isPackaged: IS_PACKAGED,
+      config: () => ({
+        profile: path.join(app.getPath('userData'), 'near-helper'),
+        stagingDir: path.join(app.getPath('userData'), 'backup-staging'),
+        version: app.getVersion(),
+        deviceLabel: (() => { try { return (os.hostname() || 'Desktop').slice(0, 64); } catch { return 'Desktop'; } })(),
+        platform: process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux',
+      }),
+      resolveReadable: (p) => rendererPath('backup-read', p),
+      http: async (method, url, headers, body) => {
+        const res = await net.fetch(url, {
+          method,
+          headers: { ...headers, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+        });
+        let parsed: unknown = null;
+        try { parsed = await res.json(); } catch { /* no body */ }
+        return { status: res.status, body: parsed };
+      },
+      send: (channel, payload) => { try { mainWindow?.webContents.send(channel, payload); } catch { /* window gone */ } },
+      log: (line) => console.warn(`[near] ${line}`),
+    });
+    for (const action of NEAR_ACTIONS) {
+      ipcMain.handle(`near:${action}`, (_e, ...args: unknown[]) => nearBridge.invoke(action, args));
+    }
+    ipcMain.handle('near:gate-submit', (_e, ticket: unknown, value: unknown) => nearBridge.gateSubmit(ticket, value));
+    ipcMain.handle('near:gate-cancel', (_e, ticket: unknown) => nearBridge.gateCancel(ticket));
+    app.on('before-quit', () => nearBridge.shutdown());
+  }
 
   // The MIRROR role — this desktop is the signed-in device approving a phone
   // that scanned its invite QR (Settings → Devices → "Sign in on your phone").
@@ -4381,6 +4467,35 @@ app.whenReady().then(async () => {
   // kept in SecureStore and used from THIS process only (electron/discord-import/).
   // The renderer never receives it back, and Cipherline's servers never see it.
   registerDiscordImportIpc(ipcMain, { store: secureStore, onRunningChange: (running) => discordImportQuitGuard.setRunning(running) });
+
+  // Link embeds (docs/plans/embeds.md, electron/media-embed/): YouTube's
+  // title for the click-to-play facade, and inline video (direct links and
+  // clip pages such as Medal) streamed through clmedia://. Every fetch goes
+  // through the SSRF-guarded, cookie-less, referrer-less path; the protocol
+  // serves only URLs registered through these validated IPC channels.
+  const mediaRegistry = new MediaRegistry();
+  protocol.handle(CLMEDIA_SCHEME, createClmediaHandler(mediaRegistry, {
+    log: IS_PACKAGED ? undefined : (line) => console.log(line),
+    // The renderer's own origin only (the same check as the IPC sender guard).
+    allowOrigin: (origin) => isTrustedSenderUrl(`${origin}/`, DEV_SERVER_URL, CIPHERLINE_PROD_PORT),
+  }));
+  registerLinkEmbedIpc(ipcMain, { registry: mediaRegistry });
+  // Sender-side link previews (docs/plans/embeds.md phase 3, electron/unfurl/):
+  // the SENDER's device visits a link it is about to send and returns a draft
+  // preview + image bytes; the renderer re-encodes and encrypts the image and
+  // puts the preview inside the E2EE message. Same guarded fetch path (https,
+  // SSRF-checked + pinned per hop, no cookies / referrer, size + time caps).
+  // A page that publishes no picture gets a SNAPSHOT, taken on this (the
+  // sender's) device in a locked-down offscreen window with a fresh in-memory
+  // session, every request through a guarded loopback proxy (no LAN, no
+  // loopback, https only, request / byte caps), one at a time; only for URLs
+  // the unfurler just read as a real page without a picture (page-snapshot.ts).
+  const pageSnapshotter = createPageSnapshotter({
+    BrowserWindow,
+    fromPartition: (partition, options) => session.fromPartition(partition, options),
+    log: IS_PACKAGED ? undefined : (line) => console.log(line),
+  });
+  registerUnfurlIpc(ipcMain, { log: IS_PACKAGED ? undefined : (line) => console.log(line), snapshotter: pageSnapshotter });
 
   // Linux wallet prompt (keyring-prompt.ts). What the system wallet did when the
   // first safeStorage call asked it to open: enums and flags only, no key

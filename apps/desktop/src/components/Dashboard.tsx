@@ -48,8 +48,7 @@ import {
     guestCallServerInfo, GUEST_KEY_REQUEST_DELAYS_MS, type GuestCall, type GuestRoomKey, type GuestMove,
 } from '../utils/guestCallKey';
 import { useGuestCallRoster } from '../hooks/useGuestCallRoster';
-import { useNightDiveActive } from '../hooks/useNightDive';
-import { titleBarColor } from '../utils/nightDive';
+import { useNightDiveTitleBarSync } from '../hooks/useNightDive';
 import { resolveCallKeyGate, CALL_KEY_STALL_MS, CALL_KEY_DEGRADED_GRACE_MS } from '../utils/callKeyGate';
 import { createJoinAttemptTracker, deriveCallJoinPhase, isJoinPending, describeCallJoinFailure, isSameJoinInFlight, type CallJoinKind, type JoinAttempt } from '../utils/callJoinFlow';
 import { canStartCallsIn, START_CALLS_DENIED_MESSAGE } from '../utils/startCallsGate';
@@ -67,6 +66,7 @@ import {
     shouldActOnPaneDisconnect, failureTitleFor, type HuddleSelection,
 } from '../utils/callTransition';
 import { displayHuddleCalls, voiceJoinPeers, PENDING_CALL_KEY_PREFIX, type JoinView, type JoinPeer } from '../utils/joinView';
+import { huddleChannelKey } from '../utils/huddleCallsLoad';
 import { predictSpawnedCallName } from '../utils/callNaming';
 import { CallEncryptionIndicator, type CallEncryptionIndicatorMode } from './server/CallEncryptionIndicator';
 import { useRealtime, formatDeviceLinkedToast } from '../hooks/useRealtime';
@@ -150,12 +150,12 @@ import { serveKeyRequestsPass, runMemberJoinDistribution, joinCheckRows, pickSer
 import { KeyReaskScheduler, ReaskBudget, ReaskTargets, runReaskTick, type ReaskTickResult } from '../utils/keyReask';
 import { planKeyPrefetch, PrefetchLedger, KeyAskLimiter, KeyAskQueue, noteKeyRequestError, requestEpochList, askableEpochRange, refineQueuedAsk, PREFETCH_TICK_MS, type KeyAskOutcome, type QueuedAsk } from '../utils/channelKeyPrefetch';
 import { computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, buildChannelKeyContent, channelKeyContentMatchesEnvelope, channelKeyInstallProblem, needsRegistryEpochCheck, epochWithinRegistry, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, epochPastHolderBound, decideGapReask, type GapAsk, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, mergeEpochAtSignal, rotationAlreadyDone, ROTATION_STAND_DOWN_VERIFY_MS, resolveRotationClaim, normalizeRotationReason, isEpochDueForPeriodicRotation, shouldVerifyAfterStandDown, PERIODIC_ROTATION_SWEEP_MS, PERIODIC_ROTATION_FIRST_SWEEP_MS, PERIODIC_ROTATION_MAX_PER_SWEEP, type ServerEpochInfo } from '../utils/channelKeyDistribution';
-import { HistoryRequestModal } from './HistoryRequestModal';
 import { DeviceApprovalHost } from './DeviceApprovalHost';
 import { StaleDevicesHost } from './StaleDevicesHost';
 import { ShortcutsSheetHost } from './ShortcutsSheet';
 import { WhatsNewHost } from './WhatsNewDialog';
-import { HistorySyncBanner } from './HistorySyncBanner';
+import { NearTransferHost } from './near/NearTransferHost';
+import { SignInHistoryPrompt } from './near/SignInHistoryPrompt';
 import { FirstFriendCelebration } from './FirstFriendCelebration';
 import { DeviceStorageSetupModal } from './DeviceStorageSetupModal';
 import { useDeviceStorageSetup } from '../hooks/useDeviceStorageSetup';
@@ -280,7 +280,7 @@ import { FriendActionDialog, type FriendActionKind } from './FriendActionDialog'
 import { CallProvider, useCallContextSafe, type FocusedStream } from '../contexts/CallContext';
 import { useNotificationDispatch } from '../hooks/useNotificationDispatch';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
-import { playSound, playLoopingSound, type SoundCategory } from '../utils/notificationSounds';
+import { playSound, playLoopingSound, setCallSoundDndProbe, silenceActiveCallLoopsIfDnd, type SoundCategory } from '../utils/notificationSounds';
 import { computeDnd as computeNotifDnd } from '../hooks/useDndState';
 import { useComposerDraftPrune } from '../hooks/useComposerDraftPrune';
 import { ConversationPreviewLine } from './ConversationPreviewLine';
@@ -296,7 +296,7 @@ import type { SavesLocalBinding } from '../services/personalSavesSyncEnv';
 import { addedSaves, mergeScope } from '../utils/personalSavesSync';
 import { withPersonalChannelSaves, attachmentIdsOf } from '../utils/personalChannelSaves';
 import * as messageStore from '../utils/messageStore';
-import { Permissions, hasPermission, withEditCardStyle, gateCardStyleByFlag, gateImportedFrom, importMarkOf, type ImportMark } from '@cipherline/shared';
+import { Permissions, hasPermission, isEmbedsOnlyEdit, withEditCardStyle, withEditEmbeds, gateCardStyleByFlag, gateImportedFrom, importMarkOf, type ImportMark } from '@cipherline/shared';
 import {
     resolveQuickReplyTarget,
     normalizeQuickReplyText,
@@ -330,7 +330,7 @@ import { decideDmReactionAlert, reactionAlertKey, rememberAlerted, reactionTarge
 import { ChannelMuteProvider, useChannelMuteState } from '../contexts/ChannelMuteContext';
 import { effectiveMutedChannels, withoutMuted } from '../utils/channelMute';
 import { buildMuteItems, MutedGlyph } from './server/muteMenu';
-import { ChannelMentionRecovery, recoverChannelMentions, scanReconcilePage, shouldAlertForReplay } from '../utils/channelMentionRecovery';
+import { ChannelMentionRecovery, correctedUnreadCount, recoverChannelMentions, scanReconcilePage, shouldAlertForReplay } from '../utils/channelMentionRecovery';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { createFriendsSync, type FriendsPayload, type FriendsLoadStatus } from '../utils/friendsSync';
 import { readCachedConversations, cacheConversations, readCachedFriends, cacheFriends } from '../utils/bootListCache';
@@ -345,6 +345,7 @@ import { TrustBadge } from './TrustBadge';
 import { evaluateSender, actionFor, isWarnable, hasUnverifiedDeviceWarning, type SenderVerdict } from '../utils/senderTrust';
 import { evaluateSelfSender, selfContentRefused } from '../utils/selfSenderTrust';
 import { CallKeyStore } from '../utils/callKeyStore';
+import { CallKeyRefusals, callKeyRefusalNotice, shouldRerequestAfterResolve } from '../utils/callKeyRefusal';
 import { epochForKey } from '../utils/e2eeKeyRing';
 import { useCallKeySharing } from '../hooks/useCallKeySharing';
 import { CALL_KEY_ID_SHARE } from '../utils/callKeyShare';
@@ -353,7 +354,7 @@ import * as directoryKeyWatch from '../utils/directoryKeyWatch';
 import * as ownDeviceLedger from '../utils/ownDeviceLedger';
 import * as publishedDeviceSets from '../utils/publishedDeviceSets';
 import { contactTrustDevices } from '../utils/contactBadgeDevices';
-import { OwnDeviceAlert, type OwnDeviceName } from './OwnDeviceAlert';
+import { OwnDeviceAlert, type OwnDeviceName, type OwnDeviceRemoval } from './OwnDeviceAlert';
 import * as deviceDirectory from '../utils/deviceDirectory';
 import { bindSender, parseEnvelopeContent, ROSTER_REFRESH_MIN_MS, SENDER_BINDING_MAX_HOLD_MS } from '../utils/senderBinding';
 import { record as recordDelivery } from '../utils/deliveryDiagnostics';
@@ -365,6 +366,8 @@ import { failureCauseOf } from '../utils/networkError';
 import { createPullGate, createWakeResync, runPaced, type PullGate } from '../utils/resumeSequencing';
 import { ackMessageEnvelopes } from '../utils/messageAck';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
+import { deliverOwnNearControl, isNearOwnControl } from '../utils/nearOwnTransport';
+import { lookupHolderLabel } from '../utils/nearOwnTransfer';
 import { isSelfDm, labelSelfConversations, selfConversationTitle, selfMatchesQuery, isSilentIncoming } from '../utils/selfConversation';
 import { applyPinOp, applyPinOps, localPinOp, pruneLedger, replaySafePinUpdater, type PinOp, type PinLedger, ownPinOps } from '../utils/pinSync';
 import { canOfferFriendGatedAction, type FriendRelationship } from '../utils/friendGatedActions';
@@ -1044,6 +1047,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         ? ownAlertRead.state
         : { alerts: [], selfKeyMismatch: false, unreviewedBaseline: [] };
     const [ownAlertNames, setOwnAlertNames] = useState<Record<string, OwnDeviceName>>({});
+    // Keyed by account, so a switch never shows the previous account's
+    // "signed out and removed" confirmation.
+    const [ownRemovalsRead, setOwnRemovalsRead] = useState<{ key: string; map: Record<string, OwnDeviceRemoval> }>({ key: '', map: {} });
+    const ownRemovals = useMemo(
+        () => (ownRemovalsRead.key === (userId ?? '') ? ownRemovalsRead.map : {}),
+        [ownRemovalsRead, userId],
+    );
+    const setOwnRemovals = useCallback((f: (prev: Record<string, OwnDeviceRemoval>) => Record<string, OwnDeviceRemoval>) => {
+        const key = userId ?? '';
+        setOwnRemovalsRead(r => ({ key, map: f(r.key === key ? r.map : {}) }));
+    }, [userId]);
     useEffect(() => {
         myUserIdRef.current = userId ?? '';
         // Session state keyed to the previous account: drop it on a switch so
@@ -1405,6 +1419,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * up. Always write through `recordCallKey`, never to the ref directly.
      */
     const [callKeyEpoch, setCallKeyEpoch] = useState(0);
+    /**
+     * Call keys the sender-trust gate REFUSED, per call (utils/callKeyRefusal.ts).
+     * Never the key itself — only why, so the keyless call panel can say so
+     * instead of "Securing call…" forever, and so resolving that sender's
+     * identity warning can ask the holders once more. Bumped on every write.
+     */
+    const callKeyRefusalsRef = useRef(new CallKeyRefusals());
+    const [callKeyRefusalTick, setCallKeyRefusalTick] = useState(0);
+    /** Bumped to restart the keyless call's key-request schedule (useCallKeySharing). */
+    const [callKeyRerequestNonce, setCallKeyRerequestNonce] = useState(0);
     /** A key known on THIS device: `generated` when this device created it
      *  (started the call / rotated it / minted it alone), at `epoch` when
      *  given, else an adoption. */
@@ -1430,7 +1454,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const acceptRemoteCallKey = useCallback((input: { conversationId: string; callId: string; keyB64: unknown; epoch?: unknown; senderUserId: string; keyId?: unknown; rotatesAt?: unknown }) => {
         const senderIsMember = isConversationMember(input.conversationId, input.senderUserId);
         const d = callKeyStoreRef.current.recordRemote({ ...input, senderIsMember });
-        if (d === 'stored') setCallKeyEpoch(n => n + 1);
+        if (d === 'stored') {
+            setCallKeyEpoch(n => n + 1);
+            // A key was accepted: an earlier refusal no longer explains anything.
+            if (callKeyRefusalsRef.current.get(input.conversationId, input.callId)) {
+                callKeyRefusalsRef.current.clear(input.conversationId, input.callId);
+                setCallKeyRefusalTick(n => n + 1);
+            }
+        }
         else if (d !== 'duplicate') console.warn(`[E2EE] call_key not adopted (${d})`);
         return d;
     }, [isConversationMember]);
@@ -1611,7 +1642,32 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         }),
         recordGeneratedKey: (conversationId, callId, keyB64, epoch) => recordCallKey(conversationId, callId, keyB64, true, epoch),
         isConversationMember,
+        rerequestNonce: callKeyRerequestNonce,
     });
+    /** The keyless DM/group call's refused key, if that is why it has no key (utils/callKeyRefusal.ts). */
+    void callKeyRefusalTick;
+    const activeCallKeyRefusal = activeCall && !activeCall.callsChannelId && !activeCall.isVoiceChannel && !deliveredCallKeyB64
+        ? callKeyRefusalsRef.current.get(activeCall.conversation_id, activeCall.id)
+        : null;
+    /**
+     * The user answered a contact's identity warning (verify / acknowledge /
+     * dismiss, from ChatPane). Besides retiring the warning: if the call this
+     * device is in has no key BECAUSE that contact's key was refused, ask the
+     * call's holders once more. Their answer is judged by the same sender-trust
+     * gate — verified now → accepted and the call connects; dismissed → refused
+     * again and the notice comes back. Nothing is adopted here.
+     */
+    const resolveSenderWarning = useCallback((uid: string) => {
+        clearSenderWarning(uid);
+        const call = activeCall;
+        const refusal = call ? callKeyRefusalsRef.current.get(call.conversation_id, call.id) : null;
+        const hasKey = !!call && !!call.conversation_id && !!callKeyStoreRef.current.accepted(call.conversation_id, call.id);
+        if (call && shouldRerequestAfterResolve({ resolvedUserId: uid, activeCall: call, hasKey, refusal })) {
+            callKeyRefusalsRef.current.clear(call.conversation_id, call.id);
+            setCallKeyRefusalTick(n => n + 1);
+            setCallKeyRerequestNonce(n => n + 1);
+        }
+    }, [clearSenderWarning, activeCall]);
     // The pull loop below has an empty dep array, so it reads the handler by ref.
     const handleCallKeyRequestRef = useRef(callKeySharing.handleKeyRequest);
     useEffect(() => { handleCallKeyRequestRef.current = callKeySharing.handleKeyRequest; }, [callKeySharing.handleKeyRequest]);
@@ -3133,19 +3189,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         };
     }, [globalIncomingCall]);
 
-    // Night dive: the title-bar overlay is painted by the OS, not CSS, so it needs
-    // the matching abyss shade passed in explicitly.
-    const nightDive = useNightDiveActive();
-    useEffect(() => {
-        if (globalIncomingCall && !activeCall) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
-            (window as any).electronAPI?.setTitleBarColor?.('#25E0C8');
-        } else {
-            // Match the app's top drag bar (bg-cl-abyss) so the window controls blend in.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
-            (window as any).electronAPI?.setTitleBarColor?.(titleBarColor(nightDive));
-        }
-    }, [globalIncomingCall, activeCall, nightDive]);
+    // Night dive: the Windows / Linux caption buttons are painted by the OS from
+    // main's colours, not CSS, so main is told when the title bar below goes
+    // dark (00:00-05:00, plain Dark) and paints them to match.
+    useNightDiveTitleBarSync();
 
     // Decline = "not taking this call on any of my devices": the card goes at once and the server stops the account's other devices
     // ringing and records that nothing was missed (utils/callDecline.ts). The 15 s ring timeout above is NOT this.
@@ -3961,6 +4008,18 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 // call key is exactly the moment not to start writing down
                                 // who was talking to whom.
                                 console.warn(`[E2EE] call_key rejected: sender identity not attributable (${senderVerdict})`);
+                                // Remembered (reason only, never the key) so a keyless call can
+                                // say WHY it is stuck and offer the review that unsticks it,
+                                // instead of "Securing call…" and a redial that cannot help.
+                                if (envelopeSenderUserId && envelopeSenderUserId !== userId) {
+                                    callKeyRefusalsRef.current.note({
+                                        conversationId: env.conversation_id,
+                                        callId: content.call_id,
+                                        senderUserId: envelopeSenderUserId,
+                                        verdict: senderVerdict,
+                                    });
+                                    setCallKeyRefusalTick(n => n + 1);
+                                }
                             }
                         }
 
@@ -3981,6 +4040,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 senderTrusted: trusted,
                             });
                             if (outcome !== 'scheduled') console.debug(`[CallKeyShare] key request not answered (${outcome})`);
+                        }
+
+                        // Own-device transfer (contract section 7): a near_offer / near_answer / near_msg from ANOTHER device of this
+                        // account goes to the local-transfer helper. Always (the transfer is the only way history moves between devices
+                        // since the server-relayed sync was removed; a build without the helper just fails the hand-over quietly). They
+                        // are never a row, a preview, an unread count or a notification (CONTROL_TYPES + applyIncomingDmMessages + the
+                        // retention sweeper), and the envelope is ACKed like any other control message. deliverOwnNearControl re-checks
+                        // account + device before the helper sees anything; the F1 own-sender check above already refused a forged own claim.
+                        if (isNearOwnControl(content) && envelopeSenderUserId === userId) {
+                            // The holder sheet names the asking device from the account's device list (sanitised name, platform, registered date), never
+                            // the generic "Your other device" (security round H2). Only an OFFER opens a sheet; answers and messages need no lookup.
+                            void (async () => {
+                                const deviceLabel = content.type === 'near_offer' && envelopeSenderDeviceId
+                                    ? await lookupHolderLabel(async () => (await axios.get(`${API_BASE}/devices`, { headers: { Authorization: `Bearer ${token}` } })).data, envelopeSenderDeviceId)
+                                    : undefined;
+                                await deliverOwnNearControl({ content, userId, deviceId, senderUserId: envelopeSenderUserId, senderDeviceId: envelopeSenderDeviceId, token, deviceLabel });
+                            })();
                         }
 
                         // Global Calling Intercept — fetch caller profile for banner.
@@ -5955,7 +6031,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         });
     }, []);
 
-    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, sendPresenceIdle, sendPresenceGame, sendPresenceGameDetail, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, cosmeticsUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, guestKeyEvents, setGuestKeyEvents, guestKeyRequestEvents, setGuestKeyRequestEvents, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, channelImportEvent, importReportedEvent, importClaimEvent, discordClaimsEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
+    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, sendPresenceIdle, sendPresenceGame, sendPresenceGameDetail, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, cosmeticsUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, guestKeyEvents, setGuestKeyEvents, guestKeyRequestEvents, setGuestKeyRequestEvents, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, channelImportEvent, importReportedEvent, importClaimEvent, discordClaimsEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
 
     // ── Ghost-device fix: own-device alarm (docs/ghost-device.md §2.5) ───────
     // A COMPLETE listing of this account's devices at boot and on every
@@ -6014,15 +6090,41 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const handleOwnConfirm = useCallback((id: string, pub: string) => {
         if (userId) ownDeviceLedger.confirmOwnDevice(userId, id, pub);
     }, [userId]);
-    const handleOwnReject = useCallback((id: string, pub: string) => {
+    const handleOwnReject = useCallback(async (id: string, pub: string) => {
         if (!userId) return;
         // Local record first: it is what keeps the alarm and withholds the
         // code if the server ignores the revoke.
         ownDeviceLedger.rejectOwnDevice(userId, id, pub);
-        axios.post(apiUrl`/devices/${id}/revoke`, {}, {
-            headers: { Authorization: `Bearer ${token}`, ...(deviceId ? { 'x-device-id': deviceId } : {}) },
-        }).catch(() => { /* the local record still alarms */ });
-    }, [userId, token, deviceId]);
+        const name = ownAlertNames[id];
+        setOwnRemovals(prev => ({ ...prev, [id]: { state: 'removing', name } }));
+        const headers = { Authorization: `Bearer ${token}` };
+        try {
+            await axios.post(apiUrl`/devices/${id}/revoke`, {}, {
+                headers: { ...headers, ...(deviceId ? { 'x-device-id': deviceId } : {}) },
+            });
+        } catch { /* judged by the re-list below: a 404 "already revoked" is still a success */ }
+        // Re-list. Only a COMPLETE listing marks the device gone in the ledger,
+        // and nothing else asks for one until the next reconnect, which is why
+        // the alarm used to stay up after a revoke that had worked. The
+        // directory interceptor folds this response in synchronously.
+        try {
+            await axios.get(apiUrl`/keys/identity_keys?user_id=${userId}`, { headers });
+        } catch { /* offline: the check below sees it still listed */ }
+        const stillListed = !deviceId || !ownSelfPub
+            || ownDeviceLedger.currentOwnAlerts(userId, { deviceId, pub: ownSelfPub }).alerts.some(a => a.device_id === id);
+        setOwnRemovals(prev => ({ ...prev, [id]: { state: stillListed ? 'failed' : 'removed', name } }));
+        refreshOwnAlerts();
+    }, [userId, token, deviceId, ownSelfPub, ownAlertNames, refreshOwnAlerts, setOwnRemovals]);
+    const clearOwnRemoved = useCallback(() => {
+        setOwnRemovals(prev => Object.fromEntries(Object.entries(prev).filter(([, r]) => r.state !== 'removed')));
+    }, [setOwnRemovals]);
+    // The confirmation clears itself; "Done" clears it sooner.
+    const hasOwnRemoved = Object.values(ownRemovals).some(r => r.state === 'removed');
+    useEffect(() => {
+        if (!hasOwnRemoved) return;
+        const t = setTimeout(clearOwnRemoved, 20_000);
+        return () => clearTimeout(t);
+    }, [hasOwnRemoved, ownRemovals, clearOwnRemoved]);
     const { broadcastCurrentAvatar } = useAvatarBroadcast(token, userId);
 
     // Cancel incoming ringing visually if the caller hung up before we picked up
@@ -6438,6 +6540,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // Keep the ref in sync so playNotification (defined above) always sees the latest status
     useEffect(() => { myStatusRef.current = myStatus; }, [myStatus]);
 
+    // Owner rule 2026-11-25: Do Not Disturb = no call sound at all. The sound
+    // module owns the gate (every cue funnels through it); this just tells it
+    // how to read "on DND" at play time. Status DND or the explicit manual DND
+    // switch. NOT the automatic in-call / screenshare / game rules: those hold
+    // while a call is live, and would silence the call's own cues.
+    useEffect(() => {
+        setCallSoundDndProbe(() => myStatusRef.current === 'dnd' || !!notifGlobalPrefsRef.current?.dnd_manual);
+        return () => setCallSoundDndProbe(null);
+    }, []);
+    // Flipping to DND mid-ring cuts the running ring/ringback loop immediately.
+    // (myStatusRef is synced by the effect above, which runs first.)
+    useEffect(() => { silenceActiveCallLoopsIfDnd(); }, [myStatus, notifGlobalPrefs?.dnd_manual]);
+
     // Keep the notification DND-context ref current (status / in-call / game).
     // Note: local-screenshare state isn't observable here — <CallProvider> is a
     // CHILD of Dashboard, so the call context (and its track state) lives below
@@ -6843,7 +6958,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // before that point in the component body, so it can't close over the
     // function directly. Same forward-reference-via-ref pattern as
     // forceReconnectRef in useRealtime.ts's Phase 1 liveness watchdog.
-    const reconcileChannelMentionsRef = useRef<(serverId: string, channelId: string, unreadCount: number) => void>(() => {});
+    const reconcileChannelMentionsRef = useRef<(serverId: string, channelId: string, unreadCount: number, raiseTo?: boolean) => void>(() => {});
 
     // Server-side read-cursor reconciliation, folded in by
     // utils/channelReadSync.ts reconcileChannelUnread: it RAISES (messages
@@ -6872,8 +6987,20 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 const open = activeChannelRef.current;
                 const looking = open?.kind === 'text' && document.hasFocus() && document.visibilityState === 'visible';
                 const rows = looking && open ? raw.map(r => r.channel_id === open.channel_id ? { ...r, unread_count: 0 } : r) : raw;
+                // A channel the server count would RAISE is not raised here: its
+                // count includes reaction / edit / delete rows (the server cannot
+                // tell them from a message), and a reaction in a server channel
+                // must never light unread. reconcileChannelMentions (raiseTo)
+                // decrypts that tail and raises to the corrected count instead.
+                // Lowering, and a channel the local tally already covers, are
+                // unchanged.
+                const localNow = channelUnreadCountsRef.current;
+                const wouldRaise = new Set(rows
+                    .filter(r => typeof r?.channel_id === 'string' && Number.isFinite(r.unread_count) && r.unread_count > (localNow[r.channel_id] ?? 0))
+                    .map(r => r.channel_id));
+                const settleRows = rows.filter(r => !wouldRaise.has(r.channel_id));
                 setChannelUnreadCounts(prev => reconcileChannelUnread({
-                    unread: prev, mentions: {}, rows, unreadAtRequest, mentionsAtRequest: {},
+                    unread: prev, mentions: {}, rows: settleRows, unreadAtRequest, mentionsAtRequest: {},
                 }).unread);
                 setChannelMentionCounts(prev => reconcileChannelUnread({
                     unread: {}, mentions: prev, rows, unreadAtRequest: {}, mentionsAtRequest,
@@ -6888,7 +7015,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // Mentions can't be computed server-side (E2EE) — for any
                 // channel reported unread, pull and decrypt just those messages.
                 for (const row of rows) {
-                    if (row.unread_count > 0) reconcileChannelMentionsRef.current(sid, row.channel_id, row.unread_count);
+                    if (row.unread_count > 0) reconcileChannelMentionsRef.current(sid, row.channel_id, row.unread_count, wouldRaise.has(row.channel_id));
                 }
             }).catch(() => {/* silent — local live-event tally stays as it was */}));
         }
@@ -7667,9 +7794,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // codebase (confirmed via a full-repo grep), so the function always
     // early-returned. The setInterval(…, 60_000) still ran forever on every
     // authenticated session doing nothing. The real backup/history-transfer
-    // paths are BackupSection.tsx (local/Drive) and HistoryRequestModal.tsx /
-    // HistorySyncBanner.tsx (server-relayed cross-device sync) — this was an
-    // orphaned third mechanism, not a needed one.
+    // paths are BackupSection.tsx (local/Drive) and the local-network
+    // own-device transfer (components/near/) — this was an orphaned third
+    // mechanism, not a needed one.
 
     // ── Storage retention sweeper ─────────────────────────────────────────────
     // Walks messagesState every 5 minutes. Drops locally-expired messages and
@@ -8633,10 +8760,13 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             if (m.content?.type === 'edit') {
                 const targetIdx = currentThread.findIndex(t => t.id === m.content.target_id);
                 if (targetIdx !== -1) {
+                    const content = withEditEmbeds(withEditCardStyle(withEditFont({ ...currentThread[targetIdx].content, text: m.content.text }, m.content.font, m.content.size), m.content), m.content);
+                    // A late link preview (embeds-only edit) is not marked "(edited)"; any real edit is.
+                    const unmarked = isEmbedsOnlyEdit(currentThread[targetIdx].content, content, m.content);
                     currentThread[targetIdx] = {
                         ...currentThread[targetIdx],
-                        content: withEditCardStyle(withEditFont({ ...currentThread[targetIdx].content, text: m.content.text }, m.content.font, m.content.size), m.content),
-                        edited: true
+                        content,
+                        ...(unmarked ? {} : { edited: true }),
                     };
                 }
             } else if (m.content?.type === 'delete') {
@@ -9030,8 +9160,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * more arrived between the count and this fetch, which just means a
      * harmless extra couple of messages get scanned).
      */
-    const reconcileChannelMentions = useCallback((serverId: string, channelId: string, unreadCount: number) => trackActivity('channel:mentions', async () => {
+    const reconcileChannelMentions = useCallback((serverId: string, channelId: string, unreadCount: number, raiseTo = false) => trackActivity('channel:mentions', async () => {
         if (!token || unreadCount <= 0) return;
+        // raiseTo: the caller held this channel back from the server-count raise
+        // (see reconcileServerUnreadRef). Raise it here, to the server count
+        // minus the reaction / edit / delete rows found in the tail; if the
+        // tail cannot be read at all, fall back to the server's number so a
+        // real message is never hidden. Never lowers, never raises the channel
+        // the user is looking at.
+        let raised = false;
+        const raiseUnread = (count: number) => {
+            if (!raiseTo || raised) return;
+            raised = true;
+            const open = activeChannelRef.current;
+            if (open?.kind === 'text' && open.channel_id === channelId && document.hasFocus() && document.visibilityState === 'visible') return;
+            if (count <= 0) return;
+            setChannelUnreadCounts(prev => (count > (prev[channelId] ?? 0) ? { ...prev, [channelId]: count } : prev));
+        };
         try {
             const res = await axios.get(apiUrl`/channels/${channelId}/messages`, {
                 headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
@@ -9044,6 +9189,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             const raw: RawChannelRow[] = res.data ?? [];
             if (!raw.length) return;
             const decrypted = await decryptChannelRows(channelId, raw);
+            raiseUnread(correctedUnreadCount(unreadCount, decrypted, userId));
             const everyoneFlagById = new Map(raw.map(m => [m.id, !!m.mentions_everyone]));
             const { mentionHits, missingEpochs } = scanReconcilePage(decrypted, {
                 userId,
@@ -9065,6 +9211,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 }));
             }
         } catch { /* silent — mention count just stays at whatever it already was */ }
+        finally { raiseUnread(unreadCount); }
     }), [token, deviceId, decryptChannelRows, userId]);
     // One channel at a time (freeze fix). The resync fires this for every
     // unread channel of every server at once; running them concurrently put
@@ -9073,9 +9220,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // latency on a badge and keeps the window responsive while it happens.
     const mentionQueueRef = useRef<Promise<void>>(Promise.resolve());
     useEffect(() => {
-        reconcileChannelMentionsRef.current = (serverId, channelId, unreadCount) => {
+        reconcileChannelMentionsRef.current = (serverId, channelId, unreadCount, raiseTo) => {
             mentionQueueRef.current = mentionQueueRef.current
-                .then(() => reconcileChannelMentions(serverId, channelId, unreadCount))
+                .then(() => reconcileChannelMentions(serverId, channelId, unreadCount, raiseTo))
                 .catch(() => { /* reconcileChannelMentions handles its own errors */ });
         };
     }, [reconcileChannelMentions]);
@@ -10229,13 +10376,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     }, [huddleForceDisconnectEvent]);
 
     // Auto-load active calls for any Huddle channel in the current server.
+    // Keyed on THIS server's Calls-channel ids, not on `serverChannels`: that
+    // object is replaced every time ANY server's channel list reloads, and a
+    // reconnect reloads all of them, so this used to re-read the active
+    // server's calls once per server per reconnect (~140 GETs for the owner,
+    // 23 servers x 6 Calls channels) and run the route into its rate limit,
+    // which is what emptied a live call (owner report 2026-11-23, see
+    // utils/huddleCallsLoad.ts). Opening a server, or that server gaining /
+    // losing a Calls channel, still loads.
+    const activeServerHuddleKey = huddleChannelKey(
+        activeServerView?.serverId ? serverChannels[activeServerView.serverId] : undefined,
+    );
     useEffect(() => {
-        if (!activeServerView?.serverId) return;
-        const huddles = (serverChannels[activeServerView.serverId] ?? []).filter(c => c.kind === 'huddle');
-        for (const h of huddles) {
-            loadHuddleCalls(h.channel_id);
+        if (!activeServerView?.serverId || !activeServerHuddleKey) return;
+        for (const huddleId of activeServerHuddleKey.split(',')) {
+            loadHuddleCalls(huddleId);
         }
-    }, [activeServerView?.serverId, serverChannels, loadHuddleCalls]);
+    }, [activeServerView?.serverId, activeServerHuddleKey, loadHuddleCalls]);
 
     // ── Channel key distribution ─────────────────────────────────────────────
     // pullChannelKeys: fetches pending channel key envelopes from the server for
@@ -13499,7 +13656,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             if (content?.type === 'edit') {
                 const idx = thread.findIndex(t => t.id === content.target_id || t.content?.client_msg_id === content.target_id);
                 if (idx !== -1) {
-                    thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size, content), edited: true };
+                    const next = editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size, content);
+                    // A late link preview (embeds-only edit) is not marked "(edited)"; any real edit is.
+                    thread[idx] = { ...thread[idx], content: next, ...(isEmbedsOnlyEdit(thread[idx].content, next, content) ? {} : { edited: true }) };
                 }
                 return { ...prev, [cid]: thread };
             }
@@ -14149,6 +14308,26 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                         <CallEncryptionIndicator
                                             mode={keyNoticeMode}
                                             channelName={snapCall?.voiceChannelName ?? callServerInfo?.channelName ?? ''}
+                                            // The key IS arriving and being refused by the sender-trust gate:
+                                            // say so, and point at the review that fixes it (utils/callKeyRefusal.ts).
+                                            refusal={activeCallKeyRefusal && snapCall && !snapCall.callsChannelId ? (() => {
+                                                const r = activeCallKeyRefusal;
+                                                const target = conversationCallTarget(r.conversationId);
+                                                const who = friendNameMap[r.senderUserId]?.username
+                                                    || (target && !target.isGroup ? target.title : undefined)
+                                                    || 'The caller';
+                                                const conv = conversations.find(c => c.conversation_id === r.conversationId);
+                                                return {
+                                                    ...callKeyRefusalNotice(r.reason, who),
+                                                    onReview: conv ? () => handleStartChat({
+                                                        id: conv.conversation_id,
+                                                        title: target?.title ?? conv.title,
+                                                        type: conv.type,
+                                                        other_user_id: conv.other_user_id ?? undefined,
+                                                        avatar_url: target?.avatarUrl,
+                                                    }) : undefined,
+                                                };
+                                            })() : undefined}
                                             // handleDisconnectCall is the real
                                             // leave: it POSTs leave_voice /
                                             // leaveHuddleCall so the participant
@@ -14979,7 +15158,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // Anything first-run / modal / celebratory on screen: stay quiet.
     const nudgeUiBusy = onboarding.active || onboardedThisSession || settingsOpen || !!deepLinkInviteCode || deviceStorage.status !== 'done'
         || showStartDMModal || showCreateGroupModal || showCreateServerModal || showJoinServerModal
-        || firstFriendCelebration || showReferralWelcome || showProWelcome || !!historyRequest || !!profileModalUserId;
+        || firstFriendCelebration || showReferralWelcome || showProWelcome || !!profileModalUserId;
     // "Show what you're listening to?" (ListeningAskHost): the same corner as the nudges, so one waits for the other.
     const [listeningAskOpen, setListeningAskOpen] = useState(false);
     const listeningAskIsDnd = useCallback(
@@ -15604,7 +15783,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 {/* Billing status banners — trial ending (last 3 days) and
                     payment-failed. Both self-gate and are dismissible; they
                     render nothing at all in every other state. Sits with
-                    HistorySyncBanner above the panes so it never overlaps the
+                    the other banners above the panes so it never overlaps the
                     call/chat layout. */}
                 <TrialBanner />
 
@@ -15631,11 +15810,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     onReject={handleOwnReject}
                     onReviewed={() => { if (userId) ownDeviceLedger.markOwnDevicesReviewed(userId); }}
                     onManage={() => { setSettingsInitialTab('devices'); setSettingsOpen(true); }}
+                    removals={ownRemovals}
+                    onRemovedDone={clearOwnRemoved}
                 />
 
                 {/* G8: one-time notice when this device's master key is not
                     protected by an OS keyring (Linux basic_text fallback).
                     Self-gating; renders nothing on a protected device. */}
+                {/* Local history transfer between this account's own devices: device picker, progress banner, holder sheet,
+                    password gate. Always on; renders nothing unless the helper bridge reports it available. */}
+                <NearTransferHost inCall={!!activeCall} />
                 <KeyProtectionNotice />
                 <EncryptionAtRestNotice />
                 {/* Linux: system wallet not unlocked, running without it. */}
@@ -15662,7 +15846,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 <RichPresenceHeldTip gameActivityOn={gameSettings.settings.showGameActivity} />
 
                 {/* First-run "storage on this device" prompt — see
-                    useDeviceStorageSetup. HistorySyncBanner waits for it so a
+                    useDeviceStorageSetup. SignInHistoryPrompt waits for it so a
                     new device answers "how long do I keep things" BEFORE it
                     pulls history, and the two modals never stack. */}
                 <DeviceStorageSetupModal
@@ -15670,16 +15854,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     onSave={deviceStorage.complete}
                 />
 
+                {/* The sign-in history step: a new device with no messages is offered its history from another of this
+                    account's devices, over the local network (the own-device transfer is the only method; the
+                    server-relayed sync is gone). Says plainly when this build cannot run the transfer. */}
                 {deviceStorage.status === 'done' && !onboarding.active && (
-                    <HistorySyncBanner
+                    <SignInHistoryPrompt
                         userId={userId}
                         token={token}
                         deviceId={deviceId}
-                        historyDelivered={historyDelivered}
-                        clearHistoryDelivered={clearHistoryDelivered}
-                        historyDeclined={historyDeclined}
-                        setHistoryDeclined={setHistoryDeclined}
-                        inCall={!!activeCall}
+                        onOpenStorage={() => { setSettingsInitialTab('storage'); setSettingsOpen(true); }}
                     />
                 )}
 
@@ -16409,7 +16592,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 myUserId={userId ?? ''}
                                                 keyChangedSenders={keyChangedSenders}
                                                 senderWarnings={senderWarnings}
-                                                onKeyChangeResolved={clearSenderWarning}
+                                                onKeyChangeResolved={resolveSenderWarning}
                                                 onReport={(id, username, snippet, message) => setReportTarget({ id, username, snippet, message })}
                                             />
                                         ) : activeChannel && (isChannelAgeGated(activeChannel) || channelAgeGatedNow(activeChannel.channel_id)) ? (
@@ -16592,12 +16775,6 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     token={token}
                     onConfirm={() => { void confirmFriendAction(); }}
                     onClose={() => setFriendActionConfirm(null)}
-                />
-            )}
-            {historyRequest && (
-                <HistoryRequestModal
-                    request={historyRequest}
-                    onClose={() => setHistoryRequest(null)}
                 />
             )}
             {/* Device approval (DEVICE_APPROVAL_REQUIRED): this device as an

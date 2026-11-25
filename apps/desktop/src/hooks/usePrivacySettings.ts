@@ -1,9 +1,10 @@
 import secureLocalStore from '../utils/secureLocalStore';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 import { ownPrefsBus } from '../utils/ownStatusSync';
+import { BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
 
 /** Controls when a linked image/GIF in a message auto-displays instead of
  *  requiring a click. See utils/imageHosts.ts for what "known" means and
@@ -26,9 +27,25 @@ export interface PrivacySettings {
      *  else. Replaces the old opt-in `shareActiveDevice`, whose friends-only
      *  attentive-device signal new clients no longer display. */
     showMobilePresence: boolean;
+    /** "Generate link previews" (docs/plans/embeds.md phase 3). ON: when you
+     *  send a link, YOUR device visits it to build a preview (title, picture)
+     *  that travels inside the encrypted message, so the people you send it to
+     *  see it without contacting the site. OFF: links are sent bare. Local to
+     *  this device, like the rest of this object. */
+    generateLinkPreviews: boolean;
+    /** "Show embeds" (owner, 2026-11-23). ON (default): links in messages get
+     *  their embeds (sender-built previews, linked images / GIFs, players).
+     *  OFF: links only, with no embed of any kind, so this device makes no
+     *  request to any linked site and downloads no preview thumbnail. Local to
+     *  this device; it lives inside this object, whose key backupRegistry.ts
+     *  already classifies (include: a privacy preference). Read live through
+     *  useShowEmbeds(). */
+    showEmbeds: boolean;
 }
 
 const STORAGE_KEY = 'cipherline_privacy_settings';
+/** Fired whenever any copy of usePrivacySettings writes a change. */
+export const PRIVACY_SETTINGS_CHANGED_EVENT = 'cipherline:privacy-settings-changed';
 
 const DEFAULTS: PrivacySettings = {
     screenCaptureProtection: false,
@@ -38,6 +55,8 @@ const DEFAULTS: PrivacySettings = {
     allowFriendRequests: true,
     imageAutoLoad: 'known',
     showMobilePresence: true,
+    generateLinkPreviews: true,
+    showEmbeds: true,
 };
 
 function loadSettings(): PrivacySettings {
@@ -50,14 +69,85 @@ function loadSettings(): PrivacySettings {
     }
 }
 
+let lastRawForPreviews: string | null | undefined;
+let lastPreviewsOn = DEFAULTS.generateLinkPreviews;
+/**
+ * "Generate link previews", read straight from storage. For the composer,
+ * which stays mounted while Settings changes it (each usePrivacySettings
+ * instance keeps its own copy). Re-parses only when the stored JSON changed.
+ */
+export function linkPreviewsEnabled(): boolean {
+    let raw: string | null = null;
+    try { raw = secureLocalStore.getItem(STORAGE_KEY); } catch { /* default */ }
+    if (raw !== lastRawForPreviews) {
+        lastRawForPreviews = raw;
+        try { lastPreviewsOn = raw ? (JSON.parse(raw) as Partial<PrivacySettings>).generateLinkPreviews !== false : DEFAULTS.generateLinkPreviews; }
+        catch { lastPreviewsOn = DEFAULTS.generateLinkPreviews; }
+    }
+    return lastPreviewsOn;
+}
+
+let lastRawForEmbeds: string | null | undefined;
+let lastEmbedsOn = DEFAULTS.showEmbeds;
+/** "Show embeds", read straight from storage (re-parsed only when the stored JSON changed). */
+export function showEmbedsEnabled(): boolean {
+    let raw: string | null = null;
+    try { raw = secureLocalStore.getItem(STORAGE_KEY); } catch { /* default */ }
+    if (raw !== lastRawForEmbeds) {
+        lastRawForEmbeds = raw;
+        try { lastEmbedsOn = raw ? (JSON.parse(raw) as Partial<PrivacySettings>).showEmbeds !== false : DEFAULTS.showEmbeds; }
+        catch { lastEmbedsOn = DEFAULTS.showEmbeds; }
+    }
+    return lastEmbedsOn;
+}
+
+function subscribeEmbeds(cb: () => void): () => void {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return () => {};
+    window.addEventListener(PRIVACY_SETTINGS_CHANGED_EVENT, cb);
+    window.addEventListener(BACKUP_RESTORED_EVENT, cb);
+    return () => {
+        window.removeEventListener(PRIVACY_SETTINGS_CHANGED_EVENT, cb);
+        window.removeEventListener(BACKUP_RESTORED_EVENT, cb);
+    };
+}
+
+/**
+ * "Show embeds", live: every link embed (MessageEmbed, SenderEmbed) reads it,
+ * so turning it off re-renders open chats at once and unmounts any player
+ * that was playing.
+ */
+export function useShowEmbeds(): boolean {
+    return useSyncExternalStore(subscribeEmbeds, showEmbedsEnabled, () => DEFAULTS.showEmbeds);
+}
+
 export function usePrivacySettings() {
     const [settings, setSettings] = useState<PrivacySettings>(loadSettings);
     const { user, token } = useAuth();
 
-    // Persist to localStorage on every change.
+    // Persist to localStorage on every change, and tell every other copy of
+    // this hook (each mounted instance keeps its own state) so they all agree:
+    // without that, an instance mounted before a change (a chat's embed reading
+    // imageAutoLoad) would write its stale copy back on its next update, and
+    // useShowEmbeds() readers would not re-render live.
     useEffect(() => {
-        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
+        const raw = JSON.stringify(settings);
+        let stored: string | null = null;
+        try { stored = secureLocalStore.getItem(STORAGE_KEY); } catch { /* treat as unknown */ }
+        if (stored === raw) return;
+        try { secureLocalStore.setItem(STORAGE_KEY, raw); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event(PRIVACY_SETTINGS_CHANGED_EVENT));
     }, [settings]);
+
+    // Another instance (Settings) changed them, or a backup was restored: re-read.
+    useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+        const reload = () => {
+            const fresh = loadSettings();
+            setSettings(prev => (JSON.stringify(prev) === JSON.stringify(fresh) ? prev : fresh));
+        };
+        window.addEventListener(PRIVACY_SETTINGS_CHANGED_EVENT, reload);
+        return () => window.removeEventListener(PRIVACY_SETTINGS_CHANGED_EVENT, reload);
+    }, []);
 
     // Sync allow_friend_requests FROM the server on login (source of truth is the server).
     useEffect(() => {
@@ -129,6 +219,14 @@ export function usePrivacySettings() {
         setSettings(prev => ({ ...prev, imageAutoLoad: v }));
     }, []);
 
+    const setGenerateLinkPreviews = useCallback((v: boolean) => {
+        setSettings(prev => ({ ...prev, generateLinkPreviews: v }));
+    }, []);
+
+    const setShowEmbeds = useCallback((v: boolean) => {
+        setSettings(prev => ({ ...prev, showEmbeds: v }));
+    }, []);
+
     const setShowMobilePresence = useCallback((v: boolean) => {
         setSettings(prev => ({ ...prev, showMobilePresence: v }));
         // Server-enforced: the server decides what everyone else is sent, so
@@ -149,8 +247,10 @@ export function usePrivacySettings() {
         setAllowFriendRequests,
         setImageAutoLoad,
         setShowMobilePresence,
+        setGenerateLinkPreviews,
+        setShowEmbeds,
     }), [settings, setScreenCaptureProtection, setShowReadReceipts, setShowTypingIndicators,
-        setNsfwContentEnabled, setAllowFriendRequests, setImageAutoLoad, setShowMobilePresence]);
+        setNsfwContentEnabled, setAllowFriendRequests, setImageAutoLoad, setShowMobilePresence, setGenerateLinkPreviews, setShowEmbeds]);
 }
 
 export type PrivacySettingsHook = ReturnType<typeof usePrivacySettings>;

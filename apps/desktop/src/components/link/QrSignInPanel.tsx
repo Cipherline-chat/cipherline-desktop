@@ -1,7 +1,7 @@
 import React from 'react';
 import axios from 'axios';
 import QRCode from 'qrcode';
-import { QrCode as QrCodeIcon, Loader2, ShieldCheck, AlertTriangle, X as XIcon, Smartphone } from 'lucide-react';
+import { QrCode as QrCodeIcon, Loader2, ShieldCheck, ShieldAlert, AlertTriangle, X as XIcon, Smartphone } from 'lucide-react';
 import { API_BASE } from '../../constants';
 import { apiUrl } from '../../utils/apiPath';
 import { useAuth } from '../../contexts/AuthContext';
@@ -17,6 +17,9 @@ import {
 } from '../../utils/qrSignInController';
 import type { ClaimLinkSessionResponse } from '../../types/link';
 import { useLinkController } from './useLinkController';
+import { useEscape } from '../../hooks/useEscape';
+import { fetchLinkAvatarPreview } from '../../utils/linkAvatarPreview';
+import '../../styles/link-signin.css';
 
 /**
  * QR sign-in — the NEW device's half (this desktop, at the sign-in screen).
@@ -138,6 +141,17 @@ function realDeps(login: (t: string, u: string, d: string, p: boolean, r?: strin
             const client = axios.create({ timeout: 10_000 });
             await client.post(`${API_BASE}/auth/logout`, { refresh_token: refreshToken });
         },
+        // The confirm screen's real profile picture: the account's own avatar,
+        // fetched with the PENDING token on an isolated axios instance,
+        // decrypted in memory and cached nowhere — see linkAvatarPreview.ts
+        // for why this tells the server nothing new.
+        loadAvatarPreview: async (accessToken: string, attachmentId: string) => {
+            const blob = await fetchLinkAvatarPreview(attachmentId, accessToken);
+            return blob ? URL.createObjectURL(blob) : null;
+        },
+        releaseAvatarPreview: (url: string) => {
+            try { URL.revokeObjectURL(url); } catch { /* already released */ }
+        },
         getCurrentRefreshToken: () => secureLocalStore.getItem('cipherline_refresh_token'),
         registerDevice: (userId: string, accessToken: string) => registerOrReuseDevice(userId, accessToken, 'QR'),
         login,
@@ -158,6 +172,122 @@ function realDeps(login: (t: string, u: string, d: string, p: boolean, r?: strin
 const emptySnapshot: QrSignInSnapshot = {
     phase: 'idle', fingerprint: null, qrDataUrl: null, remainingS: 0, error: null,
     verificationCode: null, deniedReason: null, confirmIdentity: null,
+};
+
+/** How long after the confirm step appears before Enter may mean "Continue".
+ *  The step arrives asynchronously (the phone approves, this desktop claims and
+ *  asks /auth/me), so a key press meant for the screen BEFORE it — or a held
+ *  Enter — must not confirm an account nobody has looked at yet. */
+export const CONFIRM_ENTER_ARM_MS = 600;
+
+/** The auth card animates its height over .34s (AuthScreen's Shell); scroll
+ *  the actions into view once it has settled, so the scroll can reach them. */
+const CONFIRM_REVEAL_DELAY_MS = 420;
+
+type ConfirmIdentity = NonNullable<QrSignInSnapshot['confirmIdentity']>;
+
+/**
+ * QR-1 — the confirm step. Shows the identity the server resolved from the
+ * NEW token (never the grant's own fields — see qrSignInController.ts's
+ * whoAmI doc) and makes the user say so explicitly before anything is
+ * persisted: avatar, handle and approving device, all prominent.
+ *
+ *   - Avatar: the account's REAL picture once `avatarSrc` arrives (fetched with
+ *     the pending token — utils/linkAvatarPreview.ts), and the identity-colour
+ *     letter tile (hashed from the user id, the same colour every other client
+ *     shows for this account) until then, without one, or if it fails to
+ *     decode.
+ *   - Actions: stacked full width — "Continue" the primary, "This isn't my
+ *     account" a red-tinted ghost under it. Side by side, the 288px card left
+ *     each ~139px and the longer label ran out of its button; stacked, and
+ *     with wrapping allowed (styles/link-signin.css), no label can clip.
+ *   - Keys: Enter = Continue (only once armed, never a held/repeated Enter,
+ *     never when focus is on another control — that control's own Enter
+ *     wins), Esc = cancel back to "Show a code" (which revokes the pending
+ *     session, like every other exit). No autoFocus on either button.
+ */
+export const QrConfirmStep: React.FC<{
+    identity: ConfirmIdentity;
+    onContinue: () => void;
+    onReject: () => void;
+    onCancel: () => void;
+}> = ({ identity, onContinue, onReject, onCancel }) => {
+    const { userId, username, discriminator, approvedByDeviceName, avatarSrc } = identity;
+    const handle = discriminator != null
+        ? `@${username}#${String(discriminator).padStart(4, '0')}`
+        : `@${username}`;
+    const [failedSrc, setFailedSrc] = React.useState<string | null>(null);
+    const showPicture = !!avatarSrc && failedSrc !== avatarSrc;
+
+    // Esc goes through the app's shared Escape stack (one owner per press).
+    useEscape(() => onCancel());
+
+    const actions = React.useRef({ onContinue });
+    React.useLayoutEffect(() => { actions.current = { onContinue }; });
+    // At the minimum window (1000x720) the step is taller than what is left
+    // under the brand header, and the auth screen scrolls: bring BOTH choices
+    // on screen rather than leaving "This isn't my account" below the fold.
+    const actionsRef = React.useRef<HTMLDivElement>(null);
+    React.useEffect(() => {
+        const t = setTimeout(() => {
+            let reduce = false;
+            try { reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true; } catch { /* no matchMedia */ }
+            actionsRef.current?.scrollIntoView?.({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+        }, CONFIRM_REVEAL_DELAY_MS);
+        return () => clearTimeout(t);
+    }, []);
+
+    React.useEffect(() => {
+        const armedAt = Date.now() + CONFIRM_ENTER_ARM_MS;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.defaultPrevented || e.isComposing) return;
+            if (e.key !== 'Enter' || e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+            if (Date.now() < armedAt) return;
+            const target = e.target as Element | null;
+            if (target && target !== document.body
+                && typeof target.closest === 'function'
+                && target.closest('button, a[href], input, select, textarea, [contenteditable="true"], [role="tab"]')) return;
+            e.preventDefault();
+            actions.current.onContinue();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
+
+    return (
+        <div className="flex flex-col items-center gap-3 py-1">
+            <div
+                className="qr-confirm-avatar"
+                style={showPicture ? undefined : { background: userColor(userId), color: userIconColor(userId) }}
+                aria-hidden
+                data-testid="qr-confirm-avatar"
+                data-avatar={showPicture ? 'picture' : 'initial'}
+            >
+                {showPicture
+                    ? <img src={avatarSrc!} alt="" draggable={false} onError={() => setFailedSrc(avatarSrc)} />
+                    : (username || '?').slice(0, 1).toUpperCase()}
+            </div>
+            <div className="flex flex-col items-center gap-1 text-center w-full">
+                <p className="text-cl-faint text-sm m-0">You are about to sign in as</p>
+                <p className="qr-confirm-handle text-cl-text font-bold m-0" style={{ fontSize: 22 }} data-testid="qr-confirm-handle">{handle}</p>
+                <p className="text-cl-text text-sm m-0 mt-1" style={{ overflowWrap: 'anywhere' }} data-testid="qr-confirm-device">
+                    Approved from <b>{approvedByDeviceName}</b>
+                </p>
+            </div>
+            <div className="qr-confirm-warning" role="note" data-testid="qr-confirm-warning">
+                <ShieldAlert size={16} aria-hidden />
+                <p className="m-0">
+                    Only continue if this is <b>your</b> account and <b>your</b> phone. If either looks wrong, stop here and show a new code.
+                </p>
+            </div>
+            <div ref={actionsRef} className="qr-confirm-actions" role="group" aria-label="Is this your account?" data-testid="qr-confirm-actions">
+                <ClButton fullWidth onClick={onContinue}>Continue</ClButton>
+                <ClButton fullWidth variant="ghost" className="qr-confirm-reject" onClick={onReject}>
+                    This isn't my account
+                </ClButton>
+            </div>
+        </div>
+    );
 };
 
 /** "123 456" — grouped so it reads as two triplets, the way a human copies it. */
@@ -241,65 +371,20 @@ const QrSignInPanel: React.FC = () => {
         );
     }
 
-    // QR-1: show the identity the server itself resolved from the new token
-    // (never the grant's own fields — see qrSignInController.ts's whoAmI
-    // doc) and make the user say so explicitly before anything is persisted.
-    // Avatar + handle + approving device, all prominent: with the verification
-    // code in place a substituted approval is structurally hard, but this
-    // screen remains the visible last line. Deliberately two full-weight
-    // buttons, no autoFocus on either: "Continue" must not be the path of
-    // least resistance.
+    // QR-1: the confirm step — see QrConfirmStep above.
     if (phase === 'confirm') {
         // Controller invariant: 'confirm' is only ever set together with
         // confirmIdentity (see qrSignInController.ts's openGrant). Guard
         // anyway rather than rendering a busy-QR fallback for a phase that
         // has no QR of its own to show.
         if (!snap.confirmIdentity) return null;
-        const { userId, username, discriminator, approvedByDeviceName } = snap.confirmIdentity;
-        const handle = discriminator != null
-            ? `@${username}#${String(discriminator).padStart(4, '0')}`
-            : `@${username}`;
         return (
-            <div className="flex flex-col items-center gap-4 py-2">
-                {/* Avatars are E2EE blobs and this device holds no avatar key
-                    yet (it is not signed in), so the IMAGE cannot be shown
-                    here. What can: the account's identity colour (hashed from
-                    the user id — the same colour every other client shows for
-                    this account) and its initial. A different account reads
-                    as a different avatar even without the picture. */}
-                <div
-                    className="flex items-center justify-center font-bold"
-                    style={{
-                        width: 72, height: 72, borderRadius: 24, fontSize: 30,
-                        background: userColor(userId), color: userIconColor(userId),
-                    }}
-                    aria-hidden
-                    data-testid="qr-confirm-avatar"
-                >
-                    {(username || '?').slice(0, 1).toUpperCase()}
-                </div>
-                <div className="flex flex-col items-center gap-1 text-center">
-                    <p className="text-cl-faint text-sm m-0">You are about to sign in as</p>
-                    <p className="text-cl-text font-bold m-0" style={{ fontSize: 22 }} data-testid="qr-confirm-handle">{handle}</p>
-                    <p className="text-cl-text text-sm m-0 mt-1" data-testid="qr-confirm-device">
-                        Approved from <b>{approvedByDeviceName}</b>
-                    </p>
-                </div>
-                <div className="flex items-start gap-2 text-cl-faint text-xs max-w-[300px]">
-                    <ShieldCheck size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-lume-text)' }} />
-                    <p className="m-0 text-left">
-                        Only continue if this is <b>your</b> account and <b>your</b> phone. If either looks wrong, stop here and show a new code.
-                    </p>
-                </div>
-                <div className="flex gap-2 w-full mt-1">
-                    <ClButton fullWidth style={{ flex: 1 }} onClick={() => void controllerRef.current?.rejectAccount()}>
-                        This isn't my account
-                    </ClButton>
-                    <ClButton fullWidth style={{ flex: 1 }} onClick={() => void controllerRef.current?.confirmAccount()}>
-                        Continue
-                    </ClButton>
-                </div>
-            </div>
+            <QrConfirmStep
+                identity={snap.confirmIdentity}
+                onContinue={() => void controllerRef.current?.confirmAccount()}
+                onReject={() => void controllerRef.current?.rejectAccount()}
+                onCancel={() => void controllerRef.current?.cancel()}
+            />
         );
     }
 

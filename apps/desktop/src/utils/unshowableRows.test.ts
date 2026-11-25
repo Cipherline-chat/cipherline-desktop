@@ -109,6 +109,9 @@ describe('a control message that cannot be applied never becomes a row', () => {
         ['profile_update', { type: 'profile_update', user_id: 7 }],
         ['group_update', { type: 'group_update' }],
         ['call_key_request', { type: 'call_key_request' }],
+        ['near_offer', { type: 'near_offer' }],
+        ['near_answer', { type: 'near_answer' }],
+        ['near_msg', { type: 'near_msg' }],
         ['channel_key', { type: 'channel_key', channel_id: UUID }],
         ['call_key share', { type: 'call_key', key_id: 'share', call_id: UUID }],
         ['call_key rotation', { type: 'call_key', key_id: 'rotate-3', call_id: UUID }],
@@ -149,6 +152,9 @@ describe('a control message that cannot be applied never becomes a row', () => {
             { type: 'profile_update', user_id: UUID },
             { type: 'group_update', conversation_id: 'c' },
             { type: 'call_key_request', call_id: UUID },
+            { type: 'near_offer', v: 1, e_pub: 'AAAA', nonce: 'BBBB', ts: 1, to: UUID },
+            { type: 'near_answer', v: 1, nonce: 'BBBB', declined: true },
+            { type: 'near_msg', v: 1, nonce: 'BBBB', from: 'a', seq: 1, body_b64: 'AAAA', to: UUID },
             { type: 'call_key', key_id: 'share', call_id: UUID, epoch: 2, e2ee_key_b64: 'AAAA', rotates_at: 'x' },
         ]) {
             expect(isControlContent(content)).toBe(true);

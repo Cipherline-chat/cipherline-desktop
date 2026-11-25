@@ -25,7 +25,7 @@ import GameActivitySettings from '../GameActivitySettings';
 import PrivacySettings from '../PrivacySettings';
 import { BillingTab } from '../billing/BillingTab';
 import { BackupSection } from '../BackupSection';
-import { TransferQrPanel } from '../link/TransferQrPanel';
+import { MoveHistoryCard, RESTORE_ANCHOR_ID } from '../near/MoveHistoryCard';
 import { NotificationsTab } from '../NotificationsTab';
 import type { RetentionHook, MessageRetention, AttachmentRetention } from '../../hooks/useRetentionPolicy';
 import type { KeybindHook } from '../../hooks/useKeybinds';
@@ -331,8 +331,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                                 {pane === 'privacy' && <PrivacySettings privacy={privacy} screenLock={screenLock} keybinds={keybinds} />}
                                 {pane === 'storage' && (
                                     <>
-                                        <BackupSection />
-                                        <TransferQrPanel />
+                                        <MoveHistoryCard />
+                                        <div id={RESTORE_ANCHOR_ID}><BackupSection /></div>
                                         <StorageSettings
                                             retention={retention}
                                             messagesState={messagesState}

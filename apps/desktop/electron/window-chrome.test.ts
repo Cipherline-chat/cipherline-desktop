@@ -53,7 +53,7 @@ describe('main.ts wiring', () => {
 
     it('the live theme repaint uses the same helper (no win32-only branch left)', () => {
         const fn = main.slice(main.indexOf('function paintWindowColors('), main.indexOf('\n}\n', main.indexOf('function paintWindowColors(')));
-        expect(fn).toContain('titleBarOverlayFor(process.platform, colors.titleBar)');
+        expect(fn).toContain('titleBarOverlayFor(process.platform, titleBarColoursFor(colors, nightDive.active()))');
         expect(fn).toContain('setTitleBarOverlay(overlay)');
         expect(fn).not.toMatch(/platform === 'win32'/);
     });

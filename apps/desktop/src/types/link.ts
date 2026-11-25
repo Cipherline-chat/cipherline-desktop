@@ -11,8 +11,8 @@
  * (CLAUDE.md's "Electron rootDir trap"). This is a byte-compatible MIRROR of
  * `link-grant.ts`'s `LinkGrantPayload` and the API's `LinkPollResult` /
  * `LinkInvitePollResult`, kept in sync by hand — the same discipline
- * `main.ts` already applies to the history-request-proof message template for
- * the same reason.
+ * `electron/device-approval-keys.ts` applies to its signed message templates
+ * for the same reason.
  *
  * Full design: `docs/QR-LINKING.md` (mobile repo) §2; the 2026-09-28
  * hardening (verification code, second factor, claim-then-mint, invites) is

@@ -1,5 +1,5 @@
 /**
- * Page side of "Strong" noise suppression: FastEnhancer B + S in a worker thread of the page (workers/clAudioStrong.worker.ts).
+ * Page side of "Strong" noise suppression: RNNoise's current model (`@shiguredo/rnnoise-wasm`) feeding the engine's Strong chain, in a worker thread of the page (workers/clAudioStrong.worker.ts).
  *
  * The page does two small things: start the worker (handing it the engine's wasm bytes: the same binary the audio worklet
  * runs, so there is no second file to ship or to go missing), and give one end of a MessageChannel to the AudioWorklet
@@ -39,61 +39,62 @@ export async function nativeEngineAvailable(): Promise<boolean> {
 }
 
 type ExitCb = (reason: string) => void;
-let worker: Worker | null = null;
-let ready: Promise<boolean> | null = null;
-const exitCbs = new Set<ExitCb>();
 
-function stopWorker(reason: string | null): void {
-    const w = worker;
-    worker = null; ready = null;
-    if (w) { try { w.terminate(); } catch { /* already gone */ } }
-    if (reason !== null) for (const cb of [...exitCbs]) { try { cb(reason); } catch { /* a listener's own problem */ } }
+/**
+ * One owner's Strong engine: its own worker, and the worklet's end of a channel to it. Every voice processor gets its OWN worker.
+ *
+ * It used to be one worker per page, shared: a second open (the Settings page's mic preview, which builds its own processor with
+ * the call's settings) was handed the SAME worker, whose `openPort` closes the previous port, so the live call's worklet lost its
+ * Strong engine without a word (no replies: paused, Light), and closing the preview terminated the worker under the call. A
+ * settings change on the call then waited 20 s for an acknowledgement from a port nobody listened to and announced "Switched to
+ * Light" (report 348d6f9b, 2026-11-25: Settings opened mid-call, mic volume dragged). Owners never share a worker now, so one
+ * owner's open, failure or close cannot touch another's.
+ */
+export interface NativeEngine {
+    /** the worklet's end of the channel: transfer it to the AudioWorklet (`{ type: 'nativePort', port }`) */
+    readonly port: MessagePort;
+    /** stop this engine's worker at once, quietly (its exit listeners are not called). Idempotent. */
+    close(): void;
+    /** this engine's worker stopped by itself (its engine failed or the script errored). Returns the unsubscribe. */
+    onExit(cb: ExitCb): () => void;
 }
 
-function startWorker(timeoutMs: number): Promise<boolean> {
-    if (ready) return ready;
-    const w = new Worker(new URL('../workers/clAudioStrong.worker.ts', import.meta.url), { type: 'module', name: 'cl-audio-strong' });
-    worker = w;
-    ready = new Promise<boolean>((resolve) => {
+/** Start a fresh worker for one owner and get the worklet's end of a channel to it. null on any failure (the worker is stopped). */
+export async function openNativeEngine(timeoutMs = CL_NATIVE_PORT_TIMEOUT_MS): Promise<NativeEngine | null> {
+    if (!(await nativeEngineAvailable())) return null;
+    let w: Worker;
+    try { w = new Worker(new URL('../workers/clAudioStrong.worker.ts', import.meta.url), { type: 'module', name: 'cl-audio-strong' }); } catch { return null; }
+    const exitCbs = new Set<ExitCb>();
+    let alive = true;
+    const stop = (reason: string | null) => {
+        if (!alive) return;
+        alive = false;
+        try { w.terminate(); } catch { /* already gone */ }
+        if (reason !== null) for (const cb of [...exitCbs]) { try { cb(reason); } catch { /* a listener's own problem */ } }
+        exitCbs.clear();
+    };
+    const ok = await new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => resolve(false), timeoutMs);
         w.onmessage = (ev: MessageEvent) => {
             const d = ev.data as { type?: string } | null;
             if (d?.type === 'ready') { clearTimeout(timer); resolve(true); }
-            else if (d?.type === 'failed') {
-                clearTimeout(timer); resolve(false);
-                if (worker === w) stopWorker('engine-failed'); // mid-call: the worklet is told and plays its own engine
-            }
+            else if (d?.type === 'failed') { clearTimeout(timer); resolve(false); stop('engine-failed'); } // mid-call: the worklet is told and plays its own engine
         };
-        w.onerror = () => { clearTimeout(timer); resolve(false); if (worker === w) stopWorker('worker-error'); };
+        w.onerror = () => { clearTimeout(timer); resolve(false); stop('worker-error'); };
         loadClAudioWasmBytes().then(
-            (wasm) => { if (worker === w) w.postMessage({ type: 'init', wasm }, [wasm]); },
-            () => { clearTimeout(timer); resolve(false); if (worker === w) stopWorker('engine-missing'); },
+            (wasm) => { if (alive) w.postMessage({ type: 'init', wasm }, [wasm]); },
+            () => { clearTimeout(timer); resolve(false); stop('engine-missing'); },
         );
-    });
-    return ready;
-}
-
-/** Start the worker (or reuse the running one) and get the worklet's end of a fresh channel to it. null on any failure. */
-export async function openNativePort(timeoutMs = CL_NATIVE_PORT_TIMEOUT_MS): Promise<MessagePort | null> {
-    if (!(await nativeEngineAvailable())) return null;
-    let ok = false;
-    try { ok = await startWorker(timeoutMs); } catch { ok = false; }
-    const w = worker;
-    if (!ok || !w) { stopWorker(null); return null; }
-    const ch = new MessageChannel();
+    }).catch(() => false);
+    if (!ok || !alive) { stop(null); return null; }
+    let ch: MessageChannel;
+    try { ch = new MessageChannel(); } catch { stop(null); return null; }
     w.postMessage({ type: 'open' }, [ch.port1]);
-    return ch.port2;
-}
-
-/** The worker stopped mid-call (its engine failed or the script errored). Returns the unsubscribe. */
-export function onNativeEngineExit(cb: ExitCb): () => void {
-    exitCbs.add(cb);
-    return () => { exitCbs.delete(cb); };
-}
-
-/** The call is over (or Strong was switched off): free the worker and its memory at once. The next call starts a fresh one. */
-export async function closeNativeEngine(): Promise<void> {
-    stopWorker(null);
+    return {
+        port: ch.port2,
+        close: () => stop(null),
+        onExit: (cb) => { if (!alive) return () => {}; exitCbs.add(cb); return () => { exitCbs.delete(cb); }; },
+    };
 }
 
 /** Do these settings ask for Strong's worker? (the page also needs nativeEngineAvailable() to say yes) */

@@ -21,7 +21,7 @@ import {
     type DriveBackupProgress, type DestinationLabel, type DestinationStamp, type BackupStaleWarning,
     type BackupShrinkWarning,
 } from '../services/driveBackup';
-import { backupStoreBlock, BACKUP_STORE_UNREADABLE_MESSAGE } from '../services/backupStoreGuard';
+import { backupStoreBlock, backupStoreBlockMessage } from '../services/backupStoreGuard';
 import { readBackupCfg, writeBackupCfg, type BackupCfg } from '../hooks/useBackupAutoSchedule';
 import { useBackupStateVersion } from '../hooks/useBackupState';
 import {
@@ -328,8 +328,9 @@ export const BackupSection: React.FC = () => {
         // Before anything else — even caching the passphrase: this device's data
         // didn't load, so a backup now would write stand-in empty state over the
         // good backup. runBackup refuses as well (backupStoreGuard.ts).
-        if (backupStoreBlock(userId)) {
-            toast.push({ kind: 'error', title: 'Backup not started', message: BACKUP_STORE_UNREADABLE_MESSAGE, durationMs: 0 });
+        const block = backupStoreBlock(userId);
+        if (block) {
+            toast.push({ kind: 'error', title: 'Backup not started', message: backupStoreBlockMessage(block), durationMs: 0 });
             return;
         }
         if (!password) { toast.push({ kind: 'error', title: 'Backup', message: 'Enter a backup passphrase first.' }); return; }

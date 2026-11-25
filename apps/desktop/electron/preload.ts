@@ -851,6 +851,47 @@ contextBridge.exposeInMainWorld('electronAPI', {
     fetchBinary: (url: string): Promise<{ b64: string; mimeType: string }> =>
         ipcRenderer.invoke('net:fetch-binary', url),
 
+    // Link embeds (electron/media-embed/ipc.ts). YouTube title + channel for the
+    // click-to-play facade; main builds the oEmbed URL from the id. null on any failure.
+    youtubeOEmbed: (id: string): Promise<{ title: string; author: string } | null> =>
+        ipcRenderer.invoke('embed:youtube-oembed', id),
+    // A direct media link the chat is showing → its clmedia:// stream URL.
+    registerMedia: (url: string, kind: 'video' | 'image'): Promise<{ ok: true; src: string } | { ok: false }> =>
+        ipcRenderer.invoke('embed:register-media', url, kind),
+    // A supported clip PAGE (Medal, Streamable, Imgur, Tenor, Giphy) → the
+    // clmedia:// URL of the video it publishes; main fetches the page on click.
+    resolveClipMedia: (pageUrl: string): Promise<{ ok: true; src: string; width?: number; height?: number; title?: string } | { ok: false; reason: 'unsupported' | 'no-media' | 'failed' }> =>
+        ipcRenderer.invoke('embed:resolve-clip', pageUrl),
+    // A SENDER's embed named the video file of a clip page: main checks it is
+    // on that provider's media hosts and returns its clmedia:// URL (no page fetch).
+    registerClipMedia: (pageUrl: string, mediaUrl: string): Promise<{ ok: true; src: string } | { ok: false }> =>
+        ipcRenderer.invoke('embed:register-clip-media', pageUrl, mediaUrl),
+    // Phase 4: a SENDER's post embed (X / Reddit) named its video file: main checks
+    // the page is a post and the file is on that provider's media host (video.twimg.com, v.redd.it).
+    registerPostMedia: (pageUrl: string, mediaUrl: string): Promise<{ ok: true; src: string } | { ok: false }> =>
+        ipcRenderer.invoke('embed:register-post-media', pageUrl, mediaUrl),
+    // The SENDER's frame grab (embeds-always-thumb): the video file its own
+    // unfurler found for a clip page / post / direct video link → a fresh,
+    // byte-budgeted clmedia:// URL (main re-checks the hosts).
+    registerThumbMedia: (pageUrl: string, mediaUrl: string): Promise<{ ok: true; src: string } | { ok: false }> =>
+        ipcRenderer.invoke('embed:register-thumb-media', pageUrl, mediaUrl),
+    // Sender-side link preview (electron/unfurl): THIS device visits a link the
+    // user is about to send; returns a draft embed + the preview image's bytes.
+    unfurlLink: (url: string): Promise<{ ok: true; embed: Record<string, unknown>; image?: { bytes: Uint8Array; mime: string }; icon?: { bytes: Uint8Array; mime: string }; images?: { bytes: Uint8Array; mime: string }[]; snapshot?: true; snapshotable?: true; copy?: { mediaUrl: string; mime: string; bytes?: number } } | { ok: false; reason: string }> =>
+        ipcRenderer.invoke('embed:unfurl', url),
+    // A page the unfurler read fine but that has no picture: main takes a
+    // snapshot of it in a locked-down hidden window (electron/unfurl/page-snapshot.ts).
+    // Main only does this for a URL embed:unfurl just flagged; `token` names the
+    // job so the renderer can cancel it when the link leaves the draft.
+    snapshotPage: (url: string, token: string): Promise<{ ok: true; bytes: Uint8Array; mime: 'image/png'; width: number; height: number; ms: number } | { ok: false; reason: string }> =>
+        ipcRenderer.invoke('embed:snapshot', url, token),
+    cancelPageSnapshot: (token: string): Promise<boolean> => ipcRenderer.invoke('embed:snapshot-cancel', token),
+    // The SENDER's copy of linked media from an EXPIRING link (embeds-media-everywhere):
+    // the whole file, for a URL embed:unfurl just offered a copy of (main re-checks the
+    // offer, caps it at min(maxBytes, the cap for its type) and sniffs the bytes).
+    fetchMediaCopy: (url: string, maxBytes: number): Promise<{ ok: true; bytes: Uint8Array; mime: string; width?: number; height?: number; duration_s?: number; has_audio?: boolean; animated?: boolean } | { ok: false; reason: string }> =>
+        ipcRenderer.invoke('embed:media-copy', url, maxBytes),
+
     // Open URL in the system default browser (validated http/https only).
     openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
 
@@ -1330,6 +1371,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // window from the payload and STORES NOTHING; -end repaints the stored theme.
     previewTheme: (payload: unknown): Promise<unknown> => ipcRenderer.invoke('theme:preview', payload),
     endThemePreview: (): Promise<unknown> => ipcRenderer.invoke('theme:preview-end'),
+    // Night dive (src/hooks/useNightDive.ts): the caption buttons follow the
+    // darkened title bar (electron/night-dive-chrome.ts). A boolean only.
+    setNightDive: (active: boolean): void => {
+        if (typeof active === 'boolean') ipcRenderer.send('window:night-dive', active);
+    },
     onThemeChanged: (cb: (state: { id: string; pref: string; custom?: unknown }) => void): (() => void) => {
         const wrapped = (_e: unknown, state: { id?: unknown; pref?: unknown; custom?: unknown } | null) => {
             const custom = state?.pref === 'custom' && state.custom && typeof state.custom === 'object' ? JSON.parse(JSON.stringify(state.custom)) : undefined;
@@ -1358,12 +1404,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Prove possession of this device's Signal identity key for registration.
     getDeviceRegisterProof: (userId: string, proofTs: number): Promise<{ identityPub: string; sig: string } | null> =>
         ipcRenderer.invoke('crypto:device-register-proof', userId, proofTs),
-    // C-2b: sign this device's history-sync capability advertisement with the
-    // identity key, so the approver can distinguish it from a flag the relaying
-    // server flipped. null when the identity is unavailable — the caller must
-    // then abandon the request, never send it unsigned.
-    getHistoryRequestProof: (userId: string, requestingDeviceId: string, ts: number): Promise<{ identityPub: string; sig: string } | null> =>
-        ipcRenderer.invoke('crypto:history-request-proof', userId, requestingDeviceId, ts),
 
     // ── Device approval (DEVICE_APPROVAL_REQUIRED) — see electron/device-approval-keys.ts.
     // Only public keys and signatures cross this bridge outward; the typed
@@ -1408,6 +1448,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // seal mints and discards its own one-shot X25519 pair in main.
     linkSeal: (payload: LinkGrantPayload, ekPubB64: string, linkId: string): Promise<string> =>
         ipcRenderer.invoke('link:seal', payload, ekPubB64, linkId),
+
+    // ── Local history transfer between this account's own devices ("near" own-device role) ───────────────────
+    // Backed by the near-helper child process (apps/desktop-host/near-helper) through ipcMain (electron/near-bridge.ts,
+    // which validates every argument again). ONLY the own-device transfer members exist here: the proximity sign-in
+    // members (nearShowStart, nearInviteStart, nearApproverStart, the biometric probes) are deliberately absent, so a page
+    // that calls them finds no function. Same member names, types and events as src/types/near.ts. Where main has no
+    // helper (a build without it) `nearProbe` answers "not available" and the page keeps today's behaviour.
+    nearProbe: (): Promise<unknown> => ipcRenderer.invoke('near:nearProbe').catch(() => ({ available: false, bluetooth: 'unsupported', lan: false, biometric: 'unavailable', gate: 'native_confirm' })),
+    nearGetState: (): Promise<unknown> => ipcRenderer.invoke('near:nearGetState').catch(() => ({ seq: 0, role: null, state: 'idle' })),
+    onNearState: (cb: (s: unknown) => void): (() => void) => {
+        const wrapped = (_e: Electron.IpcRendererEvent, s: unknown) => cb(s);
+        ipcRenderer.on('near:state', wrapped);
+        return () => ipcRenderer.removeListener('near:state', wrapped);
+    },
+    nearApprove: (): Promise<unknown> => ipcRenderer.invoke('near:nearApprove'),
+    nearRefuse: (): Promise<void> => ipcRenderer.invoke('near:nearRefuse').then(() => undefined, () => undefined),
+    nearCancel: (): Promise<void> => ipcRenderer.invoke('near:nearCancel').then(() => undefined, () => undefined),
+    nearTransferSend: (opts: unknown): Promise<void> => ipcRenderer.invoke('near:nearTransferSend', opts),
+    nearTransferReceive: (): Promise<void> => ipcRenderer.invoke('near:nearTransferReceive'),
+    nearTransferResult: (): Promise<unknown> => ipcRenderer.invoke('near:nearTransferResult').catch(() => null),
+    nearTransferDiscard: (): Promise<void> => ipcRenderer.invoke('near:nearTransferDiscard').then(() => undefined, () => undefined),
+    nearTransferPause: (): Promise<void> => ipcRenderer.invoke('near:nearTransferPause'),
+    nearTransferResume: (): Promise<void> => ipcRenderer.invoke('near:nearTransferResume'),
+    nearTransferRequest: (opts: unknown): Promise<unknown> => ipcRenderer.invoke('near:nearTransferRequest', opts),
+    nearOwnDeliver: (a: unknown): Promise<unknown> => ipcRenderer.invoke('near:nearOwnDeliver', a).catch(() => 'ignored'),
+    onNearOwnOut: (cb: (m: { to: string; content: Record<string, unknown> }) => void): (() => void) => {
+        const wrapped = (_e: Electron.IpcRendererEvent, m: { to: string; content: Record<string, unknown> }) => cb(m);
+        ipcRenderer.on('near:own-out', wrapped);
+        return () => ipcRenderer.removeListener('near:own-out', wrapped);
+    },
+    nearTransferKey: (): Promise<unknown> => ipcRenderer.invoke('near:nearTransferKey'),
+    nearTransferKeepPartial: (): Promise<unknown> => ipcRenderer.invoke('near:nearTransferKeepPartial'),
+    // The holder's approval gate on a computer without a fingerprint / face sign-in (Linux, Windows, a Mac without Touch ID):
+    // main asks the page for the account secret, the page hands the typed value back, and MAIN verifies it with the server
+    // (the verdict never comes from here).
+    onNearGatePrompt: (cb: (p: { ticket: string; method: 'password' | 'totp'; closed?: boolean }) => void): (() => void) => {
+        const wrapped = (_e: Electron.IpcRendererEvent, p: { ticket: string; method: 'password' | 'totp'; closed?: boolean }) => cb(p);
+        ipcRenderer.on('near:gate-prompt', wrapped);
+        return () => ipcRenderer.removeListener('near:gate-prompt', wrapped);
+    },
+    nearGateSubmit: (ticket: string, value: string): Promise<'ok' | 'rejected' | 'rate_limited' | 'unavailable' | 'locked' | 'expired'> =>
+        ipcRenderer.invoke('near:gate-submit', ticket, value),
+    nearGateCancel: (ticket: string): Promise<void> => ipcRenderer.invoke('near:gate-cancel', ticket).then(() => undefined, () => undefined),
 
     // Fires when the OS-level BrowserWindow gains focus (user switches back
     // from another app). More reliable than window 'focus' in the renderer.

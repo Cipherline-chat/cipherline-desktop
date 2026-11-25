@@ -28,6 +28,23 @@
 
 import { sha256BlobOffThread } from './attachmentCryptoWorker';
 import { stickerReportText } from './stickers/wire';
+import { linkEmbedsReportText, sanitizeLinkEmbeds } from '@cipherline/shared';
+import { embedUrlsOf } from './formatting/plainText';
+
+/**
+ * Text + its sender-built link previews (packages/shared link-embeds.ts), as
+ * committed and as reported. Only the embeds a reader would draw count (the
+ * shared validator against the links in the text), so sender and reporter
+ * compute the same body from the same content. No embeds: the bare text, as
+ * before. A client that predates embeds commits / recomputes the bare text,
+ * so its report of a message with previews is "unverified" (content_changed),
+ * never wrongly verified — the same trade as stickers.
+ */
+function textWithEmbeds(text: string, embeds: unknown): string {
+    if (!Array.isArray(embeds) || embeds.length === 0) return text;
+    const valid = sanitizeLinkEmbeds(embeds, embedUrlsOf(text));
+    return valid.length > 0 ? `${text}\n\n${linkEmbedsReportText(valid)}` : text;
+}
 
 export const FRANK_VERSION = 1;
 export const FRANK_MSG_MAGIC = 'CLFRANK1';
@@ -205,10 +222,10 @@ export function frankBody(content: unknown): { kind: FrankKind; body: string } |
             // message is "unverified" (content_changed), never wrongly verified.
             const sticker = stickerReportText(c);
             if (sticker) return { kind: 'text', body: sticker };
-            return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: c.text } : null;
+            return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: textWithEmbeds(c.text, (c as { embeds?: unknown }).embeds) } : null;
         }
         case 'edit':
-            return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: c.text } : null;
+            return typeof c.text === 'string' && c.text.length > 0 ? { kind: 'text', body: textWithEmbeds(c.text, (c as { embeds?: unknown }).embeds) } : null;
         case 'attachment': {
             const a = attachmentOf(c);
             return a ? { kind: 'attachment', body: attachmentBody(a) } : null;

@@ -287,3 +287,8 @@ ol.cl-fmt-list{list-style:decimal outside}
 .cl-composer[data-card-preview]{flex-wrap:wrap;row-gap:6px}
 .cl-composer[data-card-preview] > .cl-composer-card-frame{flex:1 1 100%}
 .cmp-preview-controls{display:flex;align-items:center;gap:4px;flex:1 1 auto;min-width:0}
+
+/* A message that is only a picture link (utils/formatting/bareMediaLink.ts): its
+   text is hidden ONLY while its embed shows a picture that really rendered. A
+   failed / pending / blocked embed leaves the link visible (never an empty row). */
+.cl-msg-col:has(.cl-embed-row [data-embed-rendered="media"]) .cl-bare-media-text{display:none}

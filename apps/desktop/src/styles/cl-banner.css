@@ -208,3 +208,33 @@
 /* The same edges as the panes when the app's main column is on screen (ClBannerOverlay measures it). */
 .cl-banner-overlay[data-aligned] { left: var(--cl-banner-left); width: var(--cl-banner-width); transform: none; }
 .cl-banner-overlay > * { pointer-events: auto; }
+
+/* Collapsible banner (opt-in, e.g. announcements): the text cell is one real
+   button. Collapsed = a single truncated line + chevron; expanded = full text.
+   Static (no motion), so reduced motion needs no special case. */
+.cl-banner__toggle {
+  grid-area: text;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cl-banner__toggle:hover { background: rgb(var(--cl-bright-rgb) / 0.05); }
+.cl-banner__toggle:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+.cl-banner__text--toggle { flex: 1 1 auto; min-width: 0; }
+.cl-banner__toggle[data-collapsed] .cl-banner__text--toggle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl-banner__chev { flex: none; display: inline-grid; place-items: center; color: var(--cl-faint); }
+.cl-banner__toggle:hover .cl-banner__chev { color: var(--cl-text); }

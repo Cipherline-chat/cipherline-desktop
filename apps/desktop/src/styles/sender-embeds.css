@@ -1,0 +1,185 @@
+/*
+ * Sender-built web cards (src/components/embeds/WebEmbedCard.tsx), the
+ * owner's approved designs of 2026-11-23: concepts/embeds-2026-11-23/round2
+ * (r2.css: Tile, Island, Ambient) and round3 (r3.css: light mode without
+ * outlines). One family with the clip card; no left rail anywhere.
+ *
+ * Theme-following colours are the app's --cl-* tokens. --cl-se-glow is the
+ * page's own theme-color (validated #rrggbb from the encrypted message), used
+ * only as a faint corner light, never as a bar. The only literal colours sit
+ * on top of pictures (the glass site chip), dark in both themes.
+ */
+.cl-se {
+  position: relative; isolation: isolate; container-type: inline-size;
+  width: min(100%, 460px); box-sizing: border-box;
+  padding: 8px;
+  background: var(--cl-deep);
+  border: 1px solid rgb(var(--cl-bright-rgb) / 0.06);
+  border-radius: var(--cl-r-lg);
+  box-shadow: 0 8px 24px rgb(var(--cl-shade-rgb) / 0.16);
+  overflow: hidden;
+  font-family: var(--cl-font-body); color: var(--cl-text);
+}
+/* the calm glow: the page's colour, lit from the corner the picture sits in */
+.cl-se::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(75% 130% at 0% 0%, color-mix(in srgb, var(--cl-se-glow, var(--cl-lume)) 12%, transparent), transparent 72%);
+}
+/* keyboard focus on the title rings the whole card */
+.cl-se:has(.cl-se-title:focus-visible) { box-shadow: 0 0 0 2px var(--cl-abyss), 0 0 0 4.5px var(--cl-lume-ui), 0 8px 24px rgb(var(--cl-shade-rgb) / 0.16); }
+
+.cl-se-row { display: flex; gap: 12px; align-items: flex-start; }
+.cl-se-meta { min-width: 0; flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 2px 4px 2px 0; }
+.cl-se-grow { flex: 1; }
+
+.cl-se-mark {
+  flex: none; display: grid; place-items: center; border-radius: 5px;
+  background: var(--cl-se-glow, var(--cl-raise));
+  color: var(--cl-text); font-weight: 900; line-height: 1;
+  box-shadow: inset 0 0 0 1px rgb(var(--cl-shade-rgb) / 0.12);
+}
+/* On the page's own colour the letter follows that colour's lightness, in both themes. */
+.cl-se-mark--ink-dark { color: #10131c; }
+.cl-se-mark--ink-light { color: #fff; }
+.cl-se-site {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 2px 10px 2px 3px; border-radius: var(--cl-r-pill);
+  background: rgb(var(--cl-bright-rgb) / 0.06);
+  font-size: 11.5px; line-height: 18px; font-weight: 800; color: var(--cl-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cl-se-site--glass { background: rgba(8, 12, 26, .62); color: #fff; backdrop-filter: blur(8px); }
+
+.cl-se-title {
+  font-family: var(--cl-font-display); font-weight: var(--cl-w-display-bold, 600);
+  font-size: 16px; line-height: 20px; color: var(--cl-text); text-decoration: none;
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+}
+.cl-se-title:hover { color: var(--cl-lume-text); }
+.cl-se-title:focus-visible { outline: none; color: var(--cl-lume-text); }
+.cl-se-clamp-1 { -webkit-line-clamp: 1; }
+.cl-se-clamp-2 { -webkit-line-clamp: 2; }
+.cl-se-clamp-3 { -webkit-line-clamp: 3; }
+.cl-se-desc { margin: 0; font-size: 13px; line-height: 18.5px; color: var(--cl-muted); display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.cl-se-foot { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-top: 1px; }
+.cl-se-foot--full { width: 100%; }
+.cl-se-byline { font-size: 12px; font-weight: 700; color: var(--cl-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cl-se-host { font-size: 11.5px; font-weight: 600; color: var(--cl-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 50%; }
+
+/* ── pictures ──────────────────────────────────────────────────────────── */
+.cl-se-thumb { position: relative; flex: none; border-radius: var(--cl-r-sm); overflow: hidden; background: rgb(var(--cl-bright-rgb) / 0.06); isolation: isolate; }
+.cl-se-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-se--wide .cl-se-thumb--tile { width: 168px; aspect-ratio: 1.91; }
+.cl-se-well {
+  flex: none; width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--cl-se-glow, var(--cl-lume)) 14%, var(--cl-surface));
+  box-shadow: 0 0 22px color-mix(in srgb, var(--cl-se-glow, var(--cl-lume)) 22%, transparent);
+}
+.cl-se-well .cl-se-mark { border-radius: 8px; }
+/* The site's own icon (sent inside the message by the sender; never fetched
+   here). Favicons are drawn for a light browser tab, so they sit on a small
+   white plate in both themes: a black icon stays visible on the dark card. */
+.cl-se-mark--icon { background: var(--cl-pure-white); box-shadow: none; overflow: hidden; padding: 1px; box-sizing: border-box; }
+.cl-se-mark--icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cl-se-well .cl-se-mark--icon { padding: 4px; border-radius: 9px; }
+/* The minimal card (a page that gave nothing): the host as title, the link's path under it. */
+.cl-se-meta--minimal { align-self: center; gap: 3px; }
+.cl-se-path { margin: 0; font-size: 12px; line-height: 16px; color: var(--cl-faint); font-family: var(--cl-font-mono, ui-monospace, monospace); display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+
+/* ── Island (expanded, wide picture) ───────────────────────────────────── */
+.cl-se--island { padding: 0; }
+.cl-se-hero { position: relative; aspect-ratio: 1.91; margin: 8px 8px 0; border-radius: var(--cl-r-sm); overflow: hidden; background: rgb(var(--cl-bright-rgb) / 0.06); }
+.cl-se-chip { position: absolute; left: 8px; top: 8px; max-width: calc(100% - 16px); display: flex; }
+.cl-se-body { padding: 11px 14px 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.cl-se--island .cl-se-title { font-size: 17px; line-height: 22px; }
+
+/* ── Ambient (square picture, both layouts) ────────────────────────────── */
+.cl-se--ambient { padding: 0; }
+.cl-se--ambient::before { display: none; }
+.cl-se-amb { position: absolute; inset: -40px; z-index: -2; }
+.cl-se-amb img { width: 100%; height: 100%; object-fit: cover; filter: blur(36px) saturate(1.5); }
+/* the veil keeps text contrast whatever the picture: the card colour at 90% */
+.cl-se-veil { position: absolute; inset: 0; z-index: -1; background: color-mix(in srgb, var(--cl-deep) 90%, transparent); }
+.cl-se--ambient .cl-se-byline, .cl-se--ambient .cl-se-host { color: var(--cl-muted); }
+.cl-se-inner { display: flex; gap: 14px; align-items: flex-start; padding: 12px 12px 12px 14px; }
+.cl-se--ambient .cl-se-site { background: rgb(var(--cl-bright-rgb) / 0.08); }
+/* its real shape (3:4 .. 1.6:1) at about a 92 px square's area (WebEmbedCard sets the two numbers) */
+.cl-se-thumb--amb { width: calc(92px * var(--cl-se-amb-f, 1)); aspect-ratio: var(--cl-se-amb-a, 1); margin-top: 2px; box-shadow: 0 6px 18px rgb(var(--cl-shade-rgb) / .3); }
+/* a real picture enlarges on click / Enter (EmbedPictureViewer) */
+.cl-se [data-picture-open] { cursor: zoom-in; }
+.cl-se [data-picture-open]:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: 2px; }
+
+/* ── Remove embed (own messages) ───────────────────────────────────────── */
+.cl-se-remove {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: 8px;
+  display: grid; place-items: center; cursor: pointer;
+  background: rgb(var(--cl-shade-rgb) / 0.55); color: var(--cl-text);
+  opacity: 0; transition: opacity 120ms ease, background-color 120ms ease;
+}
+.cl-se-remove svg { width: 14px; height: 14px; }
+.cl-se:hover .cl-se-remove, .cl-se-remove:focus-visible, .cl-sevid:hover .cl-se-remove { opacity: 1; }
+.cl-se-remove:hover { background: rgb(var(--cl-shade-rgb) / 0.8); }
+.cl-se-remove:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--cl-deep), 0 0 0 4px var(--cl-lume-ui); }
+/* A sender-built video card (clip card / YouTube) wraps the existing player. */
+/* It hugs the card (size follows the media, §11), so the button sits on the card's own corner. */
+.cl-sevid { position: relative; width: fit-content; max-width: min(100%, 460px); }
+.cl-sevid > .cl-se-remove { top: 16px; right: 8px; }
+/* On a reel the duration sits in that corner: it steps aside while the button shows. */
+.cl-sevid:has(> .cl-se-remove):hover .cl-ve-dur--top, .cl-sevid:has(> .cl-se-remove:focus-visible) .cl-ve-dur--top { visibility: hidden; }
+
+/* ── Light mode: no outlines (owner). Separation is the white card on the
+   cream page and a soft warm shadow, never a line. ──────────────────────── */
+:root[data-scheme="light"] .cl-se {
+  border: 0;
+  box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .08), 0 8px 22px rgb(var(--cl-shade-rgb) / .12);
+}
+:root[data-scheme="light"] .cl-se-mark { box-shadow: none; }
+:root[data-scheme="light"] .cl-se:has(.cl-se-title:focus-visible) {
+  box-shadow: 0 0 0 2px var(--cl-abyss), 0 0 0 4.5px var(--cl-lume-ui), 0 8px 22px rgb(var(--cl-shade-rgb) / .12);
+}
+
+/* ── narrow chat (the 1000x720 window): smaller pictures, text keeps its room ── */
+@container (max-width: 420px) {
+  .cl-se--wide .cl-se-thumb--tile { width: 118px; }
+  .cl-se-well { width: 48px; height: 48px; }
+  .cl-se-thumb--amb { width: calc(72px * var(--cl-se-amb-f, 1)); }
+  .cl-se-row, .cl-se-inner { gap: 10px; }
+  .cl-se-title { font-size: 15px; line-height: 19px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-se-remove { transition: none; }
+}
+
+/* ── Composer: previews being built for the message being written ──────── */
+.cl-cep { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 4px 2px; }
+.cl-cep-item {
+  position: relative; display: flex; align-items: center; gap: 8px; min-width: 0;
+  max-width: min(100%, 320px); height: 44px; padding: 4px 30px 4px 4px; box-sizing: border-box;
+  background: var(--cl-deep); border-radius: 12px;
+  border: 1px solid rgb(var(--cl-bright-rgb) / 0.06);
+}
+:root[data-scheme="light"] .cl-cep-item { border: 0; box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .08), 0 4px 12px rgb(var(--cl-shade-rgb) / .1); }
+.cl-cep-pic { flex: none; width: 56px; height: 36px; border-radius: 8px; overflow: hidden; background: rgb(var(--cl-bright-rgb) / 0.06); display: grid; place-items: center; }
+.cl-cep-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Only the site's icon (no page picture): the whole icon, on the same white plate as in the card. */
+.cl-cep-pic--icon { background: var(--cl-pure-white); }
+.cl-cep-pic--icon img { object-fit: contain; padding: 6px 16px; box-sizing: border-box; }
+.cl-cep-text { min-width: 0; display: flex; flex-direction: column; }
+.cl-cep-title { font-size: 12.5px; font-weight: 800; color: var(--cl-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-cep-site { font-size: 11px; font-weight: 700; color: var(--cl-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-cep-x {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 7px; cursor: pointer;
+  display: grid; place-items: center; background: transparent; color: var(--cl-muted);
+}
+.cl-cep-x svg { width: 14px; height: 14px; }
+.cl-cep-x:hover { background: rgb(var(--cl-bright-rgb) / 0.1); color: var(--cl-text); }
+.cl-cep-x:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--cl-lume-ui); }
+.cl-cep-spin {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgb(var(--cl-bright-rgb) / .18); border-top-color: var(--cl-muted);
+  animation: cl-ve-spin .8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .cl-cep-spin { animation-duration: 2.4s; } }

@@ -8,6 +8,11 @@ describe('parseWorkletMessage: only PCM frames, settings and numbers get through
         expect(parseWorkletMessage(frame(0))?.t).toBe('f');
         expect(parseWorkletMessage(frame(MAX_SEQ - 1))?.t).toBe('f');
         expect(parseWorkletMessage({ t: 's', id: 3, noise: 2, autoGain: true, manualGainDb: 0, originalSound: false })).toMatchObject({ t: 's', noise: 2 });
+        expect(parseWorkletMessage({ t: 'sl', noise: 2, autoGain: true, manualGainDb: 6, originalSound: false })).toEqual({ t: 'sl', noise: 2, autoGain: true, manualGainDb: 6, originalSound: false });
+        expect(parseWorkletMessage({ t: 'sl', noise: 2, autoGain: true, manualGainDb: 99, originalSound: false })).toMatchObject({ manualGainDb: 40 });
+        expect(parseWorkletMessage({ t: 'sl', noise: 2, autoGain: true, manualGainDb: NaN, originalSound: false })).toBeNull();
+        expect(parseWorkletMessage({ t: 'sl', noise: 7, autoGain: true, manualGainDb: 0, originalSound: false })).toBeNull();
+        expect(parseWorkletMessage({ t: 'sl', noise: 2, autoGain: 'yes', manualGainDb: 0, originalSound: false })).toBeNull();
         expect(parseWorkletMessage({ t: 'dc', hasGain: true, gainDb: 5 })).toEqual({ t: 'dc', hasGain: true, gainDb: 5 });
         expect(parseWorkletMessage({ t: 'g', db: -3 })).toEqual({ t: 'g', db: -3 });
         expect(parseWorkletMessage({ t: 'gate', enabled: true, thresholdDb: -42 })).toEqual({ t: 'gate', enabled: true, thresholdDb: -42 });

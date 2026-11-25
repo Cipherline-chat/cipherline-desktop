@@ -14,9 +14,10 @@
  *  - a bare URL / `<url>` is the caller's linkify (opened through the
  *    validated utils/openExternalLink path, as before);
  *  - a masked link `[label](https://…)` shows its real destination on hover
- *    and ALWAYS confirms before opening, naming the destination; when the
- *    label names a different site (utils/formatting/linkSafety.ts) the confirm
- *    becomes a warning. Text inside a label is never itself linkified.
+ *    and opens through the same leaving-Cipherline gate, with its label: an
+ *    untrusted destination asks first, and a label naming a different site
+ *    (utils/formatting/linkSafety.ts) ALWAYS asks, with the mismatch spelled
+ *    out. Text inside a label is never itself linkified.
  *
  * Spoilers are blurred and inert (no focusable mention / link inside them is
  * reachable) until clicked or activated with Enter / Space.

@@ -143,12 +143,15 @@ export function retryAfterMs(err: unknown, nowMs: number = Date.now()): number |
 }
 
 /**
- * The server emoji create route allows 20 per minute per person (apps/api
- * server-emojis.controller.ts). A batch of up to 10 fits in that without
- * pacing; a bigger one is spaced just under the limit so it never trips it.
+ * The server emoji and sticker create routes allow 60 per minute per person
+ * (apps/api server-emojis.controller.ts SERVER_EMOJI_CREATE_PER_MIN; it was 20
+ * until 2026-11-23). A batch of up to 30 fits in that without pacing (half the
+ * limit, leaving room for a retry or a second dialog); a bigger one is spaced
+ * just under the limit (~57/min) so it never trips it. 100 emojis: ~1.75 min.
  */
+export const SERVER_CREATE_PER_MIN = 60;
 export function serverCreateGapMs(batchSize: number): number {
-    return batchSize > 10 ? 3100 : 0;
+    return batchSize > 30 ? 1050 : 0;
 }
 
 // ── runner ───────────────────────────────────────────────────────────────────

@@ -84,6 +84,22 @@ export interface ImportMessage {
     pinned: boolean;
     /** Absent from an older main process. `users` = the first 100 who reacted ([] past the read budget). */
     reactions?: Array<{ emoji: { id: string | null; name: string; animated: boolean }; count: number; users: Array<{ id: string; name: string; kind: 'user' | 'app' }> }>;
+    /** Discord's previews of links in the words (link embeds phase 4). Absent from an older main process. */
+    linkEmbeds?: ImportLinkEmbed[];
+}
+/** electron/discord-import/history.ts ImportLinkEmbed. */
+export interface ImportLinkEmbed {
+    url: string;
+    type: 'link' | 'article' | 'video' | 'rich';
+    title: string | null;
+    description: string | null;
+    site: string | null;
+    author: string | null;
+    color: string | null;
+    thumbRef: string | null;
+    thumbWidth: number | null;
+    thumbHeight: number | null;
+    videoUrl: string | null;
 }
 export interface ChannelHistory {
     messages: ImportMessage[];

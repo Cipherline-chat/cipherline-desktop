@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldOff, Eye, MessageCircle, UserCheck, ExternalLink, ImageIcon, Smartphone, Search } from 'lucide-react';
+import { ShieldOff, Eye, MessageCircle, UserCheck, ExternalLink, ImageIcon, Smartphone, Search, Link2, LayoutTemplate } from 'lucide-react';
 import { type PrivacySettingsHook, type ImageAutoLoadMode } from '../hooks/usePrivacySettings';
 import type { ScreenLockHook } from '../hooks/useScreenLock';
 import type { KeybindHook } from '../hooks/useKeybinds';
@@ -7,6 +7,7 @@ import { ClToggle, ClButton, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
 import { openExternalLink } from '../utils/openExternalLink';
 import ScreenLockSettings from './ScreenLockSettings';
+import TrustedWebsitesSettings from './TrustedWebsitesSettings';
 import { useGifSettings } from '../hooks/useGifSettings';
 import { klipyConfigured, KLIPY_NOTICE_TEXT } from '../utils/klipy';
 
@@ -35,6 +36,8 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
         setAllowFriendRequests,
         setImageAutoLoad,
         setShowMobilePresence,
+        setGenerateLinkPreviews,
+        setShowEmbeds,
     } = privacy;
     // Standalone instance — useGifSettings keeps every mounted instance in
     // sync through its change event, so no prop plumbing is needed.
@@ -119,6 +122,47 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                     </div>
                 </div>
                 <div className="sd-row">
+                    <span className={`sd-tile${settings.generateLinkPreviews ? '' : ' sd-tile--dim'}`}><Link2 size={16} /></span>
+                    <div className="sd-rl">
+                        <b>Generate link previews</b>
+                        <span>
+                            When you type or paste a link, your device visits it to build a preview that travels inside
+                            the encrypted message, so the people you send it to see it without contacting the site.
+                        </span>
+                        <span data-setting-note="page-snapshots" style={{ marginTop: 6 }}>
+                            For a page with no preview picture, your device loads the page in a locked-down hidden
+                            window to take a snapshot of it. The site's scripts run there for a few seconds.
+                            For a video with no good picture, your device reads a few seconds of the video to use
+                            one of its frames.
+                        </span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle
+                            checked={settings.generateLinkPreviews !== false}
+                            onChange={setGenerateLinkPreviews}
+                            aria-label="Generate link previews"
+                        />
+                    </div>
+                </div>
+                <div className="sd-row" data-setting="show-embeds">
+                    <span className={`sd-tile${settings.showEmbeds !== false ? '' : ' sd-tile--dim'}`}><LayoutTemplate size={16} /></span>
+                    <div className="sd-rl">
+                        <b>Show embeds</b>
+                        <span>
+                            Previews others send don't contact the site. Directly linked images and GIFs load from the
+                            site, and videos and players connect when you press play, which shares your IP address with
+                            that site. Turn this off to show links only.
+                        </span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle
+                            checked={settings.showEmbeds !== false}
+                            onChange={setShowEmbeds}
+                            aria-label="Show embeds"
+                        />
+                    </div>
+                </div>
+                <div className="sd-row">
                     <span className={`sd-tile${gif.settings.klipyEnabled && klipyAvailable ? '' : ' sd-tile--dim'}`}><Search size={16} /></span>
                     <div className="sd-rl">
                         <b>GIF search (KLIPY)</b>
@@ -138,6 +182,8 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                     </div>
                 </div>
             </div>
+
+            <TrustedWebsitesSettings />
 
             {/* App security */}
             <div className="sd-card">

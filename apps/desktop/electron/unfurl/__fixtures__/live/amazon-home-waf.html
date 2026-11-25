@@ -1,0 +1,45 @@
+<!-- fixture amazon-home-waf: https://www.amazon.com/ UA=Chrome status=202 content-type=text/html; charset=UTF-8 saved live 2026-11-23, whole body (2007 chars) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+    <style>
+        body {
+            font-family: "Arial";
+        }
+    </style>
+    <script type="text/javascript">
+    window.awsWafCookieDomainList = [];
+    window.gokuProps = {
+"key":"REDACTED",
+          "iv":"REDACTED",
+          "context":"REDACTED"
+};
+    </script>
+    <script src="https://1c5c1ecf7303.a481e94e.us-east-2.token.awswaf.com/1c5c1ecf7303/d6a7a58005ec/04c5ab18cd2d/challenge.js"></script>
+</head>
+<body>
+    <div id="challenge-container"></div>
+    <script type="text/javascript">
+        AwsWafIntegration.saveReferrer();
+        AwsWafIntegration.checkForceRefresh().then((forceRefresh) => {
+            if (forceRefresh) {
+                AwsWafIntegration.forceRefreshToken().then(() => {
+                    window.location.reload(true);
+                });
+            } else {
+                AwsWafIntegration.getToken().then(() => {
+                    window.location.reload(true);
+                });
+            }
+        });
+    </script>
+    <noscript>
+        <h1>JavaScript is disabled</h1>
+        In order to continue, we need to verify that you're not a robot.
+        This requires JavaScript. Enable JavaScript and then reload the page.
+    </noscript>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>TikTok probe</title></head>
+<!-- TikTok player/v1 frame at several widths (9:16), in the real Electron main + CSP.
+     Driven by harness/media-sizing-electron.mjs (PHASES=probe). Not shipped. -->
+<body style="margin:0;background:#0b0f1e;color:#fff;font:12px sans-serif"><div id="row" style="display:flex;gap:16px;padding:12px;align-items:flex-start"></div>
+<script>
+const q = new URLSearchParams(location.search);
+const W = (q.get('w') || '225,240,252,270,288,300,325').split(',').map(Number);
+const id = q.get('id') || '6718335390845095173';
+for (const w of W) {
+  const d = document.createElement('div');
+  d.innerHTML = `<div style="padding:0 0 4px">${w}px</div>`;
+  const f = document.createElement('iframe');
+  f.src = `https://www.tiktok.com/player/v1/${id}?autoplay=1&music_info=1&description=1&rel=0`;
+  f.style.cssText = `width:${w}px;height:${Math.round(w * 16 / 9)}px;border:0;display:block;background:#000`;
+  f.allow = 'autoplay; encrypted-media; fullscreen; picture-in-picture';
+  f.referrerPolicy = 'strict-origin-when-cross-origin';
+  f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation');
+  f.dataset.w = String(w);
+  d.appendChild(f); document.getElementById('row').appendChild(d);
+}
+</script></body></html>

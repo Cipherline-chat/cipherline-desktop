@@ -52,6 +52,7 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
         { label: 'Start with Windows', keywords: ['autostart', 'auto start', 'login', 'boot', 'startup', 'open at login', 'start on login', 'login items', 'launch at login'] },
         { label: 'Start minimized', keywords: ['taskbar', 'launch minimized'] },
         { label: 'Minimize to tray', keywords: ['system tray', 'close to tray', 'background'] },
+        { label: 'Compact embeds', keywords: ['link previews', 'embeds', 'video embeds', 'youtube', 'medal', 'clips', 'small card', 'player size', 'compact', 'expanded'] },
     ],
     // Settings → Accessibility (panes/AccessibilityPane.tsx). Later slices (contrast, motion, themes) add theirs here.
     accessibility: [
@@ -136,7 +137,8 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
     privacy: [
         { label: 'Reachability', keywords: ['who can message', 'friend requests', 'dms from'] },
         { label: 'Screen Lock', keywords: ['pin', 'lock app', 'inactivity lock'] },
-        { label: 'Link previews', keywords: ['embeds', 'url preview'] },
+        { label: 'Generate link previews', keywords: ['embeds', 'url preview', 'link previews', 'unfurl'] },
+        { label: 'Show embeds', keywords: ['embeds', 'link previews', 'images from links', 'ip address', 'links only'] },
         { label: 'Screen capture warning', keywords: ['recording detection', 'screenshot'] },
         { label: 'Safety numbers', keywords: ['verify', 'identity verification', 'fingerprint'] },
         { label: 'Privacy Policy', keywords: ['policy', 'legal', 'gdpr', 'google drive data'] },

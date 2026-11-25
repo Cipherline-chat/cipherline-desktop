@@ -25,7 +25,10 @@ describe('Copy image wiring', () => {
     });
 
     it('the image-link embed exposes only its local blob URL to the menu', () => {
-        expect(chat).toMatch(/data-cl-copy-image=\{blobUrl \?\? undefined\}/);
+        // ImageLinkEmbed moved out of ChatPane to embeds/MessageEmbed.tsx (2026-11-23).
+        // 2026-11-24: the loaded blob:, or the sender's picture (a decrypted blob: / data: from the
+        // message) when the file can't load; both local, never the remote URL.
+        expect(read('./embeds/MessageEmbed.tsx')).toMatch(/data-cl-copy-image=\{\(blobUrl && !failed \? blobUrl : poster\) \?\? undefined\}/);
     });
 
     it('the lightbox offers Copy image for blob: images only', () => {

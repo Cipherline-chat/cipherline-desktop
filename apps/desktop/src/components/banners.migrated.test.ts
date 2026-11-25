@@ -69,6 +69,9 @@ describe('AnnouncementBanners', () => {
         const b = q('.cl-banner')!;
         expect(b.getAttribute('data-banner-tone')).toBe('warning');
         expect(q('.cl-banner__title')?.textContent).toBe('Maintenance');
+        // Collapsed by default: the body only shows after expanding.
+        expect(q('.cl-banner__desc')).toBeNull();
+        click('.cl-banner__toggle');
         expect(q('.cl-banner__desc')?.textContent).toContain('Tonight 10pm');
         click('.cl-banner__x');
         expect(JSON.parse(kv.get('cipherline_announcement_dismissed_u1')!)).toEqual(['a1']);
@@ -239,6 +242,47 @@ describe('OwnDeviceAlert', () => {
     it('NEGATIVE: nothing to review and nothing flagged renders nothing', () => {
         render(h(OwnDeviceAlert, base));
         expect(host.innerHTML).toBe('');
+    });
+
+    it('while a removal is in flight the row says so, the button is busy and "This was me" is gone', () => {
+        render(h(OwnDeviceAlert, { ...base, alerts: [alertRow] as never, removals: { 'dev-1234': { state: 'removing' } } }));
+        const row = q('[data-testid="own-device-alert-row"]')!;
+        expect(row.textContent).toContain('signing it out');
+        expect(row.querySelectorAll('button')).toHaveLength(1);
+        expect((row.querySelector('button') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('a failed removal says so and offers Try again, which calls onReject again', () => {
+        render(h(OwnDeviceAlert, { ...base, alerts: [{ ...alertRow, kind: 'rejected_still_listed' }] as never, removals: { 'dev-1234': { state: 'failed' } } }));
+        const row = q('[data-testid="own-device-alert-row"]')!;
+        expect(row.textContent).toContain("couldn't remove it");
+        const btn = row.querySelector('button') as HTMLButtonElement;
+        expect(btn.textContent).toContain('Try again');
+        act(() => { btn.click(); });
+        expect(base.onReject).toHaveBeenCalledWith('dev-1234', 'PUB');
+    });
+
+    it('once removed, the alarm becomes a success banner naming the device (name kept from click time)', () => {
+        const onRemovedDone = vi.fn();
+        render(h(OwnDeviceAlert, { ...base, removals: { 'dev-1234': { state: 'removed', name: { device_name: 'Studio PC', platform: 'windows' } } }, onRemovedDone }));
+        expect(q('[data-testid="own-device-alert"]')).toBeNull();
+        const b = q('[data-testid="own-device-removed"]')!;
+        expect(b.getAttribute('data-banner-tone')).toBe('success');
+        expect(b.textContent).toContain('Studio PC (windows) was signed out and removed.');
+        click('[data-action="done"] button');
+        expect(onRemovedDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('a removed device next to another flagged one is a done row inside the alarm', () => {
+        render(h(OwnDeviceAlert, { ...base, alerts: [alertRow] as never, removals: { 'dev-9999': { state: 'removed' } } }));
+        expect(q('[data-testid="own-device-alert"]')).not.toBeNull();
+        expect(q('[data-testid="own-device-removed-row"]')?.textContent).toContain('signed out and removed');
+    });
+
+    it('NEGATIVE: "removed" is never shown for a device the alarm still lists', () => {
+        render(h(OwnDeviceAlert, { ...base, alerts: [{ ...alertRow, kind: 'rejected_still_listed' }] as never, removals: { 'dev-1234': { state: 'removed' } } }));
+        expect(q('[data-testid="own-device-removed"]')).toBeNull();
+        expect(q('[data-testid="own-device-removed-row"]')).toBeNull();
     });
 });
 

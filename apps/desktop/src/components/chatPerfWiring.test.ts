@@ -79,8 +79,11 @@ describe('ChatPane render path', () => {
     });
 
     it('linked images decode base64 natively and are cached per URL', () => {
+        // ImageLinkEmbed moved out of ChatPane to embeds/MessageEmbed.tsx (2026-11-23).
+        const embed = read('embeds/MessageEmbed.tsx');
         expect(chat).not.toContain('Uint8Array.from(atob(');
-        expect(chat).toMatch(/loadRemoteImage\(url,/);
+        expect(embed).not.toContain('Uint8Array.from(atob(');
+        expect(embed).toMatch(/loadRemoteImage\(src,/);
     });
 });
 

@@ -11,8 +11,8 @@ import * as crypto from 'crypto';
  *     spellings below are duplicated from
  *     `apps/api/src/devices/device-approval.util.ts` rather than imported
  *     (an import across the electron/ ⇄ src/ boundary re-roots the emitted
- *     dist-electron tree and breaks packaging — see the history-request-proof
- *     handler in main.ts). The API's `device-approval.util.spec.ts` reads THIS
+ *     dist-electron tree and breaks packaging, CLAUDE.md "Electron rootDir
+ *     trap"). The API's `device-approval.util.spec.ts` reads THIS
  *     file's source text and fails if the two drift.
  *
  *  2. THE RECOVERY-DERIVED KEYPAIR. The "recovery key" the user can export

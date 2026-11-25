@@ -71,7 +71,7 @@ describe('only the user\'s own Leave is deliberate', () => {
     });
 
     it('CallPane: its own LiveKit-disconnect and failure paths call onDisconnect() with NO arguments', () => {
-        const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={(err) => {');
+        const disc = between(pane, 'onDisconnected={(reason) => {', 'onError={onRoomError}');
         expect(disc).toContain('if (handling.teardown) onDisconnect(undefined, undefined, isDisplacedByOtherConnection(reason));');
         // never deliberate, never 'last person': the only argument it may pass is the third (displaced by this account's other connection)
         expect(disc).not.toMatch(/onDisconnect\((?!undefined, undefined, )[^)]/);

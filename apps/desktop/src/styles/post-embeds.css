@@ -1,0 +1,125 @@
+/*
+ * Post cards (phase 4): an X / Twitter tweet or a Reddit post, drawn from the
+ * SENDER's preview inside the encrypted message (components/embeds/
+ * PostEmbedCard.tsx). Same family as the web cards (sender-embeds.css): the
+ * app's --cl-* tokens, no left rail, and in light themes no outline at all
+ * (a white card on the cream page with a soft warm shadow).
+ *
+ * Compact embeds: smaller pictures, a short text clamp, a small video poster
+ * that grows to the card's width on play. Expanded: pictures and the video at
+ * the card's full width.
+ *
+ * The only literal colours sit ON pictures and video (the play button, the
+ * GIF / duration badge, the NSFW veil, the black letterbox), dark in both
+ * themes like the clip card's (link-embeds.css); everything else is a token.
+ */
+.cl-pe {
+  position: relative; isolation: isolate; container-type: inline-size;
+  width: min(100%, 460px); box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px 10px;
+  background: var(--cl-deep);
+  border: 1px solid rgb(var(--cl-bright-rgb) / 0.06);
+  border-radius: var(--cl-r-lg);
+  box-shadow: 0 8px 24px rgb(var(--cl-shade-rgb) / 0.16);
+  font-family: var(--cl-font-body); color: var(--cl-text);
+}
+.cl-pe[data-layout="compact"] { width: min(100%, 400px); gap: 6px; padding: 8px 10px; }
+/* One video / GIF / picture: size follows the media (§11). The card hugs the media:
+   PostEmbedCard sets the media's px width (--cl-pe-mw, also the media wrapper's);
+   the card is that + padding + border (none in light), 280 px at least, capped
+   by the column. The text wraps to it. */
+.cl-pe[data-hug] { width: max(280px, calc(var(--cl-pe-mw) + 26px)); max-width: min(100%, 460px); }
+.cl-pe[data-hug][data-layout="compact"] { width: max(280px, calc(var(--cl-pe-mw) + 22px)); }
+:root[data-scheme="light"] .cl-pe[data-hug] { width: max(280px, calc(var(--cl-pe-mw) + 24px)); }
+:root[data-scheme="light"] .cl-pe[data-hug][data-layout="compact"] { width: max(280px, calc(var(--cl-pe-mw) + 20px)); }
+
+.cl-pe-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.cl-pe-avatar {
+  flex: none; width: 34px; height: 34px; border-radius: 50%; overflow: hidden;
+  display: grid; place-items: center; background: var(--cl-raise);
+  font-weight: 900; font-size: 15px; color: var(--cl-text);
+}
+.cl-pe[data-layout="compact"] .cl-pe-avatar { width: 28px; height: 28px; font-size: 13px; }
+.cl-pe-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-pe-who { min-width: 0; flex: 1; display: flex; flex-direction: column; line-height: 1.2; }
+.cl-pe-name { font-weight: 800; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-pe-handle { font-size: 12px; color: var(--cl-faint); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.cl-pe-title {
+  font-family: var(--cl-font-display); font-weight: var(--cl-w-display-bold, 600);
+  font-size: 15.5px; line-height: 20px; color: var(--cl-text); text-decoration: none;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere;
+}
+.cl-pe-title:hover, .cl-pe-title:focus-visible { color: var(--cl-lume-text); outline: none; }
+.cl-pe-text {
+  margin: 0; font-size: 13.5px; line-height: 19px; color: var(--cl-text); white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; overflow: hidden;
+}
+.cl-pe[data-layout="compact"] .cl-pe-text { -webkit-line-clamp: 4; font-size: 13px; line-height: 18px; }
+.cl-pe-text a { color: var(--cl-lume-text); text-decoration: none; }
+.cl-pe-text a:hover, .cl-pe-text a:focus-visible { text-decoration: underline; outline: none; }
+
+/* ── media ─────────────────────────────────────────────────────────────── */
+/* The media box hugs its media (a single picture keeps its own shape); several pictures and a video take the card's width. */
+.cl-pe-mediawrap { position: relative; align-self: flex-start; max-width: 100%; border-radius: var(--cl-r-sm); overflow: hidden; isolation: isolate; display: flex; flex-direction: column; gap: 6px; }
+.cl-pe-mediawrap[data-n="2"], .cl-pe-mediawrap[data-n="3"], .cl-pe-mediawrap[data-n="4"] { width: 100%; }
+.cl-pe[data-layout="compact"] .cl-pe-mediawrap[data-n="2"], .cl-pe[data-layout="compact"] .cl-pe-mediawrap[data-n="3"], .cl-pe[data-layout="compact"] .cl-pe-mediawrap[data-n="4"] { width: min(100%, 280px); }
+.cl-pe-media { position: relative; border-radius: var(--cl-r-sm); overflow: hidden; isolation: isolate; }
+.cl-pe-grid { display: grid; gap: 3px; }
+.cl-pe-grid[data-n="1"] { grid-template-columns: auto; }
+.cl-pe-grid[data-n="2"] { grid-template-columns: 1fr 1fr; aspect-ratio: 16 / 9; }
+.cl-pe-grid[data-n="3"], .cl-pe-grid[data-n="4"] { grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; aspect-ratio: 16 / 9; }
+.cl-pe-grid[data-n="3"] > :first-child { grid-row: span 2; }
+.cl-pe-cell { position: relative; min-height: 0; overflow: hidden; background: rgb(var(--cl-bright-rgb) / 0.06); cursor: zoom-in; border: 0; padding: 0; display: block; }
+.cl-pe-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-pe-ph { display: block; width: 100%; height: 100%; }
+/* a single picture: the cell has the picture's own px size and shape (PostEmbedCard) */
+.cl-pe-grid[data-n="1"] .cl-pe-cell { max-width: 100%; }
+.cl-pe-cell:focus-visible { outline: 2px solid var(--cl-lume-ui); outline-offset: -2px; }
+
+/* the box has the video's own shape and px width (PostEmbedCard): no letterbox */
+.cl-pe-video { position: relative; max-width: 100%; aspect-ratio: var(--cl-pe-aspect, 16 / 9); background: #000; }
+.cl-pe-video img, .cl-pe-video video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.cl-pe-video img { object-fit: cover; }
+.cl-pe-play {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 52px; height: 52px; border-radius: 50%; border: 0; cursor: pointer;
+  display: grid; place-items: center; color: #fff;
+  background: rgba(8, 12, 26, .62); backdrop-filter: blur(6px);
+  box-shadow: 0 0 0 2px rgba(8, 12, 26, .5), 0 0 0 4px rgb(255 255 255 / .18);
+}
+.cl-pe-play:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(8, 12, 26, .8), 0 0 0 4.5px var(--cl-lume-ui); }
+.cl-pe-play svg { width: 22px; height: 22px; margin-left: 3px; }
+.cl-pe-badge {
+  position: absolute; left: 8px; bottom: 8px; padding: 1px 7px; border-radius: 6px;
+  background: rgba(8, 12, 26, .66); color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .02em;
+}
+.cl-pe-note { font-size: 12px; color: var(--cl-faint); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cl-pe-note button { border: 0; background: none; padding: 0; color: var(--cl-lume-text); font: inherit; font-weight: 700; cursor: pointer; }
+
+/* NSFW / spoiler: the media is blurred until the viewer asks to see it. */
+.cl-pe-veiled > :not(.cl-pe-veil) { filter: blur(28px) saturate(.6); pointer-events: none; }
+.cl-pe-veil {
+  position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; border: 0; cursor: pointer;
+  background: rgba(8, 12, 26, .35); color: #fff; font: inherit;
+}
+.cl-pe-veil span { padding: 6px 12px; border-radius: var(--cl-r-pill); background: rgba(8, 12, 26, .72); font-size: 12.5px; font-weight: 800; }
+.cl-pe-veil:focus-visible { outline: none; box-shadow: inset 0 0 0 3px var(--cl-lume-ui); }
+
+.cl-pe-foot { display: flex; align-items: center; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; min-width: 0; font-size: 12px; color: var(--cl-faint); font-weight: 600; }
+.cl-pe-foot > span { white-space: nowrap; }
+.cl-pe-open {
+  border: 0; background: none; padding: 2px 4px; border-radius: 6px; cursor: pointer;
+  color: var(--cl-muted); font: inherit; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; margin-left: auto;
+}
+.cl-pe-open:hover, .cl-pe-open:focus-visible { color: var(--cl-lume-text); outline: none; }
+.cl-pe-open svg { width: 13px; height: 13px; }
+.cl-pe > .cl-se-remove { top: 8px; right: 8px; }
+
+/* Light mode: no outlines (owner). */
+:root[data-scheme="light"] .cl-pe {
+  border: 0;
+  box-shadow: 0 1px 3px rgb(var(--cl-shade-rgb) / .08), 0 8px 22px rgb(var(--cl-shade-rgb) / .12);
+}
+

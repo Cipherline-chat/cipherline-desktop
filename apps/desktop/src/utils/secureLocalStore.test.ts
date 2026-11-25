@@ -483,7 +483,7 @@ describe('secureLocalStore — deferred message hydration', () => {
         setMasterKey({ status: 'ok', keyB64: TEST_KEY_B64 });
         await secureLocalStore.hydrate();
 
-        // Two racing callers (Dashboard's restore effect and HistorySyncBanner
+        // Two racing callers (Dashboard's restore effect and SignInHistoryPrompt
         // both await this on boot) must not decrypt twice or clobber the map.
         await Promise.all([
             secureLocalStore.hydrateMessages(),

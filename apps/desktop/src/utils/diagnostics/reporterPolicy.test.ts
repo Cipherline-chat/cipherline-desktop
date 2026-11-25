@@ -77,6 +77,19 @@ describe('sensitive terms', () => {
 });
 
 describe('auto-send policy', () => {
+    it('never auto-sends an unclean exit recorded by another app version (prod 7fd79405); leaves it pending', () => {
+        const old = { signature: 'old', crash: { kind: 'unclean_exit', app_version_at_crash: '0.1.0' } };
+        const same = { signature: 'same', crash: { kind: 'unclean_exit', app_version_at_crash: '0.1.3' } };
+        const gpu = { signature: 'gpu', crash: { kind: 'gpu', app_version_at_crash: '0.1.0' } };
+        const noVer = { signature: 'nover', crash: { kind: 'unclean_exit' } };
+        const plan = planAutoSend({ enabled: true, signedIn: true, pending: [old, same, gpu, noVer], log: [], now: NOW, currentVersion: '0.1.3' });
+        expect(plan.stale.map(p => p.signature)).toEqual(['old']);
+        expect(plan.send.map(p => p.signature).sort()).toEqual(['gpu', 'nover', 'same']);
+        expect(plan.duplicates).toEqual([]);
+        // Control: an unknown running version (dev '0.0.0' / omitted) hides nothing.
+        expect(planAutoSend({ enabled: true, signedIn: true, pending: [old], log: [], now: NOW, currentVersion: '0.0.0' }).send.map(p => p.signature)).toEqual(['old']);
+        expect(planAutoSend({ enabled: true, signedIn: true, pending: [old], log: [], now: NOW }).send.map(p => p.signature)).toEqual(['old']);
+    });
     const pending = (sigs: string[]) => sigs.map(signature => ({ signature }));
     const NOW = 1_000 * H;
 

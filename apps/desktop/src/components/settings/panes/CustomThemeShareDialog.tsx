@@ -3,7 +3,7 @@ import { ArrowLeft, Check, Copy, Download, Eye, FileUp, Import, Link2, SearchX, 
 import { ClButton, ClInput, ClModal, ClTextarea } from '../../cl';
 import { DialogBody, DialogError, DialogFooter, DialogHeader } from '../../dialog/DialogFrame';
 import {
-    CUSTOM_THEME_ERROR_TEXT, CUSTOM_THEME_SHARE_MAX, KNOB_LABELS, deriveCustomTheme, encodeShareCode, formatRatio, parseThemeImport,
+    CUSTOM_THEME_ERROR_TEXT, CUSTOM_THEME_SHARE_MAX, deriveCustomTheme, encodeShareCode, parseThemeImport,
     themeFileJson, type CustomThemeDef,
 } from '../../../theme/customTheme';
 import { buildThemeLink, themeCodeFromLink, themeShareMessage } from '../../../theme/themeLink';
@@ -331,16 +331,6 @@ export const CustomThemeImportDialog: React.FC<{
                             <span>{parsed.def.base === 'dark' ? 'Dark' : 'Light'} base{parsed.def.glow ? ', glow' : ''}</span>
                         </div>
                         <div className="cts-preview"><CustomThemePreview theme={theme} compact={!fromLink} /></div>
-                        {parsed.adjustments.length > 0 && (
-                            <ul className="cts-adjusted">
-                                {parsed.adjustments.map((a) => (
-                                    <li key={a.knob}>
-                                        <i className="cte-adj-sw" style={{ background: a.to }} aria-hidden="true" />
-                                        {KNOB_LABELS[a.knob].label}: adjusted for readability{a.knob === 'bg' || a.knob === 'panel' || a.knob === 'surface' ? '' : ` (${formatRatio(a.ratio)})`}
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
                     </div>
                 )}
                 {saveError && <DialogError>{saveError}</DialogError>}

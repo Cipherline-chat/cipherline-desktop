@@ -113,10 +113,16 @@ describe('payload validation (what another device sends)', () => {
         expect(s.tombstones).toEqual({});
     });
 
-    it('received colours are re-normalised (an unreadable synced theme arrives readable)', () => {
-        const bad = { ...def('Low'), colors: { ...def('Low').colors, text: '#141a2e' } };
+    it('a low-contrast synced theme arrives exactly as the other device saved it (no readability adjustment)', () => {
+        const low = { ...def('Low'), colors: { ...def('Low').colors, text: '#141a2e' } };
+        const s = parseThemesPayload(JSON.stringify({ v: 1, items: [{ id: 'a', theme: low, created: B, at: B }], tombstones: {} }), NOW);
+        expect(s.items[0].def.colors).toEqual(low.colors);
+    });
+
+    it('received colours are still re-validated: a non-colour value is refused', () => {
+        const bad = { ...def('Bad'), colors: { ...def('Bad').colors, text: 'url(https://evil.example/x)' } };
         const s = parseThemesPayload(JSON.stringify({ v: 1, items: [{ id: 'a', theme: bad, created: B, at: B }], tombstones: {} }), NOW);
-        expect(s.items[0].def.colors.text).not.toBe('#141a2e');
+        expect(s.items).toEqual([]);
     });
 });
 

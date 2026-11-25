@@ -11,6 +11,8 @@ import { API_BASE } from '../constants';
 // default constant is re-exported here too for existing/local readability.
 import { getIdleThresholdSeconds, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 import { applyPresenceEvent, presenceBus } from '../utils/presenceState';
+import { decideIdleAction } from '../utils/idleStatusDecision';
+import { effectiveIdleSeconds, isSessionAway, nextIdleVerdict, subscribeSessionAway } from '../utils/sessionLock';
 import { activeCustom, nextCustomExpiry } from '../utils/customStatus';
 import { OwnStatusSync, selfPresenceBus, type OwnChoice, type PendingLocalChange } from '../utils/ownStatusSync';
 import { GameActivityReporter } from '../utils/gameActivityReporter';
@@ -310,31 +312,57 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.getSystemIdleTime) return;
 
-        const poll = setInterval(async () => {
-            const idleSecs: number = await electronAPI.getSystemIdleTime();
+        // One place applies a verdict, whether it came from the poll or from a
+        // lock / sleep edge. A manual DND / Invisible is never touched (the old
+        // protocol returns early; on the new one the server only ever turns a
+        // chosen 'online' into 'away', and the flag it receives reveals nothing
+        // while the visible status is DND or offline).
+        const applyIdle = (idle: boolean) => {
             const wasIdle = idleRef.current;
-            const idle = wasIdle ? idleSecs >= IDLE_RETURN_SECONDS : idleSecs >= getIdleThresholdSeconds();
             idleRef.current = idle;
-            if (serverAutoAwayRef.current) {
-                if (idle !== wasIdle) sendIdleRef.current?.(idle);
-                return;
-            }
-
-            const current = myStatusRef.current;
-            if (current === 'dnd' || current === 'offline') return; // respect manual override
-
-            if (idle && current === 'online') {
+            const action = decideIdleAction({
+                serverAutoAway: serverAutoAwayRef.current,
+                wasIdle,
+                idle,
+                current: myStatusRef.current,
+                autoAway: autoAwayRef.current,
+            });
+            if (action.kind === 'report-idle') {
+                sendIdleRef.current?.(action.idle);
+            } else if (action.kind === 'auto-away') {
                 autoAwayRef.current = true;
                 setMyStatusState('away');
                 pushStatus('away', undefined, undefined, myCurrentGameRef.current);
-            } else if (!idle && current === 'away' && autoAwayRef.current) {
+            } else if (action.kind === 'auto-return') {
                 autoAwayRef.current = false;
                 setMyStatusState('online');
                 pushStatus('online', undefined, undefined, myCurrentGameRef.current);
             }
-        }, IDLE_POLL_INTERVAL_MS);
+        };
+        const evaluate = async () => {
+            const away = isSessionAway();
+            let idleSecs = Number.POSITIVE_INFINITY;
+            if (!away) {
+                try { idleSecs = effectiveIdleSeconds(await electronAPI.getSystemIdleTime()); } catch { return; /* unknown: change nothing */ }
+                // A lock that arrived while the read was in flight wins.
+                if (isSessionAway()) { applyIdle(true); return; }
+            }
+            applyIdle(nextIdleVerdict({
+                wasIdle: idleRef.current,
+                idleSeconds: idleSecs,
+                thresholdSeconds: getIdleThresholdSeconds(),
+                returnSeconds: IDLE_RETURN_SECONDS,
+                away,
+            }));
+        };
 
-        return () => clearInterval(poll);
+        const poll = setInterval(() => { void evaluate(); }, IDLE_POLL_INTERVAL_MS);
+        // Lock / sleep: idle AT ONCE (this connection's flag; the server still
+        // decides across all devices, so another desktop in use keeps the user
+        // Online). Unlock / wake: re-read the idle clock now, not up to 30 s later.
+        const unsubSession = subscribeSessionAway(() => { void evaluate(); });
+
+        return () => { clearInterval(poll); unsubSession(); };
     }, [pushStatus]);
 
     // Other people's presence — every event, in order (see presenceState.ts

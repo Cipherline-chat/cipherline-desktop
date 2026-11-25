@@ -65,74 +65,50 @@ describe('buildChannelTree', () => {
     });
 });
 
-describe('dividerVisibility (never advertise a hidden section)', () => {
-    it('a labelled divider shows only when the section AFTER it has something visible', () => {
-        const t = buildChannelTree([ch('a', 'A', 1000)], [cat('A', 1000)], [div('L1', 'A', 2000), div('L0', 'A', 500)]);
-        const v = dividerVisibility(t, false);
-        expect(v.shown.has('L0')).toBe(true);   // heads "a"
-        expect(v.shown.has('L1')).toBe(false);  // trailing: nothing visible below it
+describe('dividerVisibility (every divider the server sends is drawn, wherever it sits)', () => {
+    const STYLES = ['label', 'header', 'pill', 'text', 'line', 'dots', 'space'] as const;
+
+    it.each(STYLES)('a %s divider is shown first, last, alone, and between channels - in a category and a sub-category', (style) => {
+        const t = buildChannelTree(
+            [ch('a', 'A', 2000), ch('b', 'A', 4000), ch('j', 'S', 2000)],
+            [cat('A', 1000), cat('S', 3000, 'A'), cat('EMPTY', 2000)],
+            [
+                div('first', 'A', 500, style), div('between', 'A', 3000, style), div('last', 'A', 9000, style),
+                div('alone', 'EMPTY', 1000, style),
+                div('sub-first', 'S', 500, style), div('sub-last', 'S', 9000, style),
+            ],
+        );
+        const v = dividerVisibility(t);
+        for (const id of ['first', 'between', 'last', 'alone', 'sub-first', 'sub-last']) expect(v.shown.has(id)).toBe(true);
+        expect(v.faded.size).toBe(0); // nothing is "would be hidden from members" any more
     });
 
-    it('line / dots / space show when EITHER side has something visible', () => {
-        const t = concept();
-        const v = dividerVisibility(t, false);
-        expect(v.shown.has('line')).toBe(true);  // closes CRAFT (content before it)
-        expect(v.shown.has('dots')).toBe(true);
-        const empty = buildChannelTree([], [cat('A', 1000)], [div('only', 'A', 1000, 'line')]);
-        expect(dividerVisibility(empty, false).shown.size).toBe(0);
+    it.each(STYLES)('a %s divider at the top of the list is shown (above, below and without any channel)', (style) => {
+        const t = buildChannelTree([ch('g', null, 2000)], [cat('A', 1000)], [div('above', null, 500, style), div('below', null, 3000, style)]);
+        const v = dividerVisibility(t);
+        expect(v.shown.has('above')).toBe(true);
+        expect(v.shown.has('below')).toBe(true);
+        const bare = buildChannelTree([], [], [div('only', null, 500, style)]);
+        expect(dividerVisibility(bare).shown.has('only')).toBe(true);
     });
 
-    it('everything around it hidden (i.e. absent from the VIEW-filtered list) hides it', () => {
-        // The member cannot see #print or #staff, so the list simply lacks them.
-        const t = buildChannelTree([ch('pub', 'A', 1000)], [cat('A', 1000)], [div('STAFF ONLY', 'A', 2000)]);
-        expect(dividerVisibility(t, false).shown.has('STAFF ONLY')).toBe(false);
+    it('the Calls-sized case: a divider in a category whose channels the member cannot see (the list simply lacks them) is shown', () => {
+        // Regression for the removed rule: the old code hid this one for members and faded it for managers.
+        const t = buildChannelTree([], [cat('A', 1000)], [div('STAFF ONLY', 'A', 2000), div('line', 'A', 3000, 'line')]);
+        const v = dividerVisibility(t);
+        expect(v.shown.has('STAFF ONLY')).toBe(true);
+        expect(v.shown.has('line')).toBe(true);
     });
 
-    it('a visible sub-category counts as content for the divider above it', () => {
-        const t = buildChannelTree([], [cat('A', 1000), cat('S', 2000, 'A')], [div('L', 'A', 1000)]);
-        expect(dividerVisibility(t, false).shown.has('L')).toBe(true);
+    it('positive control: the tree really holds the dividers (an empty tree shows none)', () => {
+        const t = buildChannelTree([], [cat('A', 1000)], [div('d', 'A', 1000)]);
+        expect(dividerVisibility(t).shown.size).toBe(1);
+        expect(dividerVisibility(buildChannelTree([], [], [])).shown.size).toBe(0);
     });
 
-    it('managers see every divider, the would-be-hidden ones marked faded', () => {
-        const t = buildChannelTree([ch('a', 'A', 1000)], [cat('A', 1000)], [div('L1', 'A', 2000)]);
-        const v = dividerVisibility(t, true);
-        expect(v.shown.has('L1')).toBe(true);
-        expect(v.faded.has('L1')).toBe(true);
-    });
-
-    it.each(['label', 'header', 'pill', 'text'] as const)('the %s style is a LABEL style: it needs a visible item AFTER it', (style) => {
-        const t = buildChannelTree([ch('a', 'A', 1000)], [cat('A', 1000)], [div('tail', 'A', 2000, style), div('head', 'A', 500, style)]);
-        const v = dividerVisibility(t, false);
-        expect(v.shown.has('head')).toBe(true);
-        expect(v.shown.has('tail')).toBe(false);
-    });
-
-    it('a label divider with a visible channel after it is NOT marked hidden for managers (no dimming)', () => {
-        const t = buildChannelTree([ch('a', null, 2000)], [], [div('L', null, 1000, 'pill')]);
-        const v = dividerVisibility(t, true);
-        expect(v.shown.has('L')).toBe(true);
-        expect(v.faded.has('L')).toBe(false);
-    });
-
-    // Owner, 2026-11-16: "make dividers visible if they aren't under a category".
-    it('top of the list: every divider is shown, never faded, even with nothing after it', () => {
-        const t = buildChannelTree([], [cat('A', 1000)], [div('above-cats', null, 500), div('line', null, 600, 'line')]);
-        for (const keep of [false, true]) {
-            const v = dividerVisibility(t, keep);
-            expect(v.shown.has('above-cats')).toBe(true);
-            expect(v.shown.has('line')).toBe(true);
-            expect(v.faded.size).toBe(0);
-        }
-    });
-
-    it('control: the same trailing divider INSIDE a category is still hidden', () => {
-        const t = buildChannelTree([], [cat('A', 1000)], [div('in-cat', 'A', 500)]);
-        expect(dividerVisibility(t, false).shown.has('in-cat')).toBe(false);
-    });
-
-    it('walks inside sub-categories too', () => {
-        const t = buildChannelTree([ch('j', 'S', 2000)], [cat('A', 1000), cat('S', 1000, 'A')], [div('in', 'S', 1000)]);
-        expect(dividerVisibility(t, false).shown.has('in')).toBe(true);
+    it('a divider whose container is unknown falls back to the top and is shown, never lost', () => {
+        const t = buildChannelTree([], [], [div('lost', 'NOPE', 1000, 'pill')]);
+        expect(dividerVisibility(t).shown.has('lost')).toBe(true);
     });
 });
 
@@ -276,6 +252,56 @@ describe('decideLayoutDrop (refused vs no-op vs move)', () => {
             expect(planLayoutDrop(start(), 'ch:joinery', UNCATEGORIZED_END_ID, 'after', tops))
                 .toEqual(v.kind === 'move' ? v.plan : null);
         });
+    });
+});
+
+describe('a divider can be dropped anywhere a channel can (never refused)', () => {
+    const tops = new Set(['CRAFT', 'EVENTS']);
+    const start = () => layoutOrderFromTree(concept());
+    // Every target: a row at the top, a row in a category, a row in a sub-category, a sub-category header,
+    // a category section (end), the end-of-list zone.
+    const TARGETS: Array<[string, string, string]> = [
+        ['an uncategorized channel', 'ch:welcome', TOP],
+        ['a top-of-list divider', 'div:COMMUNITY', TOP],
+        ['the end-of-list zone', UNCATEGORIZED_END_ID, TOP],
+        ['a channel in a category', 'ch:crafting', 'CRAFT'],
+        ['a channel in a sub-category', 'ch:joinery', 'WOOD'],
+        ['a sub-category header (into it)', 'sub:PRINT', 'PRINT'],
+        ['a category section (its end)', 'cat:EVENTS', 'EVENTS'],
+    ];
+
+    it.each(TARGETS)('over %s: moves, either half', (_label, overId, container) => {
+        for (const place of ['before', 'after'] as const) {
+            const v = decideLayoutDrop(start(), 'div:dots', overId, place, tops);
+            expect(v.kind).toBe('move');
+            if (v.kind === 'move') expect(v.plan.order[container]).toContain('div:dots');
+        }
+    });
+
+    it('can be made the FIRST and the LAST item of a category, a sub-category and the top', () => {
+        const first = planLayoutDrop(start(), 'div:COMMUNITY', 'ch:crafting', 'before', tops)!;
+        expect(first.order.CRAFT[0]).toBe('div:COMMUNITY');
+        const last = planLayoutDrop(start(), 'div:COMMUNITY', 'div:line', 'after', tops)!;
+        expect(last.order.CRAFT.at(-1)).toBe('div:COMMUNITY');
+        const subFirst = planLayoutDrop(start(), 'div:line', 'ch:joinery', 'before', tops)!;
+        expect(subFirst.order.WOOD[0]).toBe('div:line');
+        const subLast = planLayoutDrop(start(), 'div:line', 'ch:finishes', 'after', tops)!;
+        expect(subLast.order.WOOD.at(-1)).toBe('div:line');
+        const topFirst = planLayoutDrop(start(), 'div:dots', 'ch:welcome', 'before', tops)!;
+        expect(topFirst.order[TOP][0]).toBe('div:dots');
+        const topLast = planLayoutDrop(start(), 'div:dots', UNCATEGORIZED_END_ID, 'after', tops)!;
+        expect(topLast.order[TOP].at(-1)).toBe('div:dots');
+    });
+
+    it('the PATCH body carries the divider with kind "divider" under its new container', () => {
+        const plan = planLayoutDrop(start(), 'div:dots', 'ch:joinery', 'before', tops)!;
+        const body = layoutPatchBody(plan);
+        const wood = body.containers.find(c => c.parent_category_id === 'WOOD')!;
+        expect(wood.items[0]).toEqual({ kind: 'divider', id: 'dots' });
+    });
+
+    it('positive control: a SUB-CATEGORY over the same top-of-list target IS refused', () => {
+        expect(decideLayoutDrop(start(), 'sub:WOOD', 'ch:welcome', 'after', tops).kind).toBe('refused');
     });
 });
 

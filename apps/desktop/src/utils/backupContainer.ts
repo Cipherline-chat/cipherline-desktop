@@ -103,6 +103,14 @@
  * whole file), so the Drive copy is always a fresh full write that's then
  * uploaded whole — see driveBackup.ts.
  *
+ * ── Transfer profile: a raw container key (contract 11.15) ─────────────────
+ *
+ * A local ("near") transfer seals the same v4 layout under a raw 32-byte key, `K_xfer`, instead of a passphrase-derived one:
+ * header byte 3 (flags) is 0x01, the iteration field is 1, and the key derivation is SKIPPED — the container key IS the 32 bytes
+ * (`ContainerWriter.createRaw`, `openContainer(source, { rawKey })`). The file format is otherwise unchanged, so a passphrase
+ * backup is byte-for-byte what it was. A raw-key container is never a backup file: opening one with a passphrase, or a
+ * passphrase container with a raw key, is refused before any decryption, and any unknown flag bit is refused too.
+ *
  * Pure: no IPC, no DOM. Byte I/O goes through the `ByteSink` / `ByteSource`
  * interfaces so the same code runs against the streamed IPC file writer, a
  * Drive download, or an in-memory buffer in tests.
@@ -338,14 +346,25 @@ async function openCommitSlot(key: CryptoKey, slot: number, headerPrefix: Uint8A
     }
 }
 
-function buildHeader(salt: Uint8Array): Uint8Array {
+/** Header flag (byte 3), contract 11.15: the container key is a raw 32-byte key; there is no key derivation. */
+export const FLAG_RAW_KEY = 0x01;
+
+/** The most one frame of a device-TRANSFER container (record or index) may declare: an attachment part (<= 64 MiB,
+ *  `MAX_ATT_PART_BYTES`) plus its framing and a little headroom. The sender is a peer device, not us, so an index that declares
+ *  more is refused before anything is allocated or read (security round M2). Backup files are not capped here: an older one
+ *  holds a whole attachment of up to 2 GiB in one record. */
+export const MAX_RAW_FRAME_BYTES = 64 * 1024 * 1024 + 1024 * 1024;
+/** A raw key the page holds for one transfer: 32 bytes, never persisted. */
+export interface RawContainerKey { rawKey: Uint8Array }
+
+function buildHeader(salt: Uint8Array, raw = false): Uint8Array {
     const header = new Uint8Array(HEADER_LEN);
     header[0] = MAGIC_C;
     header[1] = MAGIC_L;
     header[2] = CONTAINER_VERSION;
-    header[3] = 0; // flags — reserved
+    header[3] = raw ? FLAG_RAW_KEY : 0; // flags
     header.set(salt, 4);
-    header.set(u32be(KDF_ITERATIONS), 20);
+    header.set(u32be(raw ? 1 : KDF_ITERATIONS), 20);
     // Both commit slots stay zero until finish() seals one.
     return header;
 }
@@ -386,6 +405,16 @@ export class ContainerWriter {
         const km = opts.keyMaterial ?? await ContainerWriter.newKey(password);
         const header = buildHeader(km.salt);
         const w = new ContainerWriter(km.key, sink, 0, [], 1, header.slice(0, HEADER_PREFIX_LEN));
+        await w.emit(header);
+        return w;
+    }
+
+    /** Start a fresh file under a RAW 32-byte container key (the transfer profile, contract 11.15): no key derivation, flag bit 0
+     *  set, iteration field 1. The salt is random and only decorative here (it is part of the authenticated header prefix). */
+    static async createRaw(rawKey: Uint8Array, sink: ByteSink): Promise<ContainerWriter> {
+        const key = await importRawContainerKey(rawKey);
+        const header = buildHeader(randomBytes(16), true);
+        const w = new ContainerWriter(key, sink, 0, [], 1, header.slice(0, HEADER_PREFIX_LEN));
         await w.emit(header);
         return w;
     }
@@ -510,7 +539,18 @@ export interface OpenedContainer {
  * finished or whose pointer is out of range, and one that can't be decrypted
  * with the given passphrase.
  */
-export async function openContainer(source: ByteSource, password: string): Promise<OpenedContainer> {
+/** Import a raw 32-byte container key as an AES-256-GCM key (encrypt + decrypt only, not extractable). */
+async function importRawContainerKey(rawKey: Uint8Array): Promise<CryptoKey> {
+    if (!(rawKey instanceof Uint8Array) || rawKey.length !== 32) throw new Error('A transfer container key must be 32 bytes');
+    return subtle().importKey('raw', rawKey as BufferSource, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+/** True iff `head` is a v4 container header carrying the raw-key flag (a transfer container, never a backup file). */
+export function isRawKeyContainer(head: Uint8Array): boolean {
+    return containerVersion(head) >= 4 && head.length > 3 && (head[3] & FLAG_RAW_KEY) !== 0;
+}
+
+export async function openContainer(source: ByteSource, secret: string | RawContainerKey): Promise<OpenedContainer> {
     const total = await source.size();
     if (total < HEADER_PREFIX_LEN) throw new Error('Backup file too small');
 
@@ -525,7 +565,20 @@ export async function openContainer(source: ByteSource, password: string): Promi
     const iterations = readU32be(header, 20);
     if (iterations < 1 || iterations > 10_000_000) throw new Error('Backup header is corrupted');
 
-    const key = await deriveBackupKey(password, salt, iterations, KDF_HASH);
+    // Flags (v4 only; v3 never defined them): bit 0 = raw container key (contract 11.15); any other bit is a format this build
+    // does not know, and is refused rather than read as something it is not. The two key kinds never cross: a passphrase is
+    // never run through the KDF of a transfer container, and a raw key never opens a backup.
+    const isRaw = version >= 4 && (header[3] & FLAG_RAW_KEY) !== 0;
+    if (version >= 4 && (header[3] & ~FLAG_RAW_KEY) !== 0) throw new Error('Backup file uses a feature this version does not support');
+    let key: CryptoKey;
+    if (isRaw) {
+        if (typeof secret === 'string') throw new Error('This file is a device-transfer container, not a backup');
+        if (iterations !== 1) throw new Error('Transfer container header is corrupted');
+        key = await importRawContainerKey(secret.rawKey);
+    } else {
+        if (typeof secret !== 'string') throw new Error('This file is a backup, not a device-transfer container');
+        key = await deriveBackupKey(secret, salt, iterations, KDF_HASH);
+    }
     const headerPrefix = header.slice(0, HEADER_PREFIX_LEN);
 
     const { indexOffset, indexLen } = version >= 4
@@ -534,6 +587,7 @@ export async function openContainer(source: ByteSource, password: string): Promi
     if (indexLen <= 0 || indexOffset < headerLen || indexOffset + indexLen > total) {
         throw new Error('Backup file is incomplete or corrupted (bad index pointer)');
     }
+    if (isRaw && indexLen > MAX_RAW_FRAME_BYTES) throw new Error('Transfer container index is too large');
 
     let index: ContainerIndex;
     try {
@@ -548,7 +602,9 @@ export async function openContainer(source: ByteSource, password: string): Promi
     if (typeof index.generation !== 'number') index.generation = 1;
     const byId = new Map(index.records.map(r => [r.id, r] as const));
     for (const r of index.records) {
+        if (!Number.isSafeInteger(r.offset) || !Number.isSafeInteger(r.len) || r.len < 0) throw new Error(`Backup record "${r.id}" has an invalid extent`);
         if (r.offset < headerLen || r.offset + r.len > total) throw new Error(`Backup record "${r.id}" points outside the file`);
+        if (isRaw && r.len > MAX_RAW_FRAME_BYTES) throw new Error(`Transfer record "${r.id}" is too large`);
         // v4 needs the writing generation to rebuild the record's AAD; a v4
         // index that doesn't carry one can't be read, and must not silently
         // fall back to v3's generation-free AAD.

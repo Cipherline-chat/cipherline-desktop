@@ -33,7 +33,9 @@ describe('message body', () => {
 
     it('embeds come from the parse (no URL in code / spoiler / <url>)', () => {
         const embeds = src.slice(src.indexOf('{/* URL embeds'), src.indexOf('{/* URL embeds') + 900);
-        expect(embeds).toContain('embedUrlsOf(text).slice(0, 3)');
+        // (sender-built previews may add up to five; local embeds stay at three)
+        expect(embeds).toContain('const allUrls = embedUrlsOf(text);');
+        expect(src).toContain('allUrls.slice(0, sent.length > 0 ? 5 : 3)');
         expect(embeds).not.toContain('matchAll(new RegExp(URL_REGEX.source');
     });
 });

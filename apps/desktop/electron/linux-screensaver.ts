@@ -50,12 +50,20 @@ import type { Readable, Writable } from 'stream';
 export const SCREENSAVER_WATCH_SCRIPT = [
   'command -v gdbus >/dev/null 2>&1 || exit 0',
   'exec 3<&0',
+  // Three sources, any of which may be absent (an unowned name makes that gdbus exit at once, harmlessly):
+  // freedesktop ScreenSaver (KDE, Cinnamon, MATE, XFCE...), GNOME's own org.gnome.ScreenSaver (same
+  // ActiveChanged signature), and logind's per-session LockedHint on the SYSTEM bus (GNOME / KDE / most
+  // session managers set it; filtered to our own session in JS, see parseScreenLockLine).
   'gdbus monitor --session --dest org.freedesktop.ScreenSaver </dev/null 3<&- &',
   'g=$!',
+  'gdbus monitor --session --dest org.gnome.ScreenSaver </dev/null 3<&- &',
+  'g="$g $!"',
+  'gdbus monitor --system --dest org.freedesktop.login1 </dev/null 3<&- &',
+  'g="$g $!"',
   'cat <&3 >/dev/null 3<&- &',
   'c=$!',
   'exec 3<&-',
-  `trap 'kill "$g" "$c" 2>/dev/null' EXIT`,
+  `trap 'kill $g "$c" 2>/dev/null' EXIT`,
   `trap 'exit 0' INT TERM HUP`,
   'wait "$c"',
 ].join('\n');
@@ -66,6 +74,33 @@ interface WatchChild {
   on(event: 'error', cb: (err: unknown) => void): unknown;
   kill(signal?: NodeJS.Signals | number): boolean;
 }
+/** logind's object path for a session id: sd-bus escapes a leading digit (and any non [A-Za-z0-9_] char) as _hh. */
+export function logindSessionPath(sessionId: string | undefined): string | null {
+  if (!sessionId || !/^[A-Za-z0-9]+$/.test(sessionId)) return null;
+  const first = sessionId[0];
+  const head = /[0-9]/.test(first) ? `_${first.charCodeAt(0).toString(16)}` : first;
+  return `/org/freedesktop/login1/session/${head}${sessionId.slice(1)}`;
+}
+
+/**
+ * One gdbus monitor line -> a lock edge, or null. Pure, so each desktop's real output format is unit-tested.
+ *  - `...ScreenSaver.ActiveChanged (true,)` (freedesktop or GNOME): screen locked / unlocked.
+ *  - logind `PropertiesChanged ... 'LockedHint': <true>` on OUR session path only (other users' sessions
+ *    broadcast on the same bus and must never lock this PC's status).
+ */
+export function parseScreenLockLine(line: string, ownSessionPath: string | null): 'lock' | 'unlock' | null {
+  if (line.includes('ScreenSaver.ActiveChanged')) {
+    if (line.includes('(true')) return 'lock';
+    if (line.includes('(false')) return 'unlock';
+    return null;
+  }
+  if (ownSessionPath && line.startsWith(`${ownSessionPath}:`) && line.includes("'LockedHint'")) {
+    if (/'LockedHint':\s*<true>/.test(line)) return 'lock';
+    if (/'LockedHint':\s*<false>/.test(line)) return 'unlock';
+  }
+  return null;
+}
+
 export type WatchSpawn = (cmd: string, args: string[], opts: { stdio: ['pipe', 'pipe', 'ignore'] }) => WatchChild;
 
 /**
@@ -84,13 +119,16 @@ export type WatchSpawn = (cmd: string, args: string[], opts: { stdio: ['pipe', '
 export function watchLinuxScreenLock(
   onLock: () => void,
   onUnlock?: () => void,
-  deps: { platform?: NodeJS.Platform; spawn?: WatchSpawn } = {},
+  deps: { platform?: NodeJS.Platform; spawn?: WatchSpawn; sessionId?: string } = {},
 ): () => void {
   if ((deps.platform ?? process.platform) !== 'linux') return () => {};
   const spawnFn: WatchSpawn = deps.spawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
 
   let child: WatchChild | null;
   let buffer = '';
+  const ownSessionPath = logindSessionPath('sessionId' in deps ? deps.sessionId : process.env.XDG_SESSION_ID);
+  // Several sources can report the same edge: only CHANGES are forwarded.
+  let locked = false;
 
   try {
     child = spawnFn('/bin/sh', ['-c', SCREENSAVER_WATCH_SCRIPT], {
@@ -111,9 +149,9 @@ export function watchLinuxScreenLock(
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      if (!line.includes('ScreenSaver.ActiveChanged')) continue;
-      if (line.includes('(true')) onLock();
-      else if (line.includes('(false')) onUnlock?.();
+      const edge = parseScreenLockLine(line, ownSessionPath);
+      if (edge === 'lock' && !locked) { locked = true; onLock(); }
+      else if (edge === 'unlock' && locked) { locked = false; onUnlock?.(); }
     }
   });
 

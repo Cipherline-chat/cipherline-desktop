@@ -11,7 +11,7 @@
  * (`{ v: 5, userId, tables, history, channelHistory, kv }` — no `topics`) took
  * that branch, so a phone → computer transfer wiped the desktop's DM history
  * and imported nothing. That branch also skipped the account binding. It was
- * reachable from HistorySyncBanner (a transfer approved by a phone) and from
+ * reachable from the (since removed) server-relayed history sync and from
  * both restore paths.
  *
  * ## The rule
@@ -44,7 +44,7 @@ export type HistoryRefusalReason =
     | 'wrong_account';    // belongs to another account
 
 /** Thrown for every refusal. The `message` is written for the person looking at
- *  the screen; `reason` is for code (HistorySyncBanner picks its copy from it). */
+ *  the screen; `reason` is for code. */
 export class HistoryPayloadRefusedError extends Error {
     readonly reason: HistoryRefusalReason;
     constructor(reason: HistoryRefusalReason, message: string) {

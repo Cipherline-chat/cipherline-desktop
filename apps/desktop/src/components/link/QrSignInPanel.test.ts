@@ -247,6 +247,7 @@ describe('QR-1 — account confirmation before persisting (adversarial review)',
                 username: 'realaccountname',
                 discriminator: 4242,
                 avatarUrl: 'att-1',
+                avatarSrc: null, // no loadAvatarPreview dep here: the letter tile
                 approvedByDeviceName: 'Pixel', // grant.approved_by_device_name, display-only
             });
             expect(deps.whoAmI).toHaveBeenCalledTimes(1);
@@ -885,6 +886,151 @@ describe('revoking a claimed-but-not-adopted session (reject / cancel / abandon)
             vi.useRealTimers();
         }
     });
+});
+
+describe('confirm-step avatar: the account\'s real picture, fetched with the PENDING token', () => {
+    const AVATAR_ID = '3f0b6f6e-9d1a-4c38-9a51-2b7c1e5d8a90';
+
+    function avatarDeps(overrides: Partial<QrSignInDeps> = {}): QrSignInDeps {
+        return makeDeps({
+            pollSession: vi.fn().mockResolvedValue({ state: 'granted', envelope_b64: 'SEALED_ENVELOPE' }),
+            whoAmI: vi.fn().mockResolvedValue({ user_id: 'USER1', username: 'shinobi', discriminator: 1, avatar_url: AVATAR_ID }),
+            loadAvatarPreview: vi.fn().mockResolvedValue('blob:avatar-1'),
+            releaseAvatarPreview: vi.fn(),
+            ...overrides,
+        });
+    }
+
+    async function toConfirm(controller: QrSignInController): Promise<void> {
+        await controller.begin();
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0);
+    }
+
+    async function withTimers(fn: () => Promise<void>): Promise<void> {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+            await fn();
+        } finally {
+            vi.useRealTimers();
+        }
+    }
+
+    it('loads the picture with the CLAIMED (pending) token and the whoAmI attachment id, and shows it', () => withTimers(async () => {
+        const deps = avatarDeps({
+            linkOpen: vi.fn().mockResolvedValue({
+                type: 'link_grant', v: 2, link_id: LINK_ID, user_id: 'USER1', claim_secret: CLAIM_SECRET,
+                approved_by_device_id: 'PHONE', approved_by_device_name: 'Google Pixel 9 Pro XL', issued_at: new Date().toISOString(),
+            }),
+        });
+        const controller = new QrSignInController(deps);
+        await toConfirm(controller);
+
+        expect(deps.loadAvatarPreview).toHaveBeenCalledTimes(1);
+        expect(deps.loadAvatarPreview).toHaveBeenCalledWith('CLAIMED-ACCESS', AVATAR_ID);
+        const snap = controller.getSnapshot();
+        expect(snap.phase).toBe('confirm');
+        expect(snap.confirmIdentity?.avatarSrc).toBe('blob:avatar-1');
+        expect(snap.confirmIdentity?.avatarUrl).toBe(AVATAR_ID);
+        // Showing the picture persists nothing.
+        expect(deps.login).not.toHaveBeenCalled();
+        expect(deps.registerDevice).not.toHaveBeenCalled();
+    }));
+
+    it('the confirm screen does not wait for the picture: letter tile first, picture when it lands', () => withTimers(async () => {
+        let resolve!: (v: string | null) => void;
+        const deps = avatarDeps({ loadAvatarPreview: vi.fn(() => new Promise<string | null>((r) => { resolve = r; })) });
+        const controller = new QrSignInController(deps);
+        await toConfirm(controller);
+
+        expect(controller.getSnapshot().phase).toBe('confirm');
+        expect(controller.getSnapshot().confirmIdentity?.avatarSrc).toBeNull();
+        resolve('blob:late');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(controller.getSnapshot().confirmIdentity?.avatarSrc).toBe('blob:late');
+    }));
+
+    it('no avatar on the account (or a non-attachment value) → no fetch at all, letter tile', () => withTimers(async () => {
+        const deps = avatarDeps({ whoAmI: vi.fn().mockResolvedValue({ user_id: 'USER1', username: 'shinobi', discriminator: 1, avatar_url: null }) });
+        const controller = new QrSignInController(deps);
+        await toConfirm(controller);
+        expect(deps.loadAvatarPreview).not.toHaveBeenCalled();
+        expect(controller.getSnapshot().confirmIdentity?.avatarSrc).toBeNull();
+    }));
+
+    it('a failed or empty load (rejection, null, synchronous throw) leaves the letter tile and the flow untouched', () => withTimers(async () => {
+        for (const load of [
+            vi.fn().mockRejectedValue(new Error('offline')),
+            vi.fn().mockResolvedValue(null),
+            vi.fn(() => { throw new Error('boom'); }),
+        ]) {
+            const deps = avatarDeps({ loadAvatarPreview: load as unknown as QrSignInDeps['loadAvatarPreview'] });
+            const controller = new QrSignInController(deps);
+            await toConfirm(controller);
+            await vi.advanceTimersByTimeAsync(0);
+            const snap = controller.getSnapshot();
+            expect(snap.phase).toBe('confirm');
+            expect(snap.confirmIdentity?.avatarSrc).toBeNull();
+            await controller.confirmAccount();
+            expect(deps.login).toHaveBeenCalledTimes(1);
+            controller.dispose();
+        }
+    }));
+
+    it('the picture URL is released exactly once on every way out: Continue, reject, cancel, close', () => withTimers(async () => {
+        const exits: Array<[string, (c: QrSignInController) => Promise<void> | void]> = [
+            ['continue', (c) => c.confirmAccount()],
+            ['reject', (c) => c.rejectAccount()],
+            ['cancel', (c) => c.cancel()],
+            ['dispose', (c) => c.dispose()],
+        ];
+        for (const [name, exit] of exits) {
+            const deps = avatarDeps();
+            const controller = new QrSignInController(deps);
+            await toConfirm(controller);
+            expect(controller.getSnapshot().confirmIdentity?.avatarSrc, name).toBe('blob:avatar-1');
+            await exit(controller);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(deps.releaseAvatarPreview, name).toHaveBeenCalledTimes(1);
+            expect(deps.releaseAvatarPreview, name).toHaveBeenCalledWith('blob:avatar-1');
+            controller.dispose(); // idempotent: no second release
+            expect(deps.releaseAvatarPreview, name).toHaveBeenCalledTimes(1);
+        }
+    }));
+
+    it('a picture that lands AFTER the user already rejected is released at once and never shown', () => withTimers(async () => {
+        let resolve!: (v: string | null) => void;
+        const deps = avatarDeps({ loadAvatarPreview: vi.fn(() => new Promise<string | null>((r) => { resolve = r; })) });
+        const controller = new QrSignInController(deps);
+        await toConfirm(controller);
+        await controller.rejectAccount();
+        expect(controller.getSnapshot().phase).toBe('error');
+
+        resolve('blob:too-late');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(deps.releaseAvatarPreview).toHaveBeenCalledWith('blob:too-late');
+        expect(controller.getSnapshot().confirmIdentity).toBeNull();
+    }));
+
+    it('a picture from a PREVIOUS attempt never lands on the next attempt\'s confirm screen', () => withTimers(async () => {
+        const resolvers: Array<(v: string | null) => void> = [];
+        const deps = avatarDeps({ loadAvatarPreview: vi.fn(() => new Promise<string | null>((r) => { resolvers.push(r); })) });
+        const controller = new QrSignInController(deps);
+        await toConfirm(controller);
+        await controller.cancel();
+        await toConfirm(controller); // second attempt, second confirm screen
+        expect(resolvers).toHaveLength(2);
+
+        resolvers[0]('blob:first-attempt');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(controller.getSnapshot().confirmIdentity?.avatarSrc).toBeNull();
+        expect(deps.releaseAvatarPreview).toHaveBeenCalledWith('blob:first-attempt');
+
+        resolvers[1]('blob:second-attempt');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(controller.getSnapshot().confirmIdentity?.avatarSrc).toBe('blob:second-attempt');
+    }));
 });
 
 describe('buildLinkQr', () => {

@@ -38,7 +38,10 @@ describe('hover bar + pasted links — KLIPY GIFs', () => {
     });
 
     it('routes a pasted KLIPY media link to the KLIPY embed, not the generic image-link fetcher that stores bytes', () => {
-        expect(src).toContain('if (isKlipyMediaUrl(url)) return <KlipyLinkEmbed url={url} />;');
+        // The per-URL embed dispatcher moved out of ChatPane to embeds/MessageEmbed.tsx (2026-11-23).
+        const embed = readFileSync(resolve(__dirname, './embeds/MessageEmbed.tsx'), 'utf8');
+        expect(embed).toContain('if (isKlipyMediaUrl(url)) return <KlipyLinkEmbed url={url} />;');
+        expect(src).toMatch(/import \{ MessageEmbed \} from '\.\/embeds\/MessageEmbed'/);
     });
 });
 

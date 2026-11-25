@@ -30,7 +30,7 @@ import { secureLocalStore } from './secureLocalStore';
  * READS ARE ASYNC on purpose — they await secureLocalStore.hydrateMessages()
  * internally so no caller can read history before phase 2 has landed and
  * conclude the device has none. That mistake is not hypothetical: it would make
- * HistorySyncBanner offer to pull history from another device onto a device
+ * SignInHistoryPrompt offer to pull history from another device onto a device
  * that already has it, overwriting it.
  *
  * `hydrateMessages()` ALONE IS NOT ENOUGH, and used to be all we awaited. It
@@ -497,8 +497,22 @@ export function clearAll(kind: MessageKind, userId: string): void {
 export async function hasAny(kind: MessageKind, userId: string): Promise<boolean> {
     if (!(await awaitReadable(userId))) throw new HistoryNotReadableError(userId);
     if (secureLocalStore.getItem(legacyKey(kind, userId)) !== null) return true;
-    return secureLocalStore.keysWithPrefix(threadPrefix(kind, userId)).length > 0;
+    if (secureLocalStore.keysWithPrefix(threadPrefix(kind, userId)).length > 0) return true;
+    // A thread IndexedDB would not hand back this launch is still history on
+    // this device (secureLocalStore: UNREADABLE RECORDS). Its writes are held,
+    // so nothing could overwrite it, but `false` would still offer to fill a
+    // device that is not empty.
+    return isUnreadableUnder(threadPrefix(kind, userId)) || isUnreadableUnder(legacyKey(kind, userId));
 }
+
+/** The storage key of one thread (what mergeThreads returns for it). */
+export function threadKey(kind: MessageKind, userId: string, id: string): string {
+    return threadPrefix(kind, userId) + id;
+}
+
+/** Optional for the same reason as the detaching calls above (partial test doubles). */
+const isUnreadableUnder = (prefix: string): boolean =>
+    (secureLocalStore as unknown as { hasUnreadableWithPrefix?: (p: string) => boolean }).hasUnreadableWithPrefix?.(prefix) ?? false;
 
 /** How much history is resident (threads / messages), for the Performance log. */
 export function historyStats(): { threads: number; messages: number } {

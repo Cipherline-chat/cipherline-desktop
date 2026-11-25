@@ -1,0 +1,78 @@
+[package]
+name = "cl-near-helper"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Cipherline near-helper: the proximity sign-in / local transfer engine as a child process of the Electron app, driven over stdio (line-delimited JSON). Never listens for commands: only its parent can talk to it."
+
+# Its own workspace + lockfile: the Electron build (macOS/Linux) must not pull the Tauri host's dependency tree, and the
+# Tauri host must not pull zbus / objc2.
+[workspace]
+
+[[bin]]
+name = "cl-near-helper"
+path = "src/main.rs"
+
+[lib]
+name = "cl_near_helper"
+path = "src/lib.rs"
+
+[features]
+default = []
+# DEV ONLY: fake radio / loopback LAN policy / short timings and the `test` stdin command, for tests/helper_stdio.rs and the Node
+# integration test. Refused at compile time in a release build (see src/lib.rs and cl-near-engine's fence); the helper
+# release fence in tools/check-near-fence.sh checks it again.
+testkit = ["cl-near-engine/near-testkit", "cl-near/dangerous-loopback", "dep:tokio"]
+
+[dependencies]
+cl-near-engine = { path = "../near-engine" }
+cl-near = { path = "../vendor/cl-near" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+zeroize = "1"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# BlueZ over D-Bus, pure Rust (no libdbus C dependency). See platform/linux.rs for why not bluer / btleplug.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreBluetooth scanning + LocalAuthentication (Touch ID): objc2 bindings, MIT OR Apache-2.0 / Zlib, pure Rust. See platform/macos.rs.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSArray", "NSError", "NSUUID", "NSObject", "NSValue", "NSEnumerator", "block2"] }
+objc2-core-bluetooth = "0.3"
+objc2-local-authentication = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+# A panic ABORTS the helper by design (smaller binary, no continuing on state a panic left half-written): the client already treats a
+# helper death as the `failed` transfer state, so one malformed frame costs one transfer, never a corrupted continuation. Consequently
+# `catch_unwind` in lib.rs only takes effect in unwind builds (tests / dev). Security round L2.
+panic = "abort"
+# Release keeps integer overflow checks: part offsets and sizes are peer-chosen, an overflow must abort, not wrap (security round L1).
+overflow-checks = true
+opt-level = "s"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# DEV-ONLY rig for the Node integration test: the fake link server plus the scripted phone, in one process.
+[[bin]]
+name = "near-testrig"
+path = "src/bin/near-testrig.rs"
+required-features = ["testkit"]

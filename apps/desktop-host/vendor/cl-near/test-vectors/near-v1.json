@@ -1,0 +1,344 @@
+{
+  "format": "cl-near test vectors v2 (security round: near-sec)",
+  "contract": "docs/plans/proximity-signin-protocol.md",
+  "inputs": {
+    "link_id": "AQEBAQEBAQEBAQEBAQEBAQ",
+    "eN_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "eA_priv_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+    "secret_hex": "33333333333333333333333333333333"
+  },
+  "keys": {
+    "eN_pub_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+    "eA_pub_hex": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+    "S_hex": "9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056",
+    "K_hex": "d878d983255756a3c131d284e4c7c3acd218140f7f9bac6710e6c85f89ebcefe",
+    "K_conf_hex": "ce8ca3376fce9c64a0ad38e9ca7103a1f7641ce895fe82fc91d84f6c063488ad",
+    "K_relay_hex": "b38e6c4ab3edbb1ee1d91afccffc46db7f66277e5ce0bbcaf5a2aae86a3f5b2d",
+    "K_ble_hex": "437e5492624f1df9517c4b2855bf32bb",
+    "K_lan_hex": "bdbc024cbecd8f8f5f36de344bd7af9ae3117f0ddd468752f43da0205a362f4b",
+    "K_xfer_hex": "5a736fb3d12bdc539a2c8ee79c648b7629365a247925ab69d7af8702b7c2ebac"
+  },
+  "qr": {
+    "near": "cipherline://near/1?i=AQEBAQEBAQEBAQEBAQEBAQ&k=e06Qm75__kTEZaIgA31gjuNYl9Me-XLwf3SJLLD3PxM&s=MzMzMzMzMzMzMzMzMzMzMw",
+    "invite": "cipherline://near-invite/1?i=AQEBAQEBAQEBAQEBAQEBAQ&s=MzMzMzMzMzMzMzMzMzMzMw",
+    "near_compact": "CLN1:AEAQCAIBAEAQCAIBAEAQCAIBAEAQC62OSCN34776ITCGLIRAAN6WBDXDLCL5GHXZOLYH65EJFSYPOPYTGMZTGMZTGMZTGMZTGMZTGMZTGM",
+    "invite_compact": "CLN1:AEBACAIBAEAQCAIBAEAQCAIBAEAQCMZTGMZTGMZTGMZTGMZTGMZTGMY"
+  },
+  "typed_code": {
+    "bytes_hex": "123456789a",
+    "display": "28T5-CY4T",
+    "lookup_hash_hex": "10f5ac51ac2e33959d6617720872c1fc9f28970927a407c5891859e944d0579d",
+    "lookup_hash_algo": "argon2id v1.3, t=3, m=65536 KiB, p=1, salt=ASCII 'cipherline-near-code:v1', password=display string, 32-byte output",
+    "typed_s_hex": "1267bbf608b4587ab10f74358716babf",
+    "typed_secret_version": 2,
+    "typed_s_algo": "v2 (F8): argon2id v1.3, t=3, m=65536 KiB, p=1, 32-byte tag, salt = ASCII 'cipherline-near-typed:v2:' || linkId, password = display string; s = tag[0..16]",
+    "typed_s_v1_hkdf_retired": "HKDF-SHA256(ikm = display string bytes, salt = linkId string bytes, info = 'cipherline-near-typed:v1')[0..16] (offline-searchable at HMAC speed; NOT used)"
+  },
+  "hello": {
+    "seq": 1,
+    "body": "{\"t\":\"hello\",\"ea\":\"D6poTtKIZ7l_Smot7l34zpdOdrcBjj8iocTPJnhXDyA\",\"conf\":\"NyF8IF3SVobahQdlilPLUwUUVkhPvsfysMHCijDVUZ0\"}",
+    "conf_A_hex": "37217c205dd25686da8507658a53cb53051456484fbec7f2b0c1c28a30d5519d",
+    "mac_input": "'A' || linkId (ASCII) || eN_pub || eA_pub"
+  },
+  "hello_ack": {
+    "conf_N_hex": "9ea5c49d148585cbc581451df9c226d044949b63f6db05748e99290328c4c9e3",
+    "seq": 1,
+    "mac_input": "'N' || linkId (ASCII) || eN_pub || eA_pub || ik (32 raw bytes)",
+    "ik_hex": "8888888888888888888888888888888888888888888888888888888888888888",
+    "plaintext": "{\"t\":\"hello_ack\",\"conf\":\"nqXEnRSFhcvFgUUd-cIm0ESUm2P22wV0jpkpAyjEyeM\",\"ik\":\"iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg\"}",
+    "note": "F4: the ack body is random-nonce sealed under K_relay; the plaintext is {\"t\":\"hello_ack\",\"conf\":b64url(conf_N),\"ik\":b64url(ik)}. A verifies conf over the ik IN the message, then refuses (identity_mismatch) unless ik equals the identity key the server announced at scan. The hello (A -> N) is unchanged."
+  },
+  "sealed_from_n": {
+    "seq": 2,
+    "nonce_hex": "444444444444444444444444",
+    "plaintext": "{\"t\":\"caps\",\"caps\":[\"ble_scan\",\"lan_listen\",\"lan_dial\"],\"kind\":\"desktop\",\"label\":\"Dawson's laptop\",\"platform\":\"linux\",\"os\":\"linux\"}",
+    "aad": "near-relay:v1:AQEBAQEBAQEBAQEBAQEBAQn2",
+    "body_hex": "44444444444444444444444481becf13b3dce5d9caa1ca28f161b72fc701cc591de4ebf733f1316af7a1bdc91c46acd67c351899c671ae8fd97ffbe5c7cdbdce3ce4146490b7ac1c5ac8529e96140e7d1be5305772cc7fff9c454c688b27551154977b09f8a43439dd11bb4561487b7c6a4ba3371ec50a842b225f11dd1acdc377e0ea414fdccd6ee41bfa967f98e18a47a6b73d86dfe302ee42ebec7240f2",
+    "format": "nonce(12) || AES-256-GCM(K_relay, nonce, aad, plaintext) ciphertext || tag(16)"
+  },
+  "sealed_from_a": {
+    "seq": 2,
+    "nonce_hex": "454545454545454545454545",
+    "plaintext": "{\"t\":\"lan_offer\",\"addrs\":[\"192.168.1.5\",\"fe80::1\"],\"port\":40123,\"fp\":\"d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c\"}",
+    "aad": "near-relay:v1:AQEBAQEBAQEBAQEBAQEBAQa2",
+    "body_hex": "45454545454545454545454574ee5b80cb522171b5f7131c2887db17f4551cdb7909dd4ff31bf1c9f188a3dfad989c1aa3464270c496734320ebd5f4611f7410246c1e08a60aa7e02641e65fac2764d527181fa0c058c8695381f3e2819f132fa02aff70a5a27537b6657f98b3364d32c30ee6436731920bab157c0474dc0241c7459e0338f2bd35d5813479dc9064"
+  },
+  "ble": {
+    "r_hex": "555555555555555555555555",
+    "uuid_hex": "a21ab96d837751718fd4958ce422c6ef",
+    "uuid": "a21ab96d-8377-5171-8fd4-958ce422c6ef",
+    "heard_mac_hex": "3190430ca17f4d40a28fa6d514bb6a255dc2dd6401e2277cd3e775431b8a5d74",
+    "heard_mac_input": "'ble' || r",
+    "ack_mac_hex": "804f4f3bf419a600b1fb0cd7f1dd8dcfaa9e695929d2d8b593d1d10c1e538e07",
+    "ack_mac_input": "'ble-ack' || r (HMAC key K_conf), sent as {\"t\":\"ble_ack\",\"mac\":b64url(..)} by the advertiser after it verified a ble_heard; a scanning A takes the proof ONLY from a verified ble_ack (L1)",
+    "block": "AES-128-Encrypt(K_ble, r || 'CLN1') single block"
+  },
+  "lan": {
+    "exporter_label": "EXPORTER-cipherline-near-v1",
+    "exporter_context": "linkId (ASCII)",
+    "exporter_hex_for_mac_vector": "6666666666666666666666666666666666666666666666666666666666666666",
+    "mac_dialer_hex": "c737476002a5d472b65e8cafd2098ec8b183d07570267cf7e1df32c75f40cf17",
+    "mac_listener_hex": "f93db6db12023a211482bd05f6a0287c52878f8c7a4bf6006ac3b636a58eb696",
+    "mac_input": "role ('dialer' | 'listener') (ASCII) || E",
+    "first_frame_hex": "0000002101c737476002a5d472b65e8cafd2098ec8b183d07570267cf7e1df32c75f40cf17",
+    "frame": "u32 BE length of (type + payload) || u8 type || payload"
+  },
+  "approval_v2": "cipherline-link-approve:v2:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:AQEBAQEBAQEBAQEBAQEBAQ:a2V5LWZvci10ZXN0cy1vbmx5LTMyLWJ5dGVzISE=:ble:1763500000",
+  "transfer_container": {
+    "format": "backup container v4, raw container key profile (contract 11.15)",
+    "container_k_ref": "keys.K_xfer_hex",
+    "header_flags": "byte 3 = 0x01; bytes 4..20 = salt; bytes 20..24 = u32 BE 1 (no key derivation; the container key IS K_xfer)",
+    "iv_rule": "sender-local, readers use the IV in the frame: HMAC-SHA256(K_xfer, 'cl4:xfer:iv:' || aad)[0..12]",
+    "frame_rule": "u32 BE (12 + len(ct) + 16) || IV(12) || AES-256-GCM(K_xfer, IV, aad, plaintext) ciphertext || tag(16)",
+    "inputs": {
+      "salt_hex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "created_at": "2026-11-20T00:00:00.000Z",
+      "fingerprint": "near-transfer"
+    },
+    "records": [
+      {
+        "id": "meta",
+        "plain_hex": "7b2276657273696f6e223a312c22757365724964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c226e6f7465223a22736d616c6c206a736f6e207265636f7264227d",
+        "plain_sha256_hex": "5b4bbe95387338f6386b1c863f7345681909ac2d0f929b1502d92000eaa44ef6",
+        "aad": "cl4:rec:1:meta",
+        "iv_hex": "aef5dbaf20daebab790f83b8",
+        "frame_hex": "00000074aef5dbaf20daebab790f83b8b4054c660bb939a06c752823bf197bbb12ea325a0616de3b8954e0a4199a6e655b53b110704b25c6797a37785e3c38a4171551157f7b932e8d6b5f8ba734e8fbe663e3b890c062c62be4e1e946fce6cd32ea4c035424ce3dac5ab57ca3de1468d3cd449abff6c75a",
+        "frame_len": 120,
+        "container_offset": 112
+      },
+      {
+        "id": "att:0f0e0d0c0b0a:1:2",
+        "plain_hex": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d14",
+        "plain_sha256_hex": "0873681bd0f82f74733bd4b4639467130c6ff71a09281210ed60c3dc95d6aa90",
+        "aad": "cl4:rec:1:att:0f0e0d0c0b0a:1:2",
+        "iv_hex": "b29a4b70c5318765ec6a4cfa",
+        "frame_hex": "00000044b29a4b70c5318765ec6a4cfa38fed02bcc886438fee610d2910973b784b7f7f09af77c0180720aa2810a09c5636ddda17fe254ba808621d2a6ebf052e9faf948efea107b",
+        "frame_len": 72,
+        "container_offset": 232
+      },
+      {
+        "id": "att:0f0e0d0c0b0a:2:2",
+        "plain_hex": "c8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0",
+        "plain_sha256_hex": "5ef354814792d511a53e7a806035e49c1655338048e771dfa73cc1353ad14c90",
+        "aad": "cl4:rec:1:att:0f0e0d0c0b0a:2:2",
+        "iv_hex": "b7234ff54fce226070472965",
+        "frame_hex": "00000035b7234ff54fce226070472965b8d9c5db777958b5a20de4a40425d68cab58bde99385c5f1555dcd831eeb35d2f02de3169f639e6758",
+        "frame_len": 57,
+        "container_offset": 304
+      }
+    ],
+    "index": {
+      "json": "{\"v\":4,\"userId\":\"11111111-1111-4111-8111-111111111111\",\"createdAt\":\"2026-11-20T00:00:00.000Z\",\"fingerprint\":\"near-transfer\",\"generation\":1,\"records\":[{\"id\":\"meta\",\"offset\":112,\"len\":120,\"size\":88,\"hash\":\"5b4bbe95387338f6386b1c863f7345681909ac2d0f929b1502d92000eaa44ef6\",\"gen\":1},{\"id\":\"att:0f0e0d0c0b0a:1:2\",\"offset\":232,\"len\":72,\"size\":40,\"hash\":\"0873681bd0f82f74733bd4b4639467130c6ff71a09281210ed60c3dc95d6aa90\",\"gen\":1},{\"id\":\"att:0f0e0d0c0b0a:2:2\",\"offset\":304,\"len\":57,\"size\":25,\"hash\":\"5ef354814792d511a53e7a806035e49c1655338048e771dfa73cc1353ad14c90\",\"gen\":1}]}",
+      "aad": "cl4:index",
+      "iv_hex": "b38aaff089efb9ed41ffca33",
+      "frame_hex": "00000254b38aaff089efb9ed41ffca33991236c81d288131f4e53d7ba5047794d4ea8b98c3dd52943225b493d4220f9a50df733d68ca34ef3448c1d9d68e411a1773239cbcbd55fdf314d6f35ef85c8b86de08a2790180a770961f083831f833b4f235dfe1ec5eb0ab0e32b95a3a621326d19f23650e678838555a4251e804d54742518b84472d7af8a31cfac797c681b3bc98dd9af2f671fba693f34aa95b718dba9777eea8c4e165888434e5e211f08515a178280b9e81d95d28243d3074c110b849257115012a027a4ed6d5a9e4426a5e518bf06ef626359ab40096227c9cbe92437e8d571b14c219bd45a98d909b0cf9aeda487cb386a60c5e817f2f1ac7e7f869fcbff5e37bd4118f48d7e49a767abfc189b55b50d502725a2ad354daca763c6ca018d2886e712adc9dc5637856018234ad23e99b0ccecc1ec096db20815ac4d3e450f632f06e2e4b73c3970991097e5ff86e0e4a0af0ccfb0787d675ac1e9e5cca833083559abf0061a46e704ed57b52be8275bc45bd432def551640f239635eaa2d3cfd2153999c596bbe89bc5e5d7f707d661b505414c641ac59a0132357cacdfe8d4b4eec249b199c784fc131577fb59b7e4dfab0c2f0e99a09f7394579d7b60d050af6741afd710434ec11b0771e5def0aa235755bd1dadb0f6c1a73595ed9439d4bc29b3f778672f977d69859b829eede50de418fe0789c67909e83b6e8c808c4cb55809c89acada98ffe4336bb860c76b9080e5169a24877c40abddc43f5d30e702f46599c4a744062b13bda6e7abc0c117f5dc91030316ece6cfe207fce2d55378602c8a9914a0af99460f11d73ed294bf0",
+      "container_offset": 361
+    },
+    "commit": {
+      "slot": 1,
+      "generation": 1,
+      "plain_hex": "00000000000001690000025800000001",
+      "aad_hex": "636c343a636f6d6d69743a313a434c04016b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b00000001",
+      "iv_hex": "2fc3e24d0aa7c6fcf065571f",
+      "slot_hex": "2fc3e24d0aa7c6fcf065571f5208b9c0fdb9a459a60539d35db9baf9d87503d78faf7cbd46e18f9a27c249eb",
+      "slot_0": "44 zero bytes",
+      "layout": "header = prefix(24) || slot 0 (44) || slot 1 (44); a slot = IV(12) || ct(16) || tag(16); plain = index_offset u64 BE || index_len u32 BE || generation u32 BE; AAD = 'cl4:commit:<slot>:' || prefix"
+    },
+    "prefix_hex": "434c04016b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b00000001",
+    "header_hex": "434c04016b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000002fc3e24d0aa7c6fcf065571f5208b9c0fdb9a459a60539d35db9baf9d87503d78faf7cbd46e18f9a27c249eb",
+    "container_hex": "434c04016b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b0000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000002fc3e24d0aa7c6fcf065571f5208b9c0fdb9a459a60539d35db9baf9d87503d78faf7cbd46e18f9a27c249eb00000074aef5dbaf20daebab790f83b8b4054c660bb939a06c752823bf197bbb12ea325a0616de3b8954e0a4199a6e655b53b110704b25c6797a37785e3c38a4171551157f7b932e8d6b5f8ba734e8fbe663e3b890c062c62be4e1e946fce6cd32ea4c035424ce3dac5ab57ca3de1468d3cd449abff6c75a00000044b29a4b70c5318765ec6a4cfa38fed02bcc886438fee610d2910973b784b7f7f09af77c0180720aa2810a09c5636ddda17fe254ba808621d2a6ebf052e9faf948efea107b00000035b7234ff54fce226070472965b8d9c5db777958b5a20de4a40425d68cab58bde99385c5f1555dcd831eeb35d2f02de3169f639e675800000254b38aaff089efb9ed41ffca33991236c81d288131f4e53d7ba5047794d4ea8b98c3dd52943225b493d4220f9a50df733d68ca34ef3448c1d9d68e411a1773239cbcbd55fdf314d6f35ef85c8b86de08a2790180a770961f083831f833b4f235dfe1ec5eb0ab0e32b95a3a621326d19f23650e678838555a4251e804d54742518b84472d7af8a31cfac797c681b3bc98dd9af2f671fba693f34aa95b718dba9777eea8c4e165888434e5e211f08515a178280b9e81d95d28243d3074c110b849257115012a027a4ed6d5a9e4426a5e518bf06ef626359ab40096227c9cbe92437e8d571b14c219bd45a98d909b0cf9aeda487cb386a60c5e817f2f1ac7e7f869fcbff5e37bd4118f48d7e49a767abfc189b55b50d502725a2ad354daca763c6ca018d2886e712adc9dc5637856018234ad23e99b0ccecc1ec096db20815ac4d3e450f632f06e2e4b73c3970991097e5ff86e0e4a0af0ccfb0787d675ac1e9e5cca833083559abf0061a46e704ed57b52be8275bc45bd432def551640f239635eaa2d3cfd2153999c596bbe89bc5e5d7f707d661b505414c641ac59a0132357cacdfe8d4b4eec249b199c784fc131577fb59b7e4dfab0c2f0e99a09f7394579d7b60d050af6741afd710434ec11b0771e5def0aa235755bd1dadb0f6c1a73595ed9439d4bc29b3f778672f977d69859b829eede50de418fe0789c67909e83b6e8c808c4cb55809c89acada98ffe4336bb860c76b9080e5169a24877c40abddc43f5d30e702f46599c4a744062b13bda6e7abc0c117f5dc91030316ece6cfe207fce2d55378602c8a9914a0af99460f11d73ed294bf0",
+    "container_layout": "header || data frames in record order || index frame",
+    "transfer": {
+      "unit": "a part of at most part_bytes of the container FILE (not a record); ids part:<6-digit number>; the manifest lists parts in SEND order: the part(s) holding the header, then those holding the index, then the rest",
+      "part_bytes": 256,
+      "send_order": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "parts": [
+        {
+          "id": "part:000000",
+          "container_offset": 0,
+          "bytes": 256,
+          "sha256": "e994d70b12b162bcc986e3ba447be875621b661d3d0308b1f5de81327adb31b6"
+        },
+        {
+          "id": "part:000001",
+          "container_offset": 256,
+          "bytes": 256,
+          "sha256": "f87e26f9fb13672352805076e3cf95149c39ddf93b52cb707f23eac1ea1195b8"
+        },
+        {
+          "id": "part:000002",
+          "container_offset": 512,
+          "bytes": 256,
+          "sha256": "7f8c481426511f1e55ce8c09ff89b00e97d5236b525c8549d7087a0dc384afb3"
+        },
+        {
+          "id": "part:000003",
+          "container_offset": 768,
+          "bytes": 193,
+          "sha256": "e238e6bf1fdcead136fd2da829b02d58a3c21abbafc906fd44e2df42c185efd2"
+        }
+      ],
+      "manifest_json": "{\"container_version\":4,\"total_bytes\":961,\"record_count\":4,\"records\":[{\"id\":\"part:000000\",\"bytes\":256,\"sha256\":\"e994d70b12b162bcc986e3ba447be875621b661d3d0308b1f5de81327adb31b6\"},{\"id\":\"part:000001\",\"bytes\":256,\"sha256\":\"f87e26f9fb13672352805076e3cf95149c39ddf93b52cb707f23eac1ea1195b8\"},{\"id\":\"part:000002\",\"bytes\":256,\"sha256\":\"7f8c481426511f1e55ce8c09ff89b00e97d5236b525c8549d7087a0dc384afb3\"},{\"id\":\"part:000003\",\"bytes\":193,\"sha256\":\"e238e6bf1fdcead136fd2da829b02d58a3c21abbafc906fd44e2df42c185efd2\"}],\"options\":{\"include_attachments\":true},\"sender_device_id\":\"dev-vector\"}",
+      "manifest_sha256_hex": "70913658acf126798568389df5a518ecdad31302b96e63e280154204f58e80cc",
+      "manifest_note": "bytes and sha256 are over the exact bytes of the part; no per-record optional flag is needed (attachments off = not written into the container)"
+    }
+  },
+  "on_link": {
+    "interfaces": [
+      "wlan0 192.168.1.20/24",
+      "wlan0 fe80::1/64 (scope 2)",
+      "wlan0 fd12:3456:789a:1::5/64"
+    ],
+    "cases": [
+      {
+        "candidate": "192.168.1.5",
+        "on_link": true
+      },
+      {
+        "candidate": "192.168.2.5",
+        "on_link": false
+      },
+      {
+        "candidate": "192.168.1.20",
+        "on_link": false
+      },
+      {
+        "candidate": "192.168.1.255",
+        "on_link": false
+      },
+      {
+        "candidate": "10.0.0.1",
+        "on_link": false
+      },
+      {
+        "candidate": "8.8.8.8",
+        "on_link": false
+      },
+      {
+        "candidate": "127.0.0.1",
+        "on_link": false
+      },
+      {
+        "candidate": "100.64.0.9",
+        "on_link": false
+      },
+      {
+        "candidate": "169.254.1.1",
+        "on_link": false
+      },
+      {
+        "candidate": "::ffff:192.168.1.5",
+        "on_link": true
+      },
+      {
+        "candidate": "::ffff:8.8.8.8",
+        "on_link": false
+      },
+      {
+        "candidate": "fe80::abcd",
+        "on_link": true
+      },
+      {
+        "candidate": "fe80::1",
+        "on_link": false
+      },
+      {
+        "candidate": "fd12:3456:789a:1::77",
+        "on_link": true
+      },
+      {
+        "candidate": "fd12:3456:789a:2::77",
+        "on_link": false
+      },
+      {
+        "candidate": "2001:db8::1",
+        "on_link": false
+      },
+      {
+        "candidate": "::1",
+        "on_link": false
+      }
+    ],
+    "effective_prefix_rule": "F3: the effective on-link prefix is max(interface prefix, 24) for IPv4 and max(interface prefix, 64) for IPv6 ULA; a /8, /12 or /16 interface matches only its own /24",
+    "wide_interfaces": [
+      "wlan0 10.1.2.3/16",
+      "wlan0 fd12:3456:789a:1::5/48"
+    ],
+    "wide_cases": [
+      {
+        "candidate": "10.1.2.9",
+        "on_link": true
+      },
+      {
+        "candidate": "10.1.2.0",
+        "on_link": false
+      },
+      {
+        "candidate": "10.1.2.255",
+        "on_link": false
+      },
+      {
+        "candidate": "10.1.3.9",
+        "on_link": false
+      },
+      {
+        "candidate": "10.1.200.9",
+        "on_link": false
+      },
+      {
+        "candidate": "10.2.0.1",
+        "on_link": false
+      },
+      {
+        "candidate": "fd12:3456:789a:1::77",
+        "on_link": true
+      },
+      {
+        "candidate": "fd12:3456:789a:2::77",
+        "on_link": false
+      }
+    ],
+    "virtual_rule": "F3: interfaces of kind Virtual (container/VM bridges, VPN and tunnel adapters, cellular) never match; kind from the platform, else from the name deny-list (kind_from_name)",
+    "virtual_interfaces": [
+      "docker0 172.17.0.1/24",
+      "tun0 10.8.0.2/24",
+      "vEthernet (WSL) 172.28.80.1/20"
+    ],
+    "virtual_cases": [
+      {
+        "candidate": "172.17.0.5",
+        "on_link": false
+      },
+      {
+        "candidate": "10.8.0.9",
+        "on_link": false
+      },
+      {
+        "candidate": "172.28.80.5",
+        "on_link": false
+      },
+      {
+        "candidate": "172.28.95.5",
+        "on_link": false
+      }
+    ]
+  },
+  "relay_auth": {
+    "token_hex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "relay_auth_b64": "YL8HxIiq0Y/aM53wfk+8R7TwC+cXEZNvGNBNNSrQGJA=",
+    "auth_b64": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo=",
+    "rule": "relay_auth_b64 (at near session create / invite join) = STANDARD base64 with padding of SHA-256(token); auth_b64 (every relay POST as side n) = STANDARD base64 with padding of the raw 32-byte token; token = 32 random bytes kept in memory only, never in the QR or the typed code"
+  },
+  "limits": {
+    "lan_offer_min_port": 1024,
+    "lan_hop_limit": 1,
+    "max_transfer_bytes_default": 68719476736,
+    "free_space_margin_bytes": 67108864
+  }
+}

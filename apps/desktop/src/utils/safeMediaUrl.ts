@@ -96,3 +96,15 @@ export function cipherlineMediaUrl(raw: string | null | undefined): string | und
     if (u.username !== '' || u.password !== '' || u.port !== '') return undefined;
     return TRUSTED_IMAGE_HTTPS_HOSTS.includes(u.hostname) ? u.href : undefined;
 }
+
+const CLMEDIA_RE = /^clmedia:\/\/media\/[0-9a-f]{32}$/;
+
+/**
+ * The URL when `raw` is exactly a main-process media stream URL
+ * (`clmedia://media/<32 hex>`, electron/media-embed/media-registry.ts), else
+ * `undefined`. For the inline link-video player: the src it sets is the one
+ * main handed back for a registered link, never anything else.
+ */
+export function safeClmediaUrl(raw: string | null | undefined): string | undefined {
+    return typeof raw === 'string' && CLMEDIA_RE.test(raw) ? raw : undefined;
+}

@@ -348,5 +348,30 @@ Full license text: https://creativecommons.org/publicdomain/zero/1.0/
 
 ---
 
+## Rust crates linked into the local-transfer helper (`near-helper`)
+
+The Linux, macOS and Windows builds can ship a small Rust helper process (`apps/desktop-host/near-helper`, built from its own
+lockfile `near-helper/Cargo.lock`) that moves a history container between this account's own devices over the local network.
+Its dependency tree was checked with `cargo metadata` (2026-11-20, re-read 2026-11-24 for the transfer-only build): every crate is
+under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unicode-3.0 or a dual licence that includes one of those, with these notices:
+
+- **zbus** (BlueZ over D-Bus, Linux only; not used by the transfer path) and its `zvariant`/`zbus_names` siblings — MIT, Copyright (c) the zbus authors
+- **objc2**, **objc2-foundation**, **block2** — MIT; **objc2-core-bluetooth**, **objc2-local-authentication**,
+  **objc2-core-foundation**, **objc2-security**, **dispatch2** — Zlib OR Apache-2.0 OR MIT (macOS); Copyright (c) Mads Marquart
+- **windows**, **windows-core**, **windows-future** and their `windows-*` siblings (Windows) — MIT OR Apache-2.0, Copyright (c) Microsoft Corporation
+- **ring** — Apache-2.0 AND ISC (portions BoringSSL / OpenSSL-style notices; see the crate), **rustls** — Apache-2.0 OR ISC OR MIT,
+  **rustls-webpki**, **untrusted** — ISC; **subtle**, **curve25519-dalek**, **ed25519-dalek**, **x25519-dalek** — BSD-3-Clause
+  (Copyright (c) the dalek-cryptography authors / Isis Lovecruft, Henry de Valence)
+- **webpki-roots** — CDLA-Permissive-2.0 (the Mozilla root list, data): not on this repo's allow-list by name. It is linked on
+  Linux and macOS only (through `ureq`'s rustls build, which the engine's link-API client uses for proximity sign-in; the
+  own-device transfer path and the password gate never open an HTTPS connection from the helper: the step-up check is Electron
+  main's). The Windows build uses SChannel and does not link it. FLAGGED FOR THE OWNER (see the work log
+  `2026-11-24-lan-transfer-electron.md`): accept it, or drop the HTTPS client from the transfer build.
+- **r-efi** is `MIT OR Apache-2.0 OR LGPL-2.1-or-later` and is used under MIT (UEFI targets only; not compiled here).
+
+Full license texts are in each crate's source (`cargo vendor` or https://crates.io).
+
+---
+
 Full license texts for all dependencies are available in their respective
 `node_modules/<package>/LICENSE` files or on https://www.npmjs.com.

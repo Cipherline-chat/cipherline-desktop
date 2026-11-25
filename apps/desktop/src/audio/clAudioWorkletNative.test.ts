@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { CL_AUDIO_WORKLET_SOURCE } from '../utils/clAudioWorkletSource';
 import { clAudioWasmBytes } from '../utils/clAudioWasm';
 import { CL_AUDIO_PRIME_SAMPLES } from '../utils/clAudioLatency';
+import { engineSettingsFor } from '../utils/clAudioSettings';
 import { loadModuleWorklet, waitFor, Q, type Proc } from './audit/chainHarness';
 
 /**
@@ -35,6 +36,8 @@ interface Script {
     /** after this quantum the host stops answering anything */
     deadAfterQ?: number;
     ackDelayQ?: number;
+    /** per settings id: quanta until its ack, null = never acknowledged (overrides ackDelayQ) */
+    ackFor?: (id: number) => number | null;
 }
 
 function signal(n: number): Float32Array {
@@ -82,7 +85,8 @@ function drive(p: Proc, port: Awaited<ReturnType<typeof setup>>['port'], x: Floa
                 due.push({ at: q + d, m: reply });
                 if (script.dup?.(m.seq!)) due.push({ at: q + d + 1, m: { ...reply, pcm: new Float32Array(m.pcm!) } });
             } else if (m.t === 's') {
-                due.push({ at: q + (script.ackDelayQ ?? 1), m: { t: 'ack', id: m.id, ok: true, effectiveNoise: 2 } });
+                const d = script.ackFor ? script.ackFor(m.id!) : (script.ackDelayQ ?? 1);
+                if (d !== null) due.push({ at: q + d, m: { t: 'ack', id: m.id, ok: true, effectiveNoise: 2 } });
             }
         }
         const now = due.filter(d => d.at <= q + 1);
@@ -304,6 +308,22 @@ describe('native mode: falling back to Light', () => {
         expect(ofType(p, 'stats').at(-1)!.engineNative).toBe(false);
     });
 
+    it('nativeOverload (the audio thread itself fell behind) gives Strong up for the call: one failure report, Light plays', async () => {
+        const { p, port } = await setup();
+        drive(p, port, signal(48000), perfect);
+        send(p, { type: 'nativeOverload' });
+        send(p, { type: 'nativeOverload' });
+        const failed = ofType(p, 'nativeFailed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0].reason).toBe('render-overload');
+        expect(port.posted.at(-1)).toMatchObject({ t: 'bye' }); // the worker is told to stop, so its CPU goes back to the PC
+        expect(port.closed).toBe(true);
+        const o = new Float32Array(Q);
+        p.process([[signal(Q)]], [[o]]);
+        send(p, { type: 'getStats' });
+        expect(ofType(p, 'stats').at(-1)!.engineNative).toBe(false);
+    });
+
     it('nativeAbort at startup gives the reserved delay back; the worklet is then plain Light', async () => {
         const p = await loadModuleWorklet(CL_AUDIO_WORKLET_SOURCE, 'cl-audio-worklet', { wasmBytes: clAudioWasmBytes(), native: true, nativeJitterFrames: J });
         await waitFor(() => !!p.ready);
@@ -412,12 +432,140 @@ describe('native mode: settings', () => {
         expect(st.underrun).toBe(0);
     });
 
-    it('a change that does not reach DeepFilterNet (manual gain while auto gain is on) sends nothing to the host', async () => {
+    it('the mic volume while auto gain is on is a pre-gain the host must apply too: it goes out live once (\'sl\'), with no restart (no second \'s\')', async () => {
         const { p, port } = await setup();
         const { log } = drive(p, port, signal(48000 * 3), perfect, (q) => {
             if (q === 100) send(p, { type: 'setSettings', noise: 1, autoGain: true, manualGainDb: 12, originalSound: false });
         });
         expect(log.filter(l => l.m.t === 's').length).toBe(1);
+        const live = log.filter(l => l.m.t === 'sl');
+        expect(live).toHaveLength(1);
+        expect(live[0].m).toMatchObject({ t: 'sl', autoGain: true, manualGainDb: 12, noise: 2, originalSound: false });
+        expect(live[0].q).toBeLessThanOrEqual(100 + 40);   // ~100 ms, not the ~400 ms restart debounce
+    });
+});
+
+/**
+ * Report 348d6f9b (2026-11-25, owner, i5-13600HX): "pc switched to light even though I have a good computer". Native Strong had no
+ * underruns at all; the owner dragged the Input volume slider with Strong + auto gain on (100 -> 196 -> 31 -> 13 -> 100 -> 200 %) and
+ * Strong was given up with "ack-timeout". With the gain in the restart key every slider move restarted the stream (frames held until an
+ * ack, Light played meanwhile); a restart that is not answered is what times out and announces the fallback.
+ */
+describe('native mode: in-call settings never drop Strong (report 348d6f9b)', () => {
+    const OWNER_PCTS = [100, 196, 31, 13, 100, 200];
+    const forPct = (micVolume: number) => engineSettingsFor({ noiseSuppression: true, noiseSuppressionMode: 'strong', volumeNormalization: true, micVolume });
+    const DRAG_START_Q = 600;      // ~1.6 s: native is up and past its start-up grace
+    const STEP_Q = 3;              // a drag posts a change every ~8 ms
+    const STEPS = 12;              // per move
+    const HOLD_Q = 150;            // ~0.4 s on each target before the next move
+    /** the owner's drag, as the page posts it: every slider step is a setSettings */
+    const ownerDrag = (p: Proc) => {
+        const plan = new Map<number, ReturnType<typeof forPct>>();
+        let q = DRAG_START_Q;
+        for (let i = 1; i < OWNER_PCTS.length; i++) {
+            const a = OWNER_PCTS[i - 1], b = OWNER_PCTS[i];
+            for (let k = 1; k <= STEPS; k++) { plan.set(q, forPct(Math.round(a + ((b - a) * k) / STEPS))); q += STEP_Q; }
+            q += HOLD_Q;
+        }
+        return { end: q, hook: (at: number) => { const s = plan.get(at); if (s) send(p, { type: 'setSettings', ...s }); } };
+    };
+    const playedNative = (out: Float32Array, x: Float32Array, from: number) => {
+        let bad = 0, n0 = 0;
+        for (let n = from; n < out.length; n++) { n0++; if (Math.abs(out[n] - x[n - P]) > 1e-7) bad++; }
+        return 1 - bad / n0;
+    };
+
+    it('a fast mic-volume drag with auto gain on keeps native Strong playing every frame: no restart, no hold, no pause, no failure', async () => {
+        const { p, port } = await setup({ settings: forPct(100) });
+        const x = signal(48000 * 8);
+        const drag = ownerDrag(p);
+        const { out, log, frames } = drive(p, port, x, perfect, drag.hook);
+        expect(drag.end * Q).toBeLessThan(x.length - 48000);   // the whole drag ran, with a second of audio after it
+
+        // no restart of the host's stream: the one settings message is the start-up one
+        expect(log.filter(l => l.m.t === 's')).toHaveLength(1);
+        // the mic volume reached the host live, throttled (one per ~100 ms at most), ending on the final value
+        const live = log.filter(l => l.m.t === 'sl');
+        expect(live.length).toBeGreaterThanOrEqual(OWNER_PCTS.length - 1);
+        expect(live.length).toBeLessThanOrEqual(Math.ceil((drag.end - DRAG_START_Q) / 38) + 1);
+        expect(live.at(-1)!.m.manualGainDb).toBe(forPct(200).manualGainDb);
+        for (let i = 1; i < live.length; i++) expect(live[i].q - live[i - 1].q).toBeGreaterThanOrEqual(38);
+
+        // frames never stopped (a restart holds them until the ack)
+        for (let i = 1; i < frames.length; i++) expect(frames[i].seq).toBe(frames[i - 1].seq! + 1);
+        // every sample from the start of the drag on is the native engine's (the echo host): Light never stood in
+        expect(playedNative(out, x, DRAG_START_Q * Q)).toBeGreaterThan(0.9999);
+
+        expect(ofType(p, 'nativePaused')).toHaveLength(0);
+        expect(ofType(p, 'nativeFailed')).toHaveLength(0);
+        const st = ofType(p, 'stats').at(-1)!;
+        expect(st.engineNative).toBe(true);
+        expect(st.native).toMatchObject({ active: true, failed: false, paused: false, underrun: 0 });
+    });
+
+    it('the owner\'s exact failure: the same drag against a host that never acknowledges a later settings change does not end in "ack-timeout" (nothing waits for one)', async () => {
+        const { p, port } = await setup({ settings: forPct(100) });
+        // 28 s: past the 20 s acknowledgement timeout counted from the drag's last change (~4.5 s in)
+        const x = signal(48000 * 28);
+        const drag = ownerDrag(p);
+        const { log } = drive(p, port, x, { delayQ: () => 1, ackFor: (id) => (id === 1 ? 1 : null) }, drag.hook);
+        expect(ofType(p, 'nativeFailed').map(m => m.reason)).toEqual([]);   // staging before the fix: ['ack-timeout'], as in the report
+        expect(log.filter(l => l.m.t === 's')).toHaveLength(1);
+        expect(ofType(p, 'nativePaused')).toHaveLength(0);
+        const st = ofType(p, 'stats').at(-1)!;
+        expect(st.engineNative).toBe(true);
+        expect(st.native).toMatchObject({ failed: false, reason: '' });
+    });
+
+    it('an EQ toggle (page-side biquads: the engine settings are unchanged) sends the host nothing and Strong keeps playing', async () => {
+        const { p, port } = await setup({ settings: forPct(100) });
+        const x = signal(48000 * 5);
+        const same = forPct(100);
+        const { out, log, frames } = drive(p, port, x, perfect, (q) => {
+            if (q === 600 || q === 640 || q === 900 || q === 1200) send(p, { type: 'setSettings', ...same });
+        });
+        expect(log.filter(l => l.m.t === 's')).toHaveLength(1);
+        expect(log.filter(l => l.m.t === 'sl')).toHaveLength(0);
+        for (let i = 1; i < frames.length; i++) expect(frames[i].seq).toBe(frames[i - 1].seq! + 1);
+        expect(playedNative(out, x, 600 * Q)).toBeGreaterThan(0.9999);
+        expect(ofType(p, 'nativeFailed')).toHaveLength(0);
+        expect(ofType(p, 'nativePaused')).toHaveLength(0);
+        expect(ofType(p, 'stats').at(-1)!.engineNative).toBe(true);
+    });
+
+    it('a change that does rebuild the host\'s chain (auto gain switched off) is a deliberate restart: no failure, no notice, and it comes back as Strong', async () => {
+        const off = engineSettingsFor({ noiseSuppression: true, noiseSuppressionMode: 'strong', volumeNormalization: false, micVolume: 150 });
+        const { p, port } = await setup({ settings: forPct(100) });
+        const x = signal(48000 * 8);
+        const { out, log } = drive(p, port, x, perfect, (q) => {
+            // a drag of the slider with auto gain off: debounced into ONE restart
+            if (q === 600) send(p, { type: 'setSettings', ...off, manualGainDb: 1 });
+            if (q === 610) send(p, { type: 'setSettings', ...off, manualGainDb: 2 });
+            if (q === 620) send(p, { type: 'setSettings', ...off });
+        });
+        const ss = log.filter(l => l.m.t === 's');
+        expect(ss).toHaveLength(2);
+        expect(ss[1].m).toMatchObject({ autoGain: false, manualGainDb: off.manualGainDb });
+        expect(ofType(p, 'nativeFailed')).toHaveLength(0);
+        expect(ofType(p, 'nativePaused')).toHaveLength(0);
+        const st = ofType(p, 'stats').at(-1)!;
+        expect(st.engineNative).toBe(true);
+        expect(st.native).toMatchObject({ failed: false, paused: false, underrun: 0 });
+        // native again well after the restart
+        expect(playedNative(out, x, 48000 * 5)).toBeGreaterThan(0.9999);
+    });
+
+    it('auto gain switched off and back on before the restart went out cancels it; only the mic volume (if it moved) goes out live', async () => {
+        const { p, port } = await setup({ settings: forPct(100) });
+        const { log } = drive(p, port, signal(48000 * 4), perfect, (q) => {
+            if (q === 600) send(p, { type: 'setSettings', ...forPct(100), autoGain: false });
+            if (q === 650) send(p, { type: 'setSettings', ...forPct(150) });
+        });
+        expect(log.filter(l => l.m.t === 's')).toHaveLength(1);
+        const live = log.filter(l => l.m.t === 'sl');
+        expect(live).toHaveLength(1);
+        expect(live[0].m.manualGainDb).toBe(forPct(150).manualGainDb);
+        expect(ofType(p, 'nativeFailed')).toHaveLength(0);
     });
 });
 

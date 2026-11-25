@@ -48,6 +48,30 @@ describe('Strong worker (clAudioStrong.worker.ts), real engine', () => {
         for (const r of replies) { expect((r.pcm as Float32Array).length).toBe(480); expect(r.st).toBe(0); }
     });
 
+    it('a live mic-volume change (\'sl\') is applied without an answer and without touching the stream: frames keep coming back in order, Strong stays', async () => {
+        const { scope, told } = await boot();
+        scope.onmessage!({ data: { type: 'init', wasm: clAudioWasmBytes() } });
+        await until(() => told.length > 0);
+        const port = fakePort();
+        scope.onmessage!({ data: { type: 'open' }, ports: [port] });
+        port.onmessage!({ data: { t: 's', id: 1, noise: 2, autoGain: true, manualGainDb: 0, originalSound: false } });
+        let seq = 0;
+        for (; seq < 10; seq++) port.onmessage!({ data: { t: 'f', seq, ts: Date.now(), pcm: frame(seq) } });
+        const before = port.sent.length;
+        // the owner's drag (report 348d6f9b): 100 -> 196 -> 31 -> 13 -> 100 -> 200 %, as dB
+        for (const db of [5.8, -10.2, -17.7, 0, 6]) {
+            port.onmessage!({ data: { t: 'sl', noise: 2, autoGain: true, manualGainDb: db, originalSound: false } });
+            expect(port.sent.length).toBe(before + (seq - 10));   // nothing answered for the settings themselves
+            for (let k = 0; k < 4; k++, seq++) port.onmessage!({ data: { t: 'f', seq, ts: Date.now(), pcm: frame(seq) } });
+        }
+        expect(port.sent.filter(m => m.t === 'ack')).toHaveLength(1);
+        const replies = port.sent.filter(m => m.t === 'o');
+        expect(replies.map(r => r.seq)).toEqual(Array.from({ length: seq }, (_, i) => i));
+        for (const r of replies) expect(r.st).toBe(0);
+        port.onmessage!({ data: { t: 'stats' } });
+        expect(port.sent.at(-1)).toMatchObject({ t: 'stats', effectiveNoise: 2 });
+    });
+
     it('a late frame is still processed (its answer is late, the timeline is not shifted); a duplicate and an old one are dropped', async () => {
         const { scope, told } = await boot();
         scope.onmessage!({ data: { type: 'init', wasm: clAudioWasmBytes() } });

@@ -94,7 +94,7 @@ import { planVoiceChain, type VoiceChainAvailability, type VoiceChainPlan } from
 import { NsLoadGuard, UnderrunWindow, readPlaybackStats, NS_LOAD_TICK_MS, type NsEngineRunning } from './nsLoadGuard';
 import { micSliderToGain, micSliderToDb } from './micGainLaw';
 import { engineSettingsFor } from './clAudioSettings';
-import { wantsNativeStrong, nativeEngineAvailable, openNativePort, onNativeEngineExit, closeNativeEngine } from './clAudioNative';
+import { wantsNativeStrong, nativeEngineAvailable, openNativeEngine, type NativeEngine } from './clAudioNative';
 import { CL_NATIVE_JITTER_FRAMES, CL_STRONG_ENGINE_DELAY_SAMPLES } from './clAudioLatency';
 import { loadClAudioWorkletSource, loadClAudioWasmBytes } from './clAudioSources';
 import { CL_AUDIO_PROCESSOR_NAME } from './clAudioWorkletNames';
@@ -504,6 +504,8 @@ export class CipherlineVoiceProcessor {
     private _natAvail: boolean | null = null;
     private _natFailed = false;
     private _natUnsub?: () => void;
+    /** this processor's OWN Strong worker (never shared: the Settings preview's processor has its own, see clAudioNative.ts) */
+    private _natEngine?: NativeEngine;
     private _natGen = 0;
     private rnnoiseWorkletNode?: AudioWorkletNode;
     /** Light noise suppression (Speex). Always built alongside RNNoise so switching
@@ -1308,26 +1310,35 @@ export class CipherlineVoiceProcessor {
     /** Open the utility-process engine and hand its port to the worklet. Any failure: the worklet drops the reserved delay (still at startup). */
     private async attachNative(node: AudioWorkletNode) {
         const gen = ++this._natGen;
-        const port = await openNativePort();
-        if (gen !== this._natGen || this.clNode !== node) { port?.close(); return; } // destroyed / rebuilt while waiting
-        if (!port) { node.port.postMessage({ type: 'nativeAbort' }); this._natFailed = true; console.warn('[VoiceProcessor] Native Strong could not be opened; Strong runs as Light'); return; }
-        this._natUnsub = onNativeEngineExit(() => { try { node.port.postMessage({ type: 'nativeExit' }); } catch { /* node gone */ } });
-        node.port.postMessage({ type: 'nativePort', port }, [port]);
+        const eng = await openNativeEngine();
+        if (gen !== this._natGen || this.clNode !== node) { eng?.close(); return; } // destroyed / rebuilt while waiting
+        if (!eng) { node.port.postMessage({ type: 'nativeAbort' }); this._natFailed = true; console.warn('[VoiceProcessor] Native Strong could not be opened; Strong runs as Light'); return; }
+        this._natEngine = eng;
+        this._natUnsub = eng.onExit(() => { try { node.port.postMessage({ type: 'nativeExit' }); } catch { /* node gone */ } });
+        node.port.postMessage({ type: 'nativePort', port: eng.port }, [eng.port]);
     }
 
     private detachNative() {
         this._natGen++;
-        this._natUnsub?.(); this._natUnsub = undefined;
-        if (this._natBuilt) void closeNativeEngine();
+        this.closeNative();
         this._natBuilt = false;
+    }
+
+    /** Stop THIS processor's Strong worker (quietly). Another processor's worker (the Settings preview, or the call) is not touched. */
+    private closeNative() {
+        this._natUnsub?.(); this._natUnsub = undefined;
+        const eng = this._natEngine;
+        this._natEngine = undefined;
+        eng?.close();
     }
 
     private onNativeFailed(reason: string) {
         if (this._natFailed) return;
         this._natFailed = true;
         console.warn('[VoiceProcessor] Native Strong stopped (' + reason + '); the Light engine, running underneath, plays for the rest of this call');
-        this._natUnsub?.(); this._natUnsub = undefined;
-        void closeNativeEngine();
+        this.closeNative();
+        // an overload stop was already announced by the load guard (onNsLoadFallback): one notice, not two
+        if (reason === 'render-overload') return;
         this._callbacks.onNativeFallback?.({ reason: reason.replace(/[^a-z0-9 _.:-]/gi, '').slice(0, 40) });
     }
 
@@ -1510,7 +1521,7 @@ export class CipherlineVoiceProcessor {
             this.clNode.port.postMessage({ type: 'setSettings', ...engineSettingsFor(settings) });
             // Strong switched off / to Light mid-call: stop the native stage (silently); Light is already what plays underneath
             if (this._natBuilt && !wantsNativeStrong(settings)) {
-                this.clNode.port.postMessage({ type: 'nativeOff' }); this._natUnsub?.(); this._natUnsub = undefined; void closeNativeEngine();
+                this.clNode.port.postMessage({ type: 'nativeOff' }); this.closeNative();
                 // Native is no longer part of this graph. Without this, choosing Strong again later looked "already built",
                 // nothing re-attached, and Strong silently ran as Light for the rest of the call (report 85ff3561, 2026-11-21).
                 this._natBuilt = false;
@@ -1638,6 +1649,11 @@ export class CipherlineVoiceProcessor {
 
     /** The engine actually denoising right now. */
     private runningEngine(): NsEngineRunning {
+        if (this._engineBuilt === 'v2') {
+            // New engine: Light always runs on the audio thread; Strong is the worker's, in use until it is given up for the call.
+            if (!this.nsActive()) return 'off';
+            return this._settings.noiseSuppressionMode === 'strong' && this._natBuilt && !this._natFailed ? 'strong' : 'light';
+        }
         return this.nsActive() ? (this.nsEngine() ?? 'off') : 'off';
     }
 
@@ -1653,7 +1669,16 @@ export class CipherlineVoiceProcessor {
             this.underrunWindow.add(d.tick);
             const w = this.underrunWindow.take(NS_LOAD_REPORT_TICKS);
             if (w) this._callbacks.onAudioRender?.({ ...w, ns: engine });
-            if (d.trip && this.speexWorkletNode) {
+            if (d.trip && this._engineBuilt === 'v2' && this.clNode && this._natBuilt && !this._natFailed) {
+                // New engine (2026-11-24, owner: a heavy game must not make calls unhearable again). The audio thread runs Light
+                // in both modes; Strong's model runs in a worker that competes for the same CPU (~2 ms per 10 ms). When the audio
+                // thread itself falls behind, give Strong up for this call: the worklet plays Light on at the same delay
+                // (declicked), the worker is closed, and the user is told (onNativeFallback 'render-overload').
+                this._loadFallback = true;
+                console.warn(`[VoiceProcessor] Audio render thread overloaded (${d.tick.underrunMs} ms underrun in 1 s) — Strong noise suppression → Light for this call`);
+                try { this.clNode.port.postMessage({ type: 'nativeOverload' }); } catch { /* node gone */ }
+                this._callbacks.onNsLoadFallback?.({ underrunMs: d.tick.underrunMs, underrunEvents: d.tick.underrunEvents });
+            } else if (d.trip && this.speexWorkletNode) {
                 this._loadFallback = true;
                 console.warn(`[VoiceProcessor] Audio render thread overloaded (${d.tick.underrunMs} ms underrun in 1 s) — Strong noise suppression → Light for this call`);
                 this.applyNsEngines();

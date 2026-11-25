@@ -78,7 +78,7 @@ export interface SettingsSources {
      * — a status word, `<stage>_<ErrorName>`, a count). In every category's report,
      * because a store that did not load explains "my history is gone" in any of them.
      */
-    storage?: { status?: string; failure?: string; attempts?: number; recovered?: boolean } | null;
+    storage?: { status?: string; failure?: string; attempts?: number; recovered?: boolean; unreadable?: number } | null;
     /**
      * Push-to-talk delivery (in every category's report: "I can't talk in my game" is
      * filed as anything). The key is reported as its kind and its token name
@@ -140,6 +140,7 @@ export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
         storage_load_failure: en(s.storage?.failure),
         storage_load_attempts: n(s.storage?.attempts),
         storage_load_recovered: b(s.storage?.recovered),
+        storage_unreadable_records: n(s.storage?.unreadable),
         ...holdKeyFields(v, s.holdKeys ?? null),
     });
 

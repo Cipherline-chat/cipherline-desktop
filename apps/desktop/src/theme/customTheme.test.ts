@@ -4,10 +4,10 @@ import {
 } from './themes';
 import { contrastRatio, relativeLuminance } from './contrast';
 import {
-    CUSTOM_THEME_JSON_MAX, CUSTOM_THEME_KNOBS, CUSTOM_THEME_SHARE_PREFIX, DARK_GROUND_MAX, LIGHT_GROUND_MIN,
-    auditTheme, customBootPayload, customThemeFromBase, customThemeFromTheme, decodeShareCode, defFromBootPayload, deriveCustomTheme,
-    encodeShareCode, knobsFromTheme, makeReadable, mixHex, normalizeCustomTheme, nudgeToContrast, parseThemeColor,
-    parseThemeImport, themeFileJson, type CustomThemeDef,
+    CUSTOM_THEME_JSON_MAX, CUSTOM_THEME_KNOBS, CUSTOM_THEME_SHARE_PREFIX,
+    customBootPayload, customThemeFromBase, customThemeFromTheme, decodeShareCode, defFromBootPayload, deriveCustomTheme,
+    encodeShareCode, knobsFromTheme, mixHex, normalizeCustomTheme, nudgeToContrast, parseThemeColor,
+    parseThemeImport, themeFileJson, type CustomThemeColors, type CustomThemeDef,
 } from './customTheme';
 import { CUSTOM_THEME_PRESETS } from './customPresets';
 
@@ -155,75 +155,143 @@ describe('validation: data only', () => {
     });
 });
 
-describe('readability guard: never below the thresholds', () => {
-    it('nudges unreadable picks and reports the ratio', () => {
-        const r = normalizeCustomTheme({ v: 1, base: 'dark', colors: { bg: '#101010', panel: '#141414', surface: '#1c1c1c', text: '#2a2a2a', muted: '#202020', accent: '#808080', onAccent: '#7a7a7a' } });
-        expect(r.ok).toBe(true);
-        if (!r.ok) return;
-        const knobs = r.adjustments.map(a => a.knob).sort();
-        expect(knobs).toEqual(['muted', 'onAccent', 'text']);
-        for (const a of r.adjustments) expect(a.ratio).toBeGreaterThanOrEqual(4.5);
-        expect(contrastRatio(r.def.colors.text, r.def.colors.panel)).toBeGreaterThanOrEqual(4.5);
+/**
+ * Owner, 2026-11-23: "make it so for themes they don't automatically adjust
+ * colors to improve contrast. let people do whatever they want". A custom
+ * theme renders EXACTLY the colours the person picked: no nudge, no ground
+ * clamp, no refusal, no "adjusted" report — and the tokens derived from the
+ * picks are plain mixes / aliases of them.
+ */
+/** Deliberately awful: grey-on-grey text, invisible secondary text, label = accent. */
+const LOW_DARK: CustomThemeColors = {
+    bg: '#101010', panel: '#141414', surface: '#1c1c1c', text: '#2a2a2a', muted: '#202020',
+    accent: '#181818', onAccent: '#1a1a1a', danger: '#151515', border: '#141414',
+};
+/** A "dark" theme with white grounds and white text: the old guard clamped the grounds dark and moved the text. */
+const LOW_LIGHT_ON_DARK_BASE: CustomThemeColors = {
+    bg: '#ffffff', panel: '#fefefe', surface: '#fdfdfd', text: '#ffffff', muted: '#f8f8f8',
+    accent: '#ffffe0', onAccent: '#ffffff', danger: '#fff0f0', border: '#ffffff',
+};
+/** A light theme with near-black grounds and black text. */
+const LOW_DARK_ON_LIGHT_BASE: CustomThemeColors = {
+    bg: '#000000', panel: '#050505', surface: '#0a0a0a', text: '#000000', muted: '#030303',
+    accent: '#0b0b0b', onAccent: '#000000', danger: '#100000', border: '#000000',
+};
+const LOW_CASES = [
+    ['dark base, grey on grey', 'dark', LOW_DARK],
+    ['dark base, white on white', 'dark', LOW_LIGHT_ON_DARK_BASE],
+    ['light base, black on black', 'light', LOW_DARK_ON_LIGHT_BASE],
+    ['light base, grey on grey', 'light', LOW_DARK],
+] as const;
+
+describe('your colours, exactly as picked (no contrast adjustment)', () => {
+    it('positive control: the test themes really are unreadable', () => {
+        expect(contrastRatio(LOW_DARK.text, LOW_DARK.panel)).toBeLessThan(1.5);
+        expect(contrastRatio(LOW_DARK.muted, LOW_DARK.panel)).toBeLessThan(1.5);
+        expect(contrastRatio(LOW_DARK.onAccent, LOW_DARK.accent)).toBeLessThan(1.5);
+        expect(contrastRatio(LOW_LIGHT_ON_DARK_BASE.text, LOW_LIGHT_ON_DARK_BASE.panel)).toBeLessThan(1.1);
+        expect(contrastRatio(LOW_DARK_ON_LIGHT_BASE.text, LOW_DARK_ON_LIGHT_BASE.panel)).toBeLessThan(1.1);
+        // ...and the nudge still exists (it serves the NON-pick tokens): it WOULD have moved these.
+        expect(nudgeToContrast(LOW_DARK.text, [LOW_DARK.panel], 4.5)).not.toBe(LOW_DARK.text);
     });
 
-    it('positive control: the raw pick really was unreadable', () => {
-        expect(contrastRatio('#2a2a2a', '#141414')).toBeLessThan(4.5);
+    it.each(LOW_CASES)('%s: normalise keeps every colour and reports nothing', (_n, base, colors) => {
+        const r = normalizeCustomTheme({ v: 1, name: 'Low', base, colors, glow: false });
+        expect(r).toEqual({ ok: true, def: { v: 1, name: 'Low', base, colors, glow: false } });
+        expect(r).not.toHaveProperty('adjustments');
     });
 
-    it('keeps grounds in the base band (dark stays dark, light stays light)', () => {
+    it.each(LOW_CASES)('%s: every knob lands on its token unchanged', (_n, base, colors) => {
+        const t = deriveCustomTheme(normOk({ v: 1, base, colors }));
+        const p = t.palette;
+        expect(p.abyss).toBe(colors.bg);
+        expect(p.deep).toBe(colors.panel);
+        expect(p.surface).toBe(colors.surface);
+        expect(p.text).toBe(colors.text);
+        expect(p.bright).toBe(colors.text);
+        expect(p['code-text']).toBe(colors.text);
+        expect(p.muted).toBe(colors.muted);
+        expect(p.lume).toBe(colors.accent);
+        expect(p['on-lume']).toBe(colors.onAccent);
+        expect(p.danger).toBe(colors.danger);
+        expect(p.border).toBe(colors.border);
+    });
+
+    it.each(LOW_CASES)('%s: tokens derived from the picks are plain mixes / aliases, never nudged', (_n, base, colors) => {
+        const t = deriveCustomTheme(normOk({ v: 1, base, colors }));
+        const p = t.palette;
+        expect(p.faint).toBe(mixHex(colors.muted, colors.panel, 0.22));
+        expect(p['border-strong']).toBe(colors.border);
+        expect(p['lume-text']).toBe(colors.accent);
+        expect(p['lume-ui']).toBe(colors.accent);
+        expect(p['danger-text']).toBe(colors.danger);
+        if (base === 'light') {
+            expect(p['lume-deep']).toBe(colors.accent);
+            expect(t.extra?.['--lt-mint-ink']).toBe(colors.accent);
+            expect(t.extra?.['--lt-mint']).toBe(mixHex(colors.accent, colors.panel, 0.88));
+        }
+    });
+
+    it('grounds are not pushed into a dark / light band', () => {
         const d = normOk({ v: 1, base: 'dark', colors: { bg: '#ffffff', panel: '#eeeeee', surface: '#dddddd' } });
-        for (const k of ['bg', 'panel', 'surface'] as const) expect(relativeLuminance(d.colors[k])).toBeLessThanOrEqual(DARK_GROUND_MAX);
+        expect([d.colors.bg, d.colors.panel, d.colors.surface]).toEqual(['#ffffff', '#eeeeee', '#dddddd']);
         const l = normOk({ v: 1, base: 'light', colors: { bg: '#000000', panel: '#111111', surface: '#222222' } });
-        for (const k of ['bg', 'panel', 'surface'] as const) expect(relativeLuminance(l.colors[k])).toBeGreaterThanOrEqual(LIGHT_GROUND_MIN);
+        expect([l.colors.bg, l.colors.panel, l.colors.surface]).toEqual(['#000000', '#111111', '#222222']);
     });
 
-    it('is idempotent: a normalised theme normalises to itself with no adjustments', () => {
-        const once = normalizeCustomTheme({ v: 1, base: 'light', colors: { text: '#dddddd', muted: '#eeeeee', onAccent: '#25e0c8' } });
-        expect(once.ok).toBe(true);
-        if (!once.ok) return;
-        const twice = normalizeCustomTheme(once.def);
-        expect(twice).toEqual({ ok: true, def: once.def, adjustments: [] });
-        expect(makeReadable(once.def.base, once.def.colors).adjustments).toEqual([]);
+    it('is idempotent: a normalised theme normalises to itself', () => {
+        const once = normOk({ v: 1, base: 'light', colors: { text: '#dddddd', muted: '#eeeeee', onAccent: '#25e0c8' } });
+        expect(once.colors.text).toBe('#dddddd');
+        expect(normalizeCustomTheme(once)).toEqual({ ok: true, def: once });
     });
 
-    // Heavy-ish (each case runs the guard, the derivation and the audit): its own budget so a loaded box
-    // (several sessions running suites) reports a real failure, never a 5 s timeout.
-    it('fuzz: 300 random themes on both bases all pass the full audit after normalisation', { timeout: 60_000 }, () => {
-        const r = rng(20261120);
+    // Its own budget so a loaded box (several sessions running suites) reports a real failure, never a 5 s timeout.
+    it('fuzz: 300 random themes on both bases are all accepted with their colours unchanged', { timeout: 60_000 }, () => {
+        const r = rng(20261123);
         for (let i = 0; i < 300; i++) {
-            const colors = Object.fromEntries(CUSTOM_THEME_KNOBS.map(k => [k, randHex(r)]));
+            const colors = Object.fromEntries(CUSTOM_THEME_KNOBS.map(k => [k, randHex(r)])) as CustomThemeColors;
             const base = r() < 0.5 ? 'dark' : 'light';
             const res = normalizeCustomTheme({ v: 1, base, colors, glow: r() < 0.5 });
             expect(res.ok, JSON.stringify(colors)).toBe(true);
             if (!res.ok) continue;
-            expect(auditTheme(deriveCustomTheme(res.def)), `${base} ${JSON.stringify(colors)}`).toEqual([]);
+            expect(res.def.colors, `${base} ${JSON.stringify(colors)}`).toEqual(colors);
+            const p = deriveCustomTheme(res.def).palette;
+            expect([p.text, p.muted, p['on-lume'], p['lume-text'], p['danger-text'], p['border-strong']])
+                .toEqual([colors.text, colors.muted, colors.onAccent, colors.accent, colors.danger, colors.border]);
         }
     });
 
-    it('the audit catches a bad theme (positive control)', () => {
-        const t = deriveCustomTheme(customThemeFromBase('dark'));
-        const broken = { ...t, palette: { ...t.palette, text: t.palette.deep } };
-        expect(auditTheme(broken).some(f => f.fg === 'text')).toBe(true);
+    it('a low-contrast theme survives a share code, a file and the device boot copy unchanged', () => {
+        const d = normOk({ v: 1, name: 'Fog', base: 'dark', colors: LOW_DARK, glow: false });
+        expect(decodeShareCode(encodeShareCode(d))).toEqual({ ok: true, def: d });
+        expect(parseThemeImport(themeFileJson(d))).toEqual({ ok: true, def: d });
+        const back = defFromBootPayload(JSON.parse(JSON.stringify(customBootPayload('fog-1', d))));
+        expect(back?.def.colors).toEqual(LOW_DARK);
+        expect(customBootPayload('fog-1', d).boot.text).toBe(LOW_DARK.text.toUpperCase());
+        expect(customBootPayload('fog-1', d).boot.faint).toBe(mixHex(LOW_DARK.muted, LOW_DARK.panel, 0.22).toUpperCase());
     });
 
-    it('nudgeToContrast keeps a passing colour and moves a failing one the shortest way', () => {
+    it('presets are accepted exactly as written', () => {
+        for (const p of CUSTOM_THEME_PRESETS) expect(normalizeCustomTheme(p.def), p.key).toEqual({ ok: true, def: p.def });
+    });
+
+    it('nudgeToContrast (used only for the non-pick status / code colours) keeps a passing colour and moves a failing one the shortest way', () => {
         expect(nudgeToContrast('#ffffff', ['#000000'], 4.5)).toBe('#ffffff');
         const n = nudgeToContrast('#3355ff', ['#0b0f1e'], 4.5);
         expect(contrastRatio(n, '#0b0f1e')).toBeGreaterThanOrEqual(4.5);
         expect(relativeLuminance(n)).toBeGreaterThan(relativeLuminance('#3355ff'));
     });
+});
 
-    it('presets pass untouched', () => {
-        for (const p of CUSTOM_THEME_PRESETS) {
-            const r = normalizeCustomTheme(p.def);
-            expect(r.ok, p.key).toBe(true);
-            if (r.ok) expect(r.adjustments, p.key).toEqual([]);
+describe('NOT the person\'s colours: trust / status / code colours stay visible on their grounds', () => {
+    it.each(LOW_CASES)('%s: verified / warning / compromised / info text and presence dots are moved for contrast', (_n, base, colors) => {
+        const p = deriveCustomTheme(normOk({ v: 1, base, colors })).palette;
+        // Each one is nudged against the person's grounds (bg/panel/surface for text, bg/panel for dots).
+        for (const t of ['flash-text', 'glow-text', 'ok-text', 'info-text'] as const) {
+            expect(p[t], t).toBe(nudgeToContrast((base === 'dark' ? DARK_THEME : LIGHT_THEME).palette[t], [colors.bg, colors.panel, colors.surface], 4.5));
+            expect(contrastRatio(p[t], colors.panel), t).toBeGreaterThanOrEqual(4.5);
         }
-    });
-
-    it('built-in Light and Dark, as custom starting points, pass the audit', () => {
-        expect(auditTheme(deriveCustomTheme(normOk(customThemeFromBase('dark'))))).toEqual([]);
-        expect(auditTheme(deriveCustomTheme(normOk(customThemeFromBase('light'))))).toEqual([]);
+        for (const t of ['ok-dot', 'idle-dot', 'dnd-dot'] as const) expect(contrastRatio(p[t], colors.panel), t).toBeGreaterThanOrEqual(3);
     });
 });
 
@@ -235,13 +303,13 @@ describe('sharing: codes and files', () => {
         const code = encodeShareCode(d);
         expect(code.startsWith(CUSTOM_THEME_SHARE_PREFIX)).toBe(true);
         expect(code).toMatch(/^clth1\.[A-Za-z0-9_-]+$/);
-        expect(decodeShareCode(code)).toEqual({ ok: true, def: d, adjustments: [] });
+        expect(decodeShareCode(code)).toEqual({ ok: true, def: d });
         expect(decodeShareCode(`  ${code}\n`)).toMatchObject({ ok: true });
     });
 
     it('a file round-trips through parseThemeImport, and so does a pasted code', () => {
         const d = normOk(ocean);
-        expect(parseThemeImport(themeFileJson(d))).toEqual({ ok: true, def: d, adjustments: [] });
+        expect(parseThemeImport(themeFileJson(d))).toEqual({ ok: true, def: d });
         expect(parseThemeImport(encodeShareCode(d))).toMatchObject({ ok: true, def: d });
     });
 
@@ -298,14 +366,14 @@ describe('custom themes next to Midnight / High contrast (themes-merge)', () => 
         }
     });
 
-    it('Create theme from ANY built-in: base = its scheme, validates, passes the audit', () => {
+    it('Create theme from ANY built-in: base = its scheme, validates with its colours unchanged', () => {
         for (const id of THEME_IDS) {
             const seed = customThemeFromTheme(THEMES[id]);
             expect(seed.base).toBe(THEMES[id].scheme);
             expect(seed.colors).toEqual(knobsFromTheme(THEMES[id]));
             const r = normalizeCustomTheme(seed);
             expect(r.ok, id).toBe(true);
-            if (r.ok) expect(auditTheme(deriveCustomTheme(r.def)), id).toEqual([]);
+            if (r.ok) expect(r.def.colors, id).toEqual(seed.colors);
         }
         // Dark / Light: identical to the base seeds (no behaviour change for them).
         expect(customThemeFromTheme(DARK_THEME)).toEqual(customThemeFromBase('dark'));
@@ -317,13 +385,5 @@ describe('custom themes next to Midnight / High contrast (themes-merge)', () => 
         for (const base of ['midnight', 'hc-dark', 'hc-light', 'system', 'custom']) {
             expect(normalizeCustomTheme({ ...customThemeFromBase('dark'), base }).ok).toBe(false);
         }
-    });
-});
-
-describe('theme coverage audit: secondary and accent text on every fill they sit on', () => {
-    it.each(CUSTOM_THEME_PRESETS.map((p) => [p.key, p] as const))('%s: faint on insets and code wells, accent text on accent tints', (_k, preset) => {
-        const p = deriveCustomTheme(preset.def, `p-${preset.key}`).palette;
-        for (const g of [p.abyss, p.deep, p.surface, p.sink]) expect(contrastRatio(p.faint, g)).toBeGreaterThanOrEqual(4.5);
-        for (const g of [p.abyss, p.deep, p.surface]) expect(contrastRatio(p['lume-text'], mixHex(g, p.lume, 0.2))).toBeGreaterThanOrEqual(4.5);
     });
 });

@@ -14,33 +14,36 @@
  * (every PALETTE/ALPHA/EFFECT token) and the engine applies it exactly like a
  * built-in one.
  *
- * Three layers, all pure (no DOM, no storage, no React):
+ * Two layers, both pure (no DOM, no storage, no React):
  *   1. parse + validate  (normalizeCustomTheme): a colour is accepted only if
  *      packages/shared/card-style.ts `parseCardColor` reads it as a LITERAL
  *      colour (hex / rgb() / hsl()), so url(), var(), theme(), expressions and
  *      anything else is refused; alpha is dropped (themes are opaque); the
  *      name is cleaned and capped; the whole object is size-capped.
- *   2. readability guard (makeReadable): grounds are clamped into the base's
- *      band, then text >= 4.5:1 on every ground, secondary text >= 4.5:1 on
- *      the panels, text-on-accent >= 4.5:1 on the accent. A pick that fails is
- *      NUDGED (same hue and chroma in OKLCH, nearest passing lightness — the
- *      card-style / role-colour approach), and the editor shows
- *      "adjusted for readability (X:1)". What is stored is the nudged value.
- *   3. derive (deriveCustomTheme): the full Theme. Accent-as-text, danger as
- *      text, control edges and indicators are themselves nudged to 4.5:1 / 3:1.
- *      auditTheme() measures every pair; a theme with any failure is never
- *      saved (the editor disables Save; tests fuzz it).
+ *   2. derive (deriveCustomTheme): the full Theme.
  *
- * Security indicators stay recognisable: the colours trust UI is drawn in
- * (TrustBadge: ok-text = verified, glow-text = unverified, flash-text =
- * compromised; presence dots; the dark islands — profile cards, celebrations,
- * call stage) are NOT user knobs. They keep the base theme's hue and are only
- * moved in lightness for contrast against the custom panels, and the islands
- * keep the Dark tokens exactly.
+ * YOUR COLOURS ARE USED EXACTLY AS PICKED (owner, 2026-11-23: "make it so for
+ * themes they don't automatically adjust colors to improve contrast. let
+ * people do whatever they want"). There is no readability guard: nothing a
+ * person picks is nudged, clamped into a dark / light band, or refused for
+ * low contrast — on save, import, share code, theme link, sync or restore.
+ * Tokens DERIVED from the picks (faint, border-strong, lume-text, lume-ui,
+ * danger-text, the light stylesheet's --lt-* vars, ...) are plain mixes or
+ * aliases of them, never contrast-corrected either.
+ *
+ * What still IS moved for contrast is only what the person did not pick:
+ * the colours trust UI is drawn in (TrustBadge: ok-text = verified, glow-text
+ * = unverified, flash-text = compromised; info-text; presence dots) and code
+ * syntax colours. They are NOT knobs: they keep the base theme's hue and are
+ * moved in lightness against the custom grounds, so a safety indicator can
+ * never vanish into a background someone chose for other reasons. The dark
+ * islands (profile cards, celebrations, call stage) keep the Dark tokens.
+ * Role / username colours (someone else's pick) are handled the same way by
+ * utils/roleColor.ts readableNameColor via `nameMinContrast` below.
  */
 import { cardColorRgba, parseCardColor } from '@cipherline/shared';
 import { hexToOklch, oklchToHex } from '../utils/palette';
-import { AA_TEXT, AA_UI, contrastRatio, relativeLuminance } from './contrast';
+import { AA_TEXT, AA_UI, contrastRatio } from './contrast';
 import {
     DARK_THEME, LIGHT_THEME, THEME_SCHEMA_VERSION, type PaletteToken, type Theme,
 } from './themes';
@@ -149,32 +152,6 @@ export function nudgeToContrast(hex: string, bgs: readonly string[], min: number
     return minContrast(WHITE, bgs) >= minContrast(BLACK, bgs) ? WHITE : BLACK;
 }
 
-/** Move a ground into the base's band: dark bases at most `max` luminance, light bases at least `min`. */
-function clampGround(hex: string, base: CustomThemeBase): string {
-    const lum = relativeLuminance(hex);
-    if (base === 'dark' ? lum <= DARK_GROUND_MAX : lum >= LIGHT_GROUND_MIN) return hex;
-    const { L, C, h } = hexToOklch(hex);
-    const ok = (l: number) => {
-        const y = relativeLuminance(oklchToHex(l, C, h));
-        return base === 'dark' ? y <= DARK_GROUND_MAX : y >= LIGHT_GROUND_MIN;
-    };
-    let pass: number = base === 'dark' ? 0 : 1, fail = L;
-    for (let i = 0; i < 28; i++) {
-        const mid = (pass + fail) / 2;
-        if (ok(mid)) pass = mid; else fail = mid;
-    }
-    return oklchToHex(pass, C, h);
-}
-
-/**
- * Ground bands. Every dark ground stays at or below 0.12 relative luminance
- * (about #616161) and every light one at or above 0.45 (about #B4B4B4), so a
- * text colour >= 4.5:1 on all of them always exists — the guard can always
- * fix a pick instead of refusing it.
- */
-export const DARK_GROUND_MAX = 0.12;
-export const LIGHT_GROUND_MIN = 0.45;
-
 // ── Bases and presets ───────────────────────────────────────────────────────
 
 const baseTheme = (b: CustomThemeBase): Theme => (b === 'light' ? LIGHT_THEME : DARK_THEME);
@@ -207,7 +184,7 @@ export function customThemeFromTheme(t: Theme, name = DEFAULT_CUSTOM_THEME_NAME)
 // ── Validation / normalisation ──────────────────────────────────────────────
 
 export type CustomThemeError =
-    | 'not-an-object' | 'too-large' | 'bad-version' | 'bad-base' | 'bad-colour' | 'bad-name' | 'bad-code' | 'unreadable';
+    | 'not-an-object' | 'too-large' | 'bad-version' | 'bad-base' | 'bad-colour' | 'bad-name' | 'bad-code';
 
 export const CUSTOM_THEME_ERROR_TEXT: Readonly<Record<CustomThemeError, string>> = {
     'not-an-object': 'That is not a Cipherline theme.',
@@ -217,22 +194,10 @@ export const CUSTOM_THEME_ERROR_TEXT: Readonly<Record<CustomThemeError, string>>
     'bad-colour': 'That theme contains something that is not a colour.',
     'bad-name': 'That theme has an invalid name.',
     'bad-code': 'That is not a theme code. Codes start with clth1.',
-    'unreadable': 'That theme cannot be made readable.',
 };
 
-/** One colour pick the guard changed. */
-export interface ReadabilityAdjustment {
-    knob: CustomThemeKnob;
-    from: string;
-    to: string;
-    /** The contrast the adjusted colour reaches against the backgrounds it was checked on. */
-    ratio: number;
-    /** What it was measured against, for the editor ("on panels"). */
-    against: string;
-}
-
 export type NormalizeResult =
-    | { ok: true; def: CustomThemeDef; adjustments: ReadabilityAdjustment[] }
+    | { ok: true; def: CustomThemeDef }
     | { ok: false; error: CustomThemeError; detail?: string };
 
 /** One user-supplied colour -> opaque '#rrggbb', or null for anything that is not a literal colour. */
@@ -260,7 +225,8 @@ export function cleanThemeName(input: unknown): string | null {
 /**
  * Parse an untrusted theme object (an import, a share code, a synced item, a
  * backup restore, a stored record): validate, fill missing knobs from the
- * base, then run the readability guard. Never throws.
+ * base. The colours come out exactly as given (only re-spelled as opaque
+ * '#rrggbb'); nothing is adjusted for contrast. Never throws.
  */
 export function normalizeCustomTheme(input: unknown): NormalizeResult {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, error: 'not-an-object' };
@@ -290,53 +256,12 @@ export function normalizeCustomTheme(input: unknown): NormalizeResult {
         colors[k] = c;
     }
     const glow = typeof o.glow === 'boolean' ? o.glow : base === 'dark';
-    const { colors: readable, adjustments } = makeReadable(base, colors);
-    const def: CustomThemeDef = { v: CUSTOM_THEME_VERSION, name, base, colors: readable, glow };
-    if (auditTheme(deriveCustomTheme(def)).length > 0) return { ok: false, error: 'unreadable' };
-    return { ok: true, def, adjustments };
+    return { ok: true, def: { v: CUSTOM_THEME_VERSION, name, base, colors, glow } };
 }
 
 /** The hover fill: the inset colour lifted a step toward the text. */
 export function raiseOf(surface: string, text: string, base: CustomThemeBase): string {
     return mixHex(surface, text, base === 'dark' ? 0.09 : 0.07);
-}
-
-/**
- * The readability guard over the knobs. Returns the colours to USE (and
- * store) plus what it changed. Idempotent: running it on its own output
- * changes nothing.
- */
-export function makeReadable(base: CustomThemeBase, input: CustomThemeColors): { colors: CustomThemeColors; adjustments: ReadabilityAdjustment[] } {
-    const c: CustomThemeColors = { ...input };
-    const adjustments: ReadabilityAdjustment[] = [];
-    const note = (knob: CustomThemeKnob, from: string, against: string, bgs: readonly string[]) => {
-        if (c[knob] !== from) adjustments.push({ knob, from, to: c[knob], ratio: minContrast(c[knob], bgs), against });
-    };
-    // 1. Grounds into the base's band (so step 2 can always succeed).
-    for (const k of ['bg', 'panel', 'surface'] as const) {
-        const from = c[k];
-        c[k] = clampGround(from, base);
-        if (c[k] !== from) {
-            const y = relativeLuminance(c[k]);
-            adjustments.push({ knob: k, from, to: c[k], ratio: y, against: base === 'dark' ? 'kept dark for a dark theme' : 'kept light for a light theme' });
-        }
-    }
-    const grounds = [c.bg, c.panel, c.surface];
-    // 2. Text on every ground and on the hover fill (which moves toward the text: iterate).
-    {
-        const from = c.text;
-        for (let i = 0; i < 6; i++) {
-            const next = nudgeToContrast(c.text, [...grounds, raiseOf(c.surface, c.text, base)], AA_TEXT);
-            if (next === c.text) break;
-            c.text = next;
-        }
-        note('text', from, 'on every background', [...grounds, raiseOf(c.surface, c.text, base)]);
-    }
-    // 3. Secondary text on the page, the panels and the insets.
-    { const from = c.muted; c.muted = nudgeToContrast(c.muted, grounds, AA_TEXT); note('muted', from, 'on panels', grounds); }
-    // 4. Labels on the accent.
-    { const from = c.onAccent; c.onAccent = nudgeToContrast(c.onAccent, [c.accent], AA_TEXT); note('onAccent', from, 'on the accent', [c.accent]); }
-    return { colors: c, adjustments };
 }
 
 // ── Derivation ──────────────────────────────────────────────────────────────
@@ -378,38 +303,37 @@ export function deriveCustomTheme(def: CustomThemeDef, customId = 'preview'): Th
     p.sink = dark ? mixHex(k.bg, BLACK, 0.12) : mixHex(k.bg, k.text, 0.025);
     p.text = k.text;
     p.muted = k.muted;
-    // The faintest text (timestamps, hints, code comments, "(you)") also sits on
-    // inset cards and code wells: readable on every ground and the sink, not
-    // just the page and panels (theme coverage audit, 2026-11-20).
-    p.faint = nudgeToContrast(mixHex(k.muted, k.panel, 0.22), [...grounds, p.sink], AA_TEXT);
+    // The faintest text (timestamps, hints, code comments, "(you)"): secondary
+    // text eased a step toward the panel. A plain mix, never contrast-corrected.
+    p.faint = mixHex(k.muted, k.panel, 0.22);
     p.bright = k.text;
     p.shade = dark ? base.palette.shade : (() => { const { C, h } = hexToOklch(k.bg); return oklchToHex(0.28, Math.min(0.06, C * 2 + 0.02), h); })();
     p['dot-hole'] = dark ? base.palette['dot-hole'] : k.panel;
-    p['border-strong'] = nudgeToContrast(k.border, grounds, AA_UI);
+    p['border-strong'] = k.border;
 
     // Accent family.
     p.lume = k.accent;
     p['lume-hi'] = stepL(k.accent, 0.06);
     p['lume-press'] = stepL(k.accent, -0.08);
     p['on-lume'] = k.onAccent;
-    // Accent text also sits on accent-TINTED fills (the active settings item,
-    // "In call" pills, selected rows: up to ~20% accent over a ground), so it
-    // must clear 4.5:1 there too (theme coverage audit, 2026-11-20).
-    const tinted = grounds.map((g) => mixHex(g, k.accent, 0.2));
-    p['lume-text'] = nudgeToContrast(k.accent, [...grounds, ...tinted], AA_TEXT);
-    p['lume-deep'] = dark ? stepL(k.accent, -0.25) : p['lume-text'];
-    p['lume-ui'] = nudgeToContrast(k.accent, [k.panel, k.surface], AA_UI);
+    // Accent as text (links, mentions) and as a control edge: the accent itself.
+    p['lume-text'] = k.accent;
+    p['lume-deep'] = dark ? stepL(k.accent, -0.25) : k.accent;
+    p['lume-ui'] = k.accent;
     p['keys-alert'] = dark ? base.palette['keys-alert'] : k.accent;
 
     // Danger (destructive actions) — a knob; trust colours below are NOT.
     p.danger = k.danger;
-    p['danger-text'] = nudgeToContrast(k.danger, grounds, AA_TEXT);
+    p['danger-text'] = k.danger;
 
-    // Security / status colours: base hue, lightness nudged for the custom grounds.
+    // NOT the person's colours: security / status colours keep the base hue and
+    // are moved in lightness so they stay visible on the custom grounds (see the
+    // header: a trust indicator must never vanish into a picked background).
     for (const t of ['flash-text', 'glow-text', 'ok-text', 'info-text'] as const) p[t] = nudgeToContrast(base.palette[t], grounds, AA_TEXT);
     for (const t of ['ok-dot', 'idle-dot', 'dnd-dot', 'offline-dot'] as const) p[t] = nudgeToContrast(base.palette[t], [k.bg, k.panel], AA_UI);
 
-    // Code: the well is the page colour (styles/formatting.css .cl-fmt-pre).
+    // Code: the well is the page colour (styles/formatting.css .cl-fmt-pre). The
+    // syntax colours are the base theme's (not picks), kept visible like status.
     p['code-text'] = k.text;
     for (const t of ['code-kw', 'code-str', 'code-num', 'code-lit', 'code-type', 'code-add', 'code-del'] as const) {
         p[t] = nudgeToContrast(base.palette[t], [k.bg, p.sink, k.panel], AA_TEXT);
@@ -451,7 +375,7 @@ export function deriveCustomTheme(def: CustomThemeDef, customId = 'preview'): Th
         extra['--lt-step'] = mixHex(k.border, k.text, 0.12);
         extra['--lt-mint'] = mixHex(k.accent, k.panel, 0.88);
         extra['--lt-mint-edge'] = mixHex(k.accent, k.panel, 0.65);
-        extra['--lt-mint-ink'] = nudgeToContrast(k.accent, [extra['--lt-mint']], AA_TEXT);
+        extra['--lt-mint-ink'] = k.accent;
     }
 
     return {
@@ -474,45 +398,12 @@ export function deriveCustomTheme(def: CustomThemeDef, customId = 'preview'): Th
             windowBackground: base.boot.windowBackground,
             card: base.boot.card,
         },
+        // Role / username colours are SOMEONE ELSE's picks (a server's roles, a
+        // user's name colour), not this theme's: they stay readable on the
+        // person's grounds (utils/roleColor.ts readableNameColor) exactly as on
+        // a custom theme before. Nothing the theme's author picked is touched.
         nameMinContrast: dark ? 3 : AA_TEXT,
     };
-}
-
-// ── Audit (the "never save an unreadable theme" check) ──────────────────────
-
-export interface AuditFailure { fg: PaletteToken; bg: PaletteToken; ratio: number; min: number }
-
-/** Every text / control pair a theme must pass. */
-export const AUDIT_PAIRS: ReadonlyArray<{ fg: PaletteToken; bgs: readonly PaletteToken[]; min: number }> = [
-    { fg: 'text', bgs: ['abyss', 'deep', 'surface', 'raise'], min: AA_TEXT },
-    { fg: 'muted', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'faint', bgs: ['abyss', 'deep'], min: AA_TEXT },
-    { fg: 'lume-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'on-lume', bgs: ['lume'], min: AA_TEXT },
-    { fg: 'danger-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'flash-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'glow-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'ok-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'info-text', bgs: ['abyss', 'deep', 'surface'], min: AA_TEXT },
-    { fg: 'code-kw', bgs: ['abyss', 'deep'], min: AA_TEXT },
-    { fg: 'code-str', bgs: ['abyss', 'deep'], min: AA_TEXT },
-    { fg: 'border-strong', bgs: ['abyss', 'deep', 'surface'], min: AA_UI },
-    { fg: 'lume-ui', bgs: ['deep', 'surface'], min: AA_UI },
-    { fg: 'ok-dot', bgs: ['abyss', 'deep'], min: AA_UI },
-    { fg: 'idle-dot', bgs: ['abyss', 'deep'], min: AA_UI },
-    { fg: 'dnd-dot', bgs: ['abyss', 'deep'], min: AA_UI },
-];
-
-/** Every failing pair (empty = readable). */
-export function auditTheme(t: Theme): AuditFailure[] {
-    const out: AuditFailure[] = [];
-    for (const pair of AUDIT_PAIRS) {
-        for (const bg of pair.bgs) {
-            const ratio = contrastRatio(t.palette[pair.fg], t.palette[bg]);
-            if (ratio < pair.min) out.push({ fg: pair.fg, bg, ratio, min: pair.min });
-        }
-    }
-    return out;
 }
 
 // ── Sharing: codes and files ────────────────────────────────────────────────
@@ -542,7 +433,7 @@ export function encodeShareCode(def: CustomThemeDef): string {
     return CUSTOM_THEME_SHARE_PREFIX + b64urlEncode(JSON.stringify(portableTheme(def)));
 }
 
-/** A share code -> a normalised theme (validated + readability-guarded). */
+/** A share code -> a normalised theme (validated; colours exactly as shared). */
 export function decodeShareCode(code: unknown): NormalizeResult {
     if (typeof code !== 'string') return { ok: false, error: 'bad-code' };
     const s = code.trim();

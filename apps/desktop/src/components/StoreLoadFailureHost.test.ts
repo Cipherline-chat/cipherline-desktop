@@ -12,7 +12,7 @@ const h = vi.hoisted(() => {
     (window as unknown as { matchMedia: unknown }).matchMedia = () => ({
         matches: false, addEventListener: () => {}, removeEventListener: () => {},
     });
-    return { push: vi.fn(), failed: false, listeners: new Set<() => void>() };
+    return { push: vi.fn(), failed: false, listeners: new Set<() => void>(), partial: false, partialListeners: new Set<() => void>() };
 });
 vi.mock('../contexts/ToastContext', () => ({ useToast: () => ({ push: h.push, dismiss: () => {} }) }));
 // The store's side of this (when it reports a failure) is covered against the
@@ -23,6 +23,11 @@ vi.mock('../utils/secureLocalStore', () => ({
             if (h.failed) fn();
             h.listeners.add(fn);
             return () => { h.listeners.delete(fn); };
+        },
+        onUnreadableRecords: (fn: () => void) => {
+            if (h.partial) fn();
+            h.partialListeners.add(fn);
+            return () => { h.partialListeners.delete(fn); };
         },
     },
 }));
@@ -37,6 +42,8 @@ beforeEach(() => {
     h.push.mockClear();
     h.failed = false;
     h.listeners.clear();
+    h.partial = false;
+    h.partialListeners.clear();
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -89,6 +96,19 @@ describe('StoreLoadFailureHost', () => {
         }
     });
 
+    it('a partial load (records skipped) gets one calm notice that says nothing was deleted', () => {
+        h.partial = true;
+        mountHost();
+        expect(h.push).toHaveBeenCalledTimes(1);
+        const toast = h.push.mock.calls[0][0];
+        expect(toast.kind).toBe('info');
+        expect(toast.title).toMatch(/older history/);
+        expect(toast.message).toMatch(/Nothing was deleted/);
+        // Once per session, even when the store reports it again (an account switch).
+        act(() => { for (const fn of h.partialListeners) fn(); });
+        expect(h.push).toHaveBeenCalledTimes(1);
+    });
+
     it('is mounted in the signed-in app', () => {
         const app = fs.readFileSync(path.join(__dirname, '../App.tsx'), 'utf8');
         expect(app).toContain('{isAuthenticated && <StoreLoadFailureHost />}');
@@ -136,6 +156,7 @@ describe('StorageReadFailedScreen', () => {
             expect(text).toMatch(watcher);
             expect(text).toMatch(folder);
             expect(text).toMatch(/Don’t delete the app’s data or reinstall/);
+            expect(text).toMatch(/quarantine|moved or removed/);
         } finally {
             (window as unknown as { electronAPI?: unknown }).electronAPI = undefined;
         }
@@ -146,6 +167,15 @@ describe('StorageReadFailedScreen', () => {
         expect(main).toMatch(/secureLocalStore\.onLoadRetry\(\(\) => \{\s*getRoot\(\)\.render\([\s\S]{0,80}<StorageOpeningScreen \/>/);
         expect(main).toMatch(/\.finally\(offLoadRetry\)/);
         expect(main).toMatch(/const root = getRoot\(\);/);
+    });
+
+    it('shows the failure code (labels only) so it can be screenshotted, and nothing when there is none', () => {
+        act(() => { root.render(React.createElement(StorageReadFailedScreen, { onContinue: () => {}, code: 'read/NotReadableError' })); });
+        expect(host.textContent).toContain('Code: read/NotReadableError');
+        act(() => { root.render(React.createElement(StorageReadFailedScreen, { onContinue: () => {}, code: null })); });
+        expect(host.textContent).not.toContain('Code:');
+        const main = fs.readFileSync(path.join(__dirname, '../main.tsx'), 'utf8');
+        expect(main).toMatch(/code=\{storeFailureCode\(secureLocalStore\.loadHealth\(\)\)\}/);
     });
 
     it('offers no reset: nothing here is known to be damaged', () => {

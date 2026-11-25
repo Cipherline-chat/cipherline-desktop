@@ -27,6 +27,8 @@ import {
 import { retryAfterMs } from '../../emojiBulk/batch';
 import type { ChannelHistory, ImportMessage } from '../types';
 import { importedMessageText, postingOrder, sizeLabel, type ConvertContext, type ConvertSink } from './convert';
+import { importedLinkEmbeds } from './linkEmbeds';
+import { reencodeThumb, type EncodedThumb } from '../../linkEmbeds/thumb';
 
 /** Request bodies stay under the API's 1 MiB batch limit with room to spare. */
 export const BATCH_BYTES_SOFT_LIMIT = 900 * 1024;
@@ -61,6 +63,8 @@ export interface HistoryDeps {
     /** The importer's per-file upload limit (getEntitlements().maxUploadBytes). */
     maxFileBytes: number;
     newId?(): string;
+    /** Test seam: the link-preview picture re-encode (default: utils/linkEmbeds/thumb reencodeThumb, a browser canvas). */
+    reencodeThumb?(bytes: Uint8Array): Promise<EncodedThumb | null>;
     sleep?(ms: number): Promise<void>;
 }
 
@@ -133,6 +137,8 @@ export interface ChannelReport {
     truncated: boolean;
     /** The channel had more than the 25,000-message ceiling in its window. */
     ceilingHit: boolean;
+    /** Link previews Discord had made that came over as previews (link embeds phase 4). */
+    linkPreviews?: number;
     /** Reactions with a custom emoji this server does not have (left out). */
     reactionsSkipped: number;
     /**
@@ -516,11 +522,33 @@ export async function runHistoryImport(
                         leaveOut((err as { refused?: boolean } | null)?.refused ? 'refused' : 'upload_failed', got.bytes.length);
                     }
                 }
-                const sink: ConvertSink = { mentions: [], channelRefs: [] };
+                let sink: ConvertSink = { mentions: [], channelRefs: [] };
                 const shown = handledStickers.size ? { ...m, stickers: m.stickers.filter(n => !handledStickers.has(n)) } : m;
-                const text = importedMessageText(shown, ctx, notes, !!m.replyTo && !parentId, sink);
+                let text = importedMessageText(shown, ctx, notes, !!m.replyTo && !parentId, sink);
+                // Discord's previews of the links become the row's link previews (linkEmbeds.ts); one that
+                // cannot be tied to a link in the text is written as quoted text, as before.
+                const previews = m.linkEmbeds?.length ? await importedLinkEmbeds(m.linkEmbeds, text, {
+                    fetchMedia: (ref) => deps.fetchMedia(ref),
+                    reencode: deps.reencodeThumb ?? reencodeThumb,
+                    upload: async (bytes, mime) => { const up = await uploadOne(bytes, mime); return { attachmentId: up.attachmentId, keyB64: up.enc.keyB64, nonceB64: up.enc.nonceB64, storedBytes: up.enc.blob.size }; },
+                }) : null;
+                if (signal.aborted) throw new HistoryAborted();
+                if (previews?.unmapped.length) {
+                    sink = { mentions: [], channelRefs: [] };
+                    const asQuotes = previews.unmapped.map(e => ({ title: e.title, description: e.description, url: e.url, fields: [], author: e.author, footer: null }));
+                    text = importedMessageText({ ...shown, embeds: [...shown.embeds, ...asQuotes] }, ctx, notes, !!m.replyTo && !parentId, sink);
+                }
+                if (previews?.embeds.length) report.linkPreviews = (report.linkPreviews ?? 0) + previews.embeds.length;
                 const contents: Array<{ c: Record<string, unknown>; atts: string[]; extra: number }> = [];
-                if (text.trim()) contents.push({ c: { type: 'text', text, ...(parentId ? { reply_to_id: parentId } : {}), ...(sink.mentions.length ? { mentions: sink.mentions } : {}), ...(sink.channelRefs.length ? { channel_refs: sink.channelRefs } : {}) }, atts: [], extra: 0 });
+                if (text.trim()) {
+                    contents.push({
+                        c: {
+                            type: 'text', text, ...(parentId ? { reply_to_id: parentId } : {}), ...(sink.mentions.length ? { mentions: sink.mentions } : {}), ...(sink.channelRefs.length ? { channel_refs: sink.channelRefs } : {}),
+                            ...(previews?.embeds.length ? { embeds: previews.embeds } : {}),
+                        },
+                        atts: previews?.attachmentIds ?? [], extra: previews?.storedBytes ?? 0,
+                    });
+                }
                 // A sticker row right after the words (its own message in Cipherline), the
                 // reply link on the first row only, as for files.
                 stickerRows.forEach((c) => contents.push({ c: { ...c, ...(contents.length === 0 && parentId ? { reply_to_id: parentId } : {}) }, atts: [], extra: 0 }));

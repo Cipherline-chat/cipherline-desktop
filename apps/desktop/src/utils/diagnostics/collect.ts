@@ -81,7 +81,7 @@ async function deviceKinds(): Promise<Array<{ kind: string }> | null> {
 }
 
 /** The store's health as report settings (labels only — see storeHealthReport.ts). Never throws. */
-function storageForReport(corrupted: boolean): { status?: string; failure?: string; attempts?: number; recovered?: boolean } | null {
+function storageForReport(corrupted: boolean): { status?: string; failure?: string; attempts?: number; recovered?: boolean; unreadable?: number } | null {
     try {
         const e = storeHealthSettings(secureLocalStore.loadHealth(), corrupted);
         return {
@@ -89,6 +89,7 @@ function storageForReport(corrupted: boolean): { status?: string; failure?: stri
             ...(typeof e.storage_load_failure === 'string' ? { failure: e.storage_load_failure } : {}),
             ...(typeof e.storage_load_attempts === 'number' ? { attempts: e.storage_load_attempts } : {}),
             ...(typeof e.storage_load_recovered === 'boolean' ? { recovered: e.storage_load_recovered } : {}),
+            ...(typeof e.storage_unreadable_records === 'number' ? { unreadable: e.storage_unreadable_records } : {}),
         };
     } catch {
         return null;

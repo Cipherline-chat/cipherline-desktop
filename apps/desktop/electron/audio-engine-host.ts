@@ -90,6 +90,7 @@ function handle(m: NonNullable<ReturnType<typeof parseWorkletMessage>>): void {
             reply({ t: 'ack', id: m.id, ok, effectiveNoise: Number(engine.stats(false).effectiveNoise) });
             break;
         }
+        case 'sl': if (engine) engine.setSettings({ noise: m.noise, autoGain: m.autoGain, manualGainDb: m.manualGainDb, originalSound: m.originalSound, idleSkip: true }); break;
         case 'dc': if (engine) engine.deviceChanged(m.hasGain, m.gainDb); break;
         case 'gate': if (engine) engine.setGate(m.enabled, m.thresholdDb); break;
         case 'g': if (engine) engine.setInitialDeviceGainDb(m.db); break;

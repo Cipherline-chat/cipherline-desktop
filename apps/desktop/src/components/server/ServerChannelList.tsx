@@ -11,8 +11,8 @@
  *      each collapsible on its own, indented with a guide line) - in one
  *      order (channelTree.ts).
  *
- * Dividers are purely visual (ChannelDividerRow); a divider whose section
- * has nothing this member can see is not drawn (channelTree.dividerVisibility).
+ * Dividers are purely visual (ChannelDividerRow); every divider the server
+ * sends is drawn where it was placed (channelTree.dividerVisibility).
  *
  * Drag-and-drop (canManage only):
  *   • Drag channels, dividers and sub-categories anywhere they may live; the
@@ -370,7 +370,7 @@ export const ServerChannelList: React.FC<Props> = ({
         localCategories,
         localDividers,
     ), [localChannels, localCategories, localDividers, pendingChannels]);
-    const visibleDividers = useMemo(() => dividerVisibility(tree, canManage), [tree, canManage]);
+    const visibleDividers = useMemo(() => dividerVisibility(tree), [tree]);
     const topLevelIds = useMemo(() => new Set(tree.categories.map(c => c.category.category_id)), [tree]);
     const categoryName = (id: string | null | undefined) =>
         (id ? localCategories.find(c => c.category_id === id)?.name : null) ?? null;
@@ -1061,7 +1061,6 @@ export const ServerChannelList: React.FC<Props> = ({
     };
 
     const renderDividerRow = (d: DividerInfo) => {
-        const faded = visibleDividers.faded.has(d.divider_id);
         const pending = d.divider_id.startsWith('pending:');
         const menu = buildDividerMenu(d);
         const confirmDelete = () => setPendingConfirm({
@@ -1075,7 +1074,6 @@ export const ServerChannelList: React.FC<Props> = ({
                 divider={d}
                 interactive={canManage}
                 pending={pending}
-                hiddenFromMembers={faded}
                 ariaLabel={dividerAriaLabel(d)}
                 tabIndex={canManage && !pending ? 0 : undefined}
                 onContextMenu={menu.length ? (e) => ctx.open(e, menu, d.label ? `Divider · ${d.label}` : 'Divider') : undefined}
@@ -1246,7 +1244,7 @@ export const ServerChannelList: React.FC<Props> = ({
     }
 
     const hasBanner = !!(server.banner_attachment && server.banner_key_b64 && server.banner_nonce_b64);
-    const isEmpty = channels.length === 0 && categories.length === 0;
+    const isEmpty = channels.length === 0 && categories.length === 0 && localDividers.length === 0;
     const topKeys = tree.top.map(i => i.key);
     const catKeys = tree.categories.map(c => `cat:${c.category.category_id}`);
     const editingCategory = categoryDialog?.mode === 'edit' ? categoryDialog.category : null;

@@ -22,17 +22,17 @@
 // module is never called again (its state cannot be trusted after a trap). The main thread then rebuilds the
 // legacy chain (voiceProcessor.ts).
 //
-// NATIVE MODE ("Strong" = FastEnhancer B+S in a Web Worker; see utils/clAudioNative.ts, workers/clAudioStrong.worker.ts - the
+// NATIVE MODE ("Strong" = rnnoise-wasm feeding a second engine in a Web Worker; see utils/clAudioNative.ts, workers/clAudioStrong.worker.ts - the
 // name is historical, the first Strong ran in a native process and the hand-off is the same). processorOptions.native = true
 // (+ nativeJitterFrames, nativeDelaySamples) reserves the extra playout delay up front, then the page sends { type: 'nativePort', port }.
 // This engine never runs Strong itself (too heavy for the audio thread): a Strong request here runs Light (see applyCfg).
 // The in-page engine (Light) KEEPS RUNNING on the same input as a time-aligned safety net. Every 480 input samples (10 ms) are sent over
 // the port with a sequence number; the processed frame comes back by seq into a small slot store.
 //
-// TIME ALIGNMENT. The two engines do not delay audio equally: the worker's Strong engine has D_s = nativeDelaySamples (3072) of
+// TIME ALIGNMENT. The two engines do not delay audio equally: the worker's Strong engine has D_s = nativeDelaySamples (960; FastEnhancer's was 3072) of
 // algorithmic delay, this engine's Light has D_l (480). Frame f from the worker therefore holds the input of 480 f - D_s, and the same
 // slot of this engine's own output the input of 480 f - D_l. Playing one in place of the other would repeat or skip D_s - D_l samples
-// (54 ms). So the Light ring is primed with (D_s - D_l) EXTRA samples (natAlign): the Light output for slot f then holds the input of
+// (10 ms; it was 54 ms with FastEnhancer). So the Light ring is primed with (D_s - D_l) EXTRA samples (natAlign): the Light output for slot f then holds the input of
 // 480 f - D_s as well, and a late frame is replaced by the same moment of audio. Playout of frame f starts at output sample
 // CLA_PRIME + 480 * jitterFrames + 480 * f (natP: the alignment extra delays Light's CONTENT, it does not move the slots). The
 // price is that Strong's total delay is natP + D_s + ~43 (see utils/clAudioLatency.ts), and that Light, while Strong is in use,
@@ -45,13 +45,19 @@
 // consecutive on-time replies, with the wait doubling on each further pause (see the constants). Both switches are the same time-aligned,
 // declicked slot switch. Native is abandoned for the rest of the call (ONE { type: 'nativeFailed', reason }, Light plays on at the same delay)
 // only when the host reports a failure (or reports a delay other than nativeDelaySamples: the alignment would be wrong), the page
-// says the worker exited, or the port errors.
+// says the worker exited or that this audio thread is overloaded, or the port errors.
 // Late, duplicate and out-of-order replies are counted and dropped; frames are never played out of order.
+// Settings to the host: a change that rebuilds its chain (auto gain on/off, original sound, the mic volume with auto gain OFF) restarts the
+// stream ('s', debounced ~400 ms, frames held until the ack, the hold never counted against it). The mic volume with auto gain ON is a
+// pre-leveller gain the engine retargets on the running chain: it goes out live ('sl', at most every ~100 ms), nothing is held or acked,
+// so a slider drag cannot pause or fail Strong (report 348d6f9b). EQ is page-side biquads: the host hears nothing about it.
 //
 // Messages in:  { type: 'nativePort', port }              the MessagePort to the worker (transferred)
 //               { type: 'nativeExit' }                    the page learned the worker died
 //               { type: 'nativeAbort' }                   native could not be opened at startup: drop the reserved delay
 //               { type: 'nativeOff' }                     Strong was switched off: stop native quietly, Light plays on
+//               { type: 'nativeOverload' }                this audio thread itself fell behind (utils/nsLoadGuard.ts): give up native for the
+//                                                         call (one nativeFailed 'render-overload'), so the worker's CPU goes back to the PC
 // Messages in:  { type: 'setSettings', noise: 0|1|2 (2 = Strong: the worker's job; here it runs Light), autoGain, manualGainDb, originalSound, gate: { enabled, thresholdDb } }
 //                 gate = the engine's MANUAL noise gate (fixed threshold on the raw mic level, off by default). A wasm
 //                 without cla_set_gate (an older cached build) simply has no gate: nothing fails.
@@ -86,7 +92,10 @@ const CLA_NAT_DEAD_FRAMES = 30;        // frames in a row without a reply = the 
 // native Strong was declared dead for the rest of the call while it was merely starting (report 538ab36e, 2026-11-21).
 // Light plays while we wait, so a long wait costs nothing.
 const CLA_NAT_ACK_TIMEOUT_FRAMES = 2000;
-const CLA_NAT_SETTLE_QUANTA = 150;     // ~400 ms: a settings change restarts DeepFilterNet (~1 s), so coalesce
+const CLA_NAT_SETTLE_QUANTA = 150;     // ~400 ms: a settings change that rebuilds the host's chain restarts the stream, so coalesce
+// ~100 ms: the mic volume with auto gain on is retargeted on the host's running chain ('sl', no restart, no ack). A slider drag posts
+// dozens of changes a second; the host gets at most one per this interval, always the latest value.
+const CLA_NAT_LIVE_QUANTA = 38;
 const CLA_NAT_DECLICK = 32;
 // Recovery. 'underruns' and 'no-replies' are usually a stall (a starved box, a 0.5-1 s scheduling hiccup), not a dead engine: native is
 // PAUSED (Light plays, frames keep flowing) and comes back after a CLA_NAT_RESUME_FRAMES stretch with at most 1 % late replies (10 s: longer than every
@@ -213,7 +222,7 @@ class ClAudioWorklet extends AudioWorkletProcessor {
         const key = (c.noise === 2 ? 1 : c.noise) + ',' + c.autoGain + ',' + c.manualGainDb + ',' + c.originalSound + ',' + c.gateOn + ',' + c.gateDb;
         if (key === this.applied) return;
         this.applied = key;
-        // Strong (2) is the worker's engine: FastEnhancer costs ~3 ms per 10 ms, more than an audio-thread slot allows. Here a Strong
+        // Strong (2) is the worker's engine: its model costs ~2 ms per 10 ms, too much on top of Light in an audio-thread slot. Here a Strong
         // request runs Light, which is also what plays when the worker is late, missing or failed.
         this.x.cla_set_settings(this.ctx, c.noise === 2 ? 1 : c.noise, c.autoGain, c.manualGainDb, c.originalSound, 1);
         if (this.hasGate) this.x.cla_set_gate(this.ctx, c.gateOn, c.gateDb);
@@ -264,6 +273,8 @@ class ClAudioWorklet extends AudioWorkletProcessor {
                 this.natAbort();
             } else if (d.type === 'nativeOff') {
                 this.natFail('off', true);
+            } else if (d.type === 'nativeOverload') {
+                this.natFail('render-overload');
             }
         } catch (e) { this.fail(e); }
     }
@@ -467,6 +478,8 @@ class ClAudioWorklet extends AudioWorkletProcessor {
         this.natSettingsId = 0;
         this.natSettingsDue = -1;
         this.natLastCfgKey = '';
+        this.natLiveDue = -1;                       // quantum at which the latest mic volume goes to the host live ('sl'); -1 = none pending
+        this.natSentGain = null;                    // the mic volume the host has (from the last 's' or 'sl')
         this.natCfg = null;
         this.natQ = 0;
         this.natAckWait = 0;
@@ -504,17 +517,38 @@ class ClAudioWorklet extends AudioWorkletProcessor {
         this.natExtra = 0;
     }
 
+    /** the settings whose change rebuilds the host's chain (a restart of the stream: 's', held until acked). The mic volume is part of it
+     *  only with auto gain OFF (that chain bakes the gain in). With auto gain on it is a pre-leveller gain the engine retargets on the
+     *  running chain, so it goes out live instead ('sl', natSendLive): no hold, no re-sync, frames keep flowing, nothing can time out.
+     *  (Report 348d6f9b, 2026-11-25: with the gain in this key every slider move restarted the stream; on a host that did not answer
+     *  the restart was what timed out and announced "Switched to Light".) */
     natCfgKey() {
         const c = this.cfg;
-        return c.autoGain + ',' + (c.autoGain ? 0 : c.manualGainDb) + ',' + c.originalSound;
+        return c.autoGain + ',' + (c.autoGain ? '' : c.manualGainDb) + ',' + c.originalSound;
     }
 
-    /** the page changed settings: Light already took them; DeepFilterNet restarts on a change, so send it debounced and only when it matters */
+    /** the page changed settings: Light already took them. A change that rebuilds the host's chain is sent debounced and only when it
+     *  matters; a mic-volume move with auto gain on is sent live, throttled; anything else (EQ, which is page-side biquads) sends nothing. */
     natSettings() {
         if (!this.natPort || this.natFailed) return;
         this.natGateIfChanged();
-        if (this.natCfgKey() === this.natLastCfgKey) return;
-        this.natSettingsDue = this.natQ + CLA_NAT_SETTLE_QUANTA;
+        if (this.natCfgKey() !== this.natLastCfgKey) { this.natSettingsDue = this.natQ + CLA_NAT_SETTLE_QUANTA; return; }
+        // back to what the host already runs (e.g. auto gain toggled off and on again): the restart queued for the in-between value is moot
+        if (this.natLastCfgKey !== '') this.natSettingsDue = -1;
+        if (this.cfg.manualGainDb !== this.natSentGain && this.natLiveDue < 0) this.natLiveDue = this.natQ + CLA_NAT_LIVE_QUANTA;
+    }
+
+    /** the mic volume (auto gain on) to the host's running chain: no hold, no ack, the stream is not touched */
+    natSendLive() {
+        this.natLiveDue = -1;
+        if (!this.natPort || this.natFailed || !this.natSendOnce) return;   // before the first settings the host gets the current gain with them
+        if (this.natCfgKey() !== this.natLastCfgKey) return;               // a restart is on its way and carries the gain
+        const c = this.cfg;
+        if (c.manualGainDb === this.natSentGain) return;
+        this.natSentGain = c.manualGainDb;
+        try {
+            this.natPort.postMessage({ t: 'sl', noise: this.natNoise, autoGain: !!c.autoGain, manualGainDb: c.manualGainDb, originalSound: !!c.originalSound });
+        } catch (e) { this.natFail('port-error'); }
     }
 
     /** the manual noise gate goes to the host as its own cheap message (no model restart); the engine there gates ITS output exactly like
@@ -536,6 +570,8 @@ class ClAudioWorklet extends AudioWorkletProcessor {
         const c = this.cfg;
         this.natLastCfgKey = this.natCfgKey();
         this.natSettingsDue = -1;
+        this.natSentGain = c.manualGainDb;
+        this.natLiveDue = -1;
         this.natGateKey = '';
         this.natSettingsId++;
         this.natHold = true;
@@ -616,6 +652,7 @@ class ClAudioWorklet extends AudioWorkletProcessor {
     natQuantum() {
         this.natQ++;
         if (this.natSettingsDue >= 0 && this.natQ >= this.natSettingsDue && this.natPort && !this.natFailed) this.natSendSettings();
+        if (this.natLiveDue >= 0 && this.natQ >= this.natLiveDue) this.natSendLive();
         if (this.natHold && this.natPort && this.natReady && !this.natFailed) {
             this.natAckWait++;
             if (this.natAckWait > CLA_NAT_ACK_TIMEOUT_FRAMES * 4 && this.natSettingsDue < 0) this.natFail('ack-timeout');

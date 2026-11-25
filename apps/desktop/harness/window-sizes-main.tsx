@@ -21,6 +21,12 @@ import { CategoryFormDialog } from '../src/components/server/CategoryFormDialog'
 import { CategoryDeleteDialog } from '../src/components/server/CategoryDeleteDialog';
 import { ServerInviteEmbed } from '../src/components/server/ServerInviteEmbed';
 import { EveryoneConfirmDialog } from '../src/components/composer/EveryoneConfirmDialog';
+import { HighFiveOverlay } from '../src/components/HighFiveOverlay';
+import { TitleBarWordmark } from '../src/components/TitleBarWordmark';
+import { applyTheme } from '../src/theme/engine';
+import { THEMES } from '../src/theme/themes';
+{ const t = new URLSearchParams(location.search).get('theme'); if (t && t in THEMES) applyTheme((THEMES as any)[t]); }
+import { HIGH_FIVE_PLAY_EVENT } from '../src/utils/profileMoments';
 import { FormatToolbar } from '../src/components/composer/FormatToolbar';
 import { RichComposer, type RichComposerHandle, type ActiveFormats } from '../src/components/composer/RichComposer';
 import { ComposerCardSurface } from '../src/components/messageCard/ComposerCardSurface';
@@ -664,6 +670,17 @@ const InCallScene: React.FC = () => {
     );
 };
 
+/** Fires one real high-five event shortly after mount (and again on window.__hf()). */
+const FireHighFive: React.FC<{ name: string }> = ({ name }) => {
+    React.useEffect(() => {
+        const fire = () => window.dispatchEvent(new CustomEvent(HIGH_FIVE_PLAY_EVENT, { detail: { from_user_id: 'u-mira', from_username: name, count: 1 } }));
+        (window as any).__hf = fire;
+        const t = setTimeout(fire, 400);
+        return () => clearTimeout(t);
+    }, [name]);
+    return null;
+};
+
 function Scene() {
     React.useEffect(() => { (window as any).__ready = true; }, []);
     switch (scene) {
@@ -675,6 +692,14 @@ function Scene() {
         // WYSIWYG side by side (2026-11-18): the SENT message (ChatPane's row markup + MessageCard + the row body) in the
         // feed and the composer preview of the same style and text below it. &card=<id> &text=<draft id>.
         case 'wysiwyg': return <Dash feed={<><FEED_ROWS /><SentStyled /></>} composer={<Composer />} />;
+        case 'highfive': return (
+            // The real app: a 34 px title bar above the dashboard (Dashboard.tsx "Titlebar").
+            <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--cl-abyss)' }}>
+                <style>{'#dash{height:calc(100vh - 34px)!important}'}</style>
+                <div className="h-[34px] w-full shrink-0 flex items-center px-3 bg-cl-abyss"><TitleBarWordmark /></div>
+                <Dash feed={FEED} /><HighFiveOverlay /><FireHighFive name={q.get('from') ?? 'Mira'} />
+            </div>
+        );
         case 'everyone': return <Dash feed={FEED} overlay={<EveryoneConfirmDialog kind={q.get('kind') === 'here' ? 'here' : 'everyone'} memberCount={1284} onConfirm={noop} onCancel={noop} />} />;
         case 'invite': return <Dash feed={INVITE_MSGS.map((t, i) => <InviteRow key={i} text={t} i={i} />)} />;
         case 'giftcards': return <Dash right={<div />} header={<ChannelHeader />} feed={GIFT_ROWS.map(([k, id, mine, who]) => (

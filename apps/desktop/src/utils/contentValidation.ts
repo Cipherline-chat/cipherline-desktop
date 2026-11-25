@@ -196,6 +196,34 @@ const VARIANTS: Record<string, Check> = {
     // A request for the call's media key (utils/callKeyShare.ts). Carries
     // nothing but the call id — it is a control message, never a chat row.
     call_key_request: c => (isId(c.call_id) ? null : 'call_key_request.call_id must be a string id'),
+    // Own-device transfer control messages (contract section 7; shapes: packages/shared/content.ts). Control messages: never a
+    // row. Bounded: `e_pub` is a 32-byte key, `nonce` 16, a sealed relay message is at most 2048 base64 characters.
+    near_offer: c => {
+        if (c.v !== 1) return 'near_offer.v must be 1';
+        if (!isId(c.e_pub) || c.e_pub.length > 64) return 'near_offer.e_pub must be a short string';
+        if (!isId(c.nonce) || c.nonce.length > 64) return 'near_offer.nonce must be a short string';
+        if (!isNum(c.ts)) return 'near_offer.ts must be a number';
+        if (!isId(c.to)) return 'near_offer.to must be a string id';
+        return null;
+    },
+    near_answer: c => {
+        if (c.v !== 1) return 'near_answer.v must be 1';
+        if (!isId(c.nonce) || c.nonce.length > 64) return 'near_answer.nonce must be a short string';
+        if (!optional(c.to, isId)) return 'near_answer.to must be a string id';
+        if (!optional(c.e_pub, v => isId(v) && (v as string).length <= 64)) return 'near_answer.e_pub must be a short string';
+        if (!optional(c.declined, v => v === true)) return 'near_answer.declined must be true';
+        if (c.e_pub === undefined && c.declined !== true) return 'near_answer needs e_pub or declined';
+        return null;
+    },
+    near_msg: c => {
+        if (c.v !== 1) return 'near_msg.v must be 1';
+        if (!isId(c.nonce) || c.nonce.length > 64) return 'near_msg.nonce must be a short string';
+        if (c.from !== 'a' && c.from !== 'n') return 'near_msg.from must be a or n';
+        if (!isNum(c.seq) || !Number.isInteger(c.seq) || c.seq < 1 || c.seq > 64) return 'near_msg.seq must be a small positive integer';
+        if (typeof c.body_b64 !== 'string' || c.body_b64.length === 0 || c.body_b64.length > 2048) return 'near_msg.body_b64 must be a bounded string';
+        if (!isId(c.to)) return 'near_msg.to must be a string id';
+        return null;
+    },
     call_event: c => {
         if (!isId(c.call_id)) return 'call_event.call_id must be a string id';
         if (!isStr(c.event, 64)) return 'call_event.event must be a string';

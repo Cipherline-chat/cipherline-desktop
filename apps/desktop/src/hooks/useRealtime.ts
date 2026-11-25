@@ -26,6 +26,7 @@ import {
     SESSION_AVAILABLE, type SessionPowerState,
 } from '../utils/attentionState';
 import { getIdleThresholdSeconds } from '../utils/idleThreshold';
+import { applySessionPowerSignal, effectiveIdleSeconds, noteSessionInteraction } from '../utils/sessionLock';
 import { applyRemoteAttention, resetRemoteAttention } from '../utils/remoteAttention';
 import { parseChannelReadEvent, type ChannelReadEvent } from '../utils/channelReadSync';
 import { parseSelfReadEvent, type SelfReadEvent } from '../utils/conversationReadSync';
@@ -89,28 +90,24 @@ export interface ChannelMessageEvent {
 }
 
 /**
- * Device-scoped WS event filtering — extracted as pure, independently
- * testable predicates (device-sync audit hardening follow-up). Server-side
- * broadcasts every device:* event to ALL of the user's connected sockets
- * (by design — see gateway.gateway.ts's notifyDeviceApproved/
- * notifyHistoryRequest), so filtering by device_id here is the ONLY thing
- * standing between "this event is for me" and "this event is for some
- * other device of mine that happens to also be online right now." Getting
- * this wrong for device:approved is exactly what caused a CONFIRMED,
- * critical bug: an unrelated, already-populated device silently received
- * and applied another device's history transfer, overwriting its own local
- * message history with zero UI shown. See the call site below.
+ * The server-relayed history sync is gone from this app (2026-11-24): history moves between this account's own devices only by the
+ * local-network transfer (contract section 7, `components/near/`). The API still emits the old flow's events to every socket of the
+ * account while older clients exist (`POST /v1/devices/history-request` fans out `device:history_request`, the old approver's answer
+ * is `device:approved` WITH a transfer key, or `device:history_declined`). This client must neither prompt nor import from any of
+ * them: a frame naming one of these is dropped before the dispatch below even looks at it. `device:approved` WITHOUT a transfer key
+ * is not part of the old sync and is not dropped (it carries nothing this client acts on today either).
  */
+export const RETIRED_HISTORY_SYNC_EVENTS: readonly string[] = ['device:history_request', 'device:history_declined'];
 
-/** True iff a `device:history_request` event should be surfaced to THIS
- *  device as something it can answer. Unscoped requests (no
- *  target_device_id) are meant for every approved device to see; a scoped
- *  request only reaches its intended target. */
-export function shouldHandleHistoryRequest(
-    targetDeviceId: string | null | undefined,
-    myDeviceId: string | null | undefined,
-): boolean {
-    return !targetDeviceId || !myDeviceId || targetDeviceId === myDeviceId;
+/** True iff a WS frame belongs to the retired server-relayed history sync and must be ignored (no prompt, no import, no crash). */
+export function isRetiredHistorySyncFrame(msg: unknown): boolean {
+    if (!msg || typeof msg !== 'object') return false;
+    const m = msg as { event?: unknown; data?: unknown };
+    if (typeof m.event !== 'string') return false;
+    if (RETIRED_HISTORY_SYNC_EVENTS.includes(m.event)) return true;
+    if (m.event !== 'device:approved' || !m.data || typeof m.data !== 'object') return false;
+    const d = m.data as Record<string, unknown>;
+    return d.transfer_key_b64 !== undefined || d.wrapped_transfer_key_b64 !== undefined || d.transfer_meta !== undefined;
 }
 
 /**
@@ -142,40 +139,15 @@ export function readPresenceString(value: unknown): string | undefined {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-/** True iff a `device:approved` event's history-transfer payload belongs to
- *  THIS device. Unlike shouldHandleHistoryRequest, this must NEVER be
- *  permissive on a missing id — a transfer key is sensitive,
- *  single-recipient data, not a broadcast-to-whoever's-listening request.
- *
- *  C-2 status: this is no longer the ONLY thing separating devices.
- *  `wrapped_transfer_key_b64` is an ECIES envelope wrapped to a single
- *  device_id, so a sibling device that got past this filter still could not
- *  decrypt it — the separation is now structural, and this check is defence in
- *  depth.
- *
- *  C-2b: the legacy plaintext `transfer_key_b64` still arrives on this event
- *  when the APPROVER is running a pre-2026-08-30 client, and this filter is
- *  still the only thing keeping a sibling device from seeing it here — the
- *  wrap cannot help with a field that was never wrapped. `HistorySyncBanner`
- *  now refuses to IMPORT that form, but the refusal happens downstream of this
- *  point, so do not remove this check until the field is gone from the wire. */
 /** True iff a `call:answered_elsewhere` event is this device's own echo of the
  *  join it just won, and must therefore be ignored.
  *
- *  Deliberately PERMISSIVE on a missing id, the opposite of
- *  isMyHistoryDelivery: the server stamps the winning `device_id` and also
+ *  Deliberately PERMISSIVE on a missing id: the server stamps the winning `device_id` and also
  *  skips the winner's sockets, but an older server sends no id at all. Treating
  *  "no id" as "mine" there would swallow the event for the genuine losing
  *  sibling — which is the whole point of the event — so an unstamped event is
  *  still handled, exactly as before. Only a positive match is suppressed. */
 export function isOwnAnswerEcho(
-    eventDeviceId: string | null | undefined,
-    myDeviceId: string | null | undefined,
-): boolean {
-    return !!eventDeviceId && !!myDeviceId && eventDeviceId === myDeviceId;
-}
-
-export function isMyHistoryDelivery(
     eventDeviceId: string | null | undefined,
     myDeviceId: string | null | undefined,
 ): boolean {
@@ -192,7 +164,7 @@ export function isMyHistoryDelivery(
  * verified identity — comparing it to our own id is the only thing that
  * tells "someone else read this" apart from "I read this, elsewhere".
  *
- * Fails closed like isMyHistoryDelivery: a missing id on either side must
+ * Fails closed: a missing id on either side must
  * never be treated as a match — this drives clearing an unread badge, and a
  * false positive there would hide a genuinely unread message.
  */
@@ -250,7 +222,7 @@ export function parseDeviceLinkedEvent(data: unknown): {
  * call site. `device_label` is prefixed "reported as" because it is
  * self-asserted by the newly-linked device, not verified — the same caveat
  * this app already applies everywhere else that field is shown (see
- * HistoryRequestModal / device_label handling elsewhere in this codebase).
+ * device_label handling elsewhere in this codebase).
  */
 export function formatDeviceLinkedToast(evt: {
     approved_by_device_name: string;
@@ -349,35 +321,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     // { [conversationId]: { [userId]: read_at_timestamp } }
     const [pairingRequest, setPairingRequest] = useState<{ requesting_device_id: string, device_name: string } | null>(null);
     const [approvalRequest, setApprovalRequest] = useState<{ device_id: string, device_name: string, platform: string, created_at: string } | null>(null);
-    // Multi-device selective-history flow — set on the approver side when the
-    // new device taps "Sync from existing device". Consumed by Dashboard's
-    // HistoryRequestModal. Range/content choice now lives in the approver's UI.
-    const [historyRequest, setHistoryRequest] = useState<{
-        device_id: string;
-        device_name: string;
-        platform: string;
-        requested_at: string;
-        /** C-2 — requester can unwrap an ECIES-wrapped transfer key.
-         *  C-2b — advisory only; the approver acts on the signature below. */
-        accepts_wrapped_key?: boolean;
-        /** C-2b — Ed25519 signature over the canonical advertisement, made
-         *  with the requesting device's identity key. Unverified here. */
-        capability_sig_b64?: string;
-        /** C-2b — unix seconds the advertisement was signed at. */
-        capability_ts?: number;
-        /** QR transfer authorisation (docs/QR-LINKING.md §3) — additive,
-         *  optional fields on the EXISTING `device:history_request` event.
-         *  Both absent from a request that arrived the ordinary way (the
-         *  in-app "sync from device" flow), so an older/unaware client
-         *  behaves exactly as before. Carried through UNVERIFIED, same as
-         *  the capability fields above — it is display copy only ("this was
-         *  authorised by a physical QR scan"), never a trust decision; the
-         *  cryptographic checks below are identical either way. */
-        via?: 'qr';
-        transfer_id?: string;
-    } | null>(null);
-    // Set on the requesting (new) side when the approver hits "Decline".
-    const [historyDeclined, setHistoryDeclined] = useState<{ device_id: string; reason: string | null } | null>(null);
     /** QR-2 — a device was just linked into this account via a QR scan
      *  (docs/QR-LINKING.md §2). One-shot, like the other WS event slots in
      *  this file; Dashboard's consumer effect turns each new value into a
@@ -387,16 +330,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         approved_by_device_name: string;
         device_label: string;
         linked_at: string;
-    } | null>(null);
-    // Set on the requesting (new) side when device:approved arrives with a
-    // transfer key — triggers import in HistorySyncBanner.
-    const [historyDelivered, setHistoryDelivered] = useState<{
-        /** C-2 — ECIES envelope only THIS device can open. Preferred. */
-        wrapped_transfer_key_b64?: string;
-        /** LEGACY plaintext key; present only from a pre-2026-08-30 approver. */
-        transfer_key_b64?: string;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-        transfer_meta?: any;
     } | null>(null);
     const [friendRemovedEvent, setFriendRemovedEvent] = useState<{ removed_by: string, other_user_id: string } | null>(null);
     const [friendAcceptedEvent, setFriendAcceptedEvent] = useState<{ requester_id: string, recipient_id: string } | null>(null);
@@ -855,6 +788,10 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                 try {
                     const msg = JSON.parse(event.data);
 
+                    // The retired server-relayed history sync (an older device asking, or answering): ignored, see
+                    // isRetiredHistorySyncFrame. Nothing is prompted, imported or stored.
+                    if (isRetiredHistorySyncFrame(msg)) return;
+
                     // Server rejected a write-like event because the subscription
                     // lapsed (parity with the HTTP 403 subscription_required). Ask
                     // the SubscriptionContext to re-fetch so the read-only UI flips.
@@ -938,44 +875,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         });
                     }
 
-                    // Approver side: new device requests history sync.
-                    // If the request targets a specific device, ignore it unless we are that device.
-                    if (msg.event === 'device:history_request') {
-                        const tid = msg.data.target_device_id;
-                        if (shouldHandleHistoryRequest(tid, deviceId)) {
-                            setHistoryRequest({
-                                device_id: msg.data.device_id,
-                                device_name: msg.data.device_name,
-                                platform: msg.data.platform,
-                                requested_at: msg.data.requested_at,
-                                accepts_wrapped_key: msg.data.accepts_wrapped_key === true,
-                                // C-2b — carried through UNVERIFIED. The
-                                // approver (HistoryRequestModal) is the only
-                                // party that checks them, and it checks them
-                                // against an identity key it fetches itself,
-                                // not against anything in this event.
-                                capability_sig_b64: msg.data.capability_sig_b64 ?? undefined,
-                                capability_ts: typeof msg.data.capability_ts === 'number'
-                                    ? msg.data.capability_ts
-                                    : undefined,
-                                // QR transfer authorisation — additive fields,
-                                // both optional (docs/QR-LINKING.md §3).
-                                via: msg.data.via === 'qr' ? 'qr' : undefined,
-                                transfer_id: typeof msg.data.transfer_id === 'string'
-                                    ? msg.data.transfer_id
-                                    : undefined,
-                            });
-                        }
-                    }
-
-                    // Requester side: approver declined the transfer.
-                    if (msg.event === 'device:history_declined') {
-                        setHistoryDeclined({
-                            device_id: msg.data.device_id,
-                            reason: msg.data.reason ?? null,
-                        });
-                    }
-
                     // QR-2 — a device was just linked via QR sign-in, fanned
                     // out to the account's OTHER devices. See
                     // parseDeviceLinkedEvent's doc above for why this used to
@@ -991,31 +890,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     if (msg.event === 'device:approval_pending' || msg.event === 'device:reset_requested' || msg.event === 'device:approval_resolved') {
                         dispatchDeviceApprovalFrame(msg.event, msg.data);
                     }
-
-                    // Requester side: approver sent history (device:approved WITH
-                    // transfer key). See isMyHistoryDelivery's doc comment above —
-                    // this filter used to be MISSING entirely (CRITICAL, confirmed
-                    // bug: an unrelated online device could silently receive and
-                    // apply another device's history transfer, overwriting its own
-                    // local history with zero UI shown).
-                    //
-                    // C-2 made that targeting STRUCTURAL rather than a client
-                    // check: `wrapped_transfer_key_b64` is an ECIES envelope
-                    // addressed to one device_id, so another device that
-                    // reaches this line cannot decrypt it. The filter stays as
-                    // defence in depth — and it is still load-bearing for the
-                    // legacy plaintext field below.
-                    if (msg.event === 'device:approved'
-                        && (msg.data?.wrapped_transfer_key_b64 || msg.data?.transfer_key_b64)
-                        && isMyHistoryDelivery(msg.data.device_id, deviceId)) {
-                        setHistoryDelivered({
-                            wrapped_transfer_key_b64: msg.data.wrapped_transfer_key_b64 ?? undefined,
-                            transfer_key_b64: msg.data.transfer_key_b64 ?? undefined,
-                            transfer_meta: msg.data.transfer_meta ?? undefined,
-                        });
-                    }
-
-
 
                     if (msg.event === 'friend:request') {
                         setFriendRequestEvent({ recipient_id: msg.data.recipient_id });
@@ -1634,7 +1508,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             const gen = ++pollGen;
             const before = currentAttention();
             electronAPI.getSystemIdleTime()
-                .then((secs: number) => { idleSecondsRef.current = secs; })
+                .then((secs: number) => { idleSecondsRef.current = effectiveIdleSeconds(secs); })
                 .catch(() => { idleSecondsRef.current = Number.POSITIVE_INFINITY; })
                 .then(() => {
                     if (disposed || gen !== pollGen) return;
@@ -1650,6 +1524,9 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         // the idle reading from before the sleep or lock is meaningless, so
         // drop it and re-read immediately; the poll reports the new verdict.
         const onPowerSignal = (signal: string) => {
+            // Shared fact for the status (idle at once) and the notification
+            // gate (silent while locked): utils/sessionLock.ts.
+            applySessionPowerSignal(signal);
             powerStateRef.current = reduceSessionPowerState(powerStateRef.current, signal);
             if (!isSessionInUse(powerStateRef.current)) {
                 sendAttentionNow(false);
@@ -1659,6 +1536,16 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             }
         };
         const unsubPower = electronAPI?.onOsPowerSignal?.(onPowerSignal);
+        // Backstop for a missed unlock edge: input in THIS window proves the
+        // session is in use (see noteSessionInteraction).
+        const onInteraction = () => {
+            if (!noteSessionInteraction()) return;
+            powerStateRef.current = SESSION_AVAILABLE;
+            idleSecondsRef.current = Number.POSITIVE_INFINITY;
+            pollNow();
+        };
+        document.addEventListener('pointerdown', onInteraction, true);
+        document.addEventListener('keydown', onInteraction, true);
         // Best-effort last heartbeat before the process dies — see main.ts's
         // 'before-quit' handler for why this can lose the race on a forced
         // quit (harmless: falls back to the pre-existing TTL-expiry behavior).
@@ -1674,6 +1561,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             if (pollTimer) clearTimeout(pollTimer);
             unsubPower?.();
             unsubQuit?.();
+            document.removeEventListener('pointerdown', onInteraction, true);
+            document.removeEventListener('keydown', onInteraction, true);
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -1769,10 +1658,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         setSelfReadEvents,
         pairingRequest, setPairingRequest,
         approvalRequest, setApprovalRequest, respondToPairing,
-        historyRequest, setHistoryRequest,
-        historyDeclined, setHistoryDeclined,
         deviceLinkedEvent,
-        historyDelivered, clearHistoryDelivered: () => setHistoryDelivered(null),
         friendRemovedEvent, friendAcceptedEvent,
         friendRequestEvent,
         statusChangedEvent,

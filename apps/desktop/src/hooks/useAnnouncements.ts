@@ -48,7 +48,7 @@ export const ANNOUNCEMENTS_CHANGED_EVENT = 'cipherline:announcements-changed';
  * now a one-line call to this) purely so the wiring is directly testable
  * without a React renderer. Same "pull the WS-dispatch decision out into a
  * plain function" approach this file's sibling `useRealtime.ts` already
- * uses for `isMyHistoryDelivery` / `shouldHandleHistoryRequest` — this repo
+ * uses for `isSelfReadEvent` / `isOwnAnswerEcho` — this repo
  * has no jsdom/`@testing-library/react`, so a hook's effect body is
  * otherwise unreachable from a test.
  */

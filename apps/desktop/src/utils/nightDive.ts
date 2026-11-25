@@ -16,8 +16,6 @@
  * never "N hours since X", so a daylight-saving jump cannot move the window:
  * the hour label on the clock is what counts.
  */
-import { DARK_THEME } from '../theme/themes';
-import { themeColor } from '../theme/engine';
 
 /** The attribute set on <html> while it is night. */
 export const DEPTH_ATTR = 'data-depth';
@@ -167,13 +165,38 @@ export function moteSpecs(count = 6): MoteSpec[] {
 }
 
 /**
- * Title-bar overlay colour that matches the app's top drag bar in each mode,
- * so the Windows caption buttons blend in (the OS paints it, not CSS). The
- * night value mirrors styles/night-dive.css `--nd-bar`; a test keeps them equal.
+ * The night title-bar colour (styles/night-dive.css `--nd-bar` at night; a
+ * test keeps them equal). The Windows / Linux caption buttons are drawn by the
+ * OS, so main paints them this colour itself (electron/night-dive-chrome.ts
+ * NIGHT_DIVE_TITLE_BAR_COLOR, pinned to this by its test) once the renderer
+ * says the dive is on screen. Day is the theme's own title-bar colour, which
+ * main already paints.
  */
-export const ABYSS_DAY = DARK_THEME.palette.abyss;
 export const ABYSS_NIGHT = '#05070F';
-export function titleBarColor(night: boolean): string {
-    // Day: the active theme's abyss (the drag bar is bg-cl-abyss).
-    return night ? ABYSS_NIGHT : themeColor('abyss');
+
+/**
+ * Tells main whether the night dive is on screen (preload `setNightDive`), so
+ * the caption overlay follows the darkened title bar. Sends the first state it
+ * is given (the initial announcement: a client started after midnight, a page
+ * reload), then only changes; `dispose` (the title bar going away: sign-out)
+ * puts main back to day if it last said night. A throwing bridge is ignored.
+ */
+export interface TitleBarNightSync {
+    update(active: boolean): void;
+    dispose(): void;
+}
+export function createTitleBarNightSync(send: (active: boolean) => void): TitleBarNightSync {
+    let last: boolean | null = null;
+    const post = (active: boolean) => { try { send(active); } catch { /* old preload / tearing down */ } };
+    return {
+        update(active) {
+            if (active === last) return;
+            last = active;
+            post(active);
+        },
+        dispose() {
+            if (last === true) post(false);
+            last = null;
+        },
+    };
 }

@@ -22,6 +22,60 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.4] - 2026-11-25
+
+### What's new
+
+- **Link previews and videos in chat.** Links now show previews built by your own app and sent inside the encrypted message. YouTube, Twitch, TikTok, X, Reddit, Medal and other clips play right in the chat. Turn all of it off in Settings, Privacy, Show embeds.
+- **Bring your history to a new computer.** When you sign in on a new computer, Cipherline moves your messages straight from another of your devices over your local network, after you confirm on that device.
+- **Know where a link really goes.** Before a link to a site you haven't trusted opens, Cipherline shows the full address and warns when the link text names a different site.
+- **Do Not Disturb is quiet.** With Do Not Disturb on, Cipherline plays no call sounds at all. Calls still show on screen.
+- **Steadier voice in calls.** Auto gain catches up within about half a second when you lean back or in, Input volume now works with auto gain on for very quiet microphones, and Strong noise suppression is back to the original Cipherline model.
+- **Fewer "couldn't read your data" errors.** One unreadable record on this device no longer stops the app from loading the rest.
+- **Lock your PC, show as Idle.** Locking or sleeping your computer sets you to Idle right away and brings you back when you unlock.
+
+### Changes
+
+#### Links and embeds
+- Link previews are built by the sender's app and travel inside the encrypted message: title, description, picture, site icon and colour; a page without a picture gets a snapshot taken in a locked-down hidden window. Your device contacts the linked site only when you send a link, play a video, view a direct image, or open the link.
+- YouTube links show a click-to-play card; video files and clip pages (Medal, Streamable, Imgur, Tenor, Giphy, Twitch, TikTok) play in the chat on click; Tenor and Giphy links are GIFs again.
+- Embeds match the shape of their video or picture; Settings, Appearance, Compact embeds; Settings, Privacy, Show embeds (off = links only, no previews fetched).
+- Very long bare links read shortened, while hover, click and copy still use the full address.
+- Messages that were only an image link no longer turn invisible when the picture fails to load.
+- "You're leaving Cipherline" before an untrusted link opens, with look-alike addresses shown in raw form and a warning when the link text names a different site.
+- Video fullscreen covers the whole screen and puts the window back as it was afterwards.
+
+#### Devices and history
+- Signing in on a new computer offers "Bring your history to this computer" over the local network (pick the device, confirm on it with your password, pause, resume or keep what arrived). The old server-relayed history sync and the QR "Transfer data" path are gone, and every transfer screen is redone.
+- A phone asking again for your history replaces the request still open on the computer instead of being told "not now"; a computer busy with another transfer says so; the request shows a system notification and flashes the taskbar when Cipherline isn't in front.
+- "Not me, remove it" on a new-device alert now confirms the device was signed out and removed.
+- One record this device can't read no longer shows "Couldn't read your data on this device" on every launch; everything else loads.
+
+#### Calls and audio
+- Auto gain reacts within about half a second, lifts a voice that sits back from the mic more, and leaves a normal-level microphone alone.
+- Input volume works while Auto gain control is on, as a boost before the levelling for microphones that are too quiet.
+- Strong noise suppression stays on while Voice settings are open during a call and while you move the Input volume slider (it used to switch to Light, as if your PC were overloaded).
+- Strong noise suppression is the original Cipherline noise suppression again, with the new auto gain (adds about 60 ms); under heavy load it switches to Light for the rest of the call and says so.
+- Do Not Disturb silences every call sound: ring, ringback, join and leave, call ended, mute, deafen, camera and screen-share cues, and entrance sounds.
+- A call whose key was refused because the caller uses a device you haven't verified now says so, with Review device and Leave call, and connects once you verify, without a redial.
+- A call no longer drops when the call server restarts, and a live call no longer vanishes from a Calls channel when the connection flaps.
+- Speaking rings light whenever any audible sound comes from that person.
+- Automatic crash reports no longer send an older version's unclean exit after an update.
+
+#### Servers, themes and everything else
+- Dividers of every style can sit anywhere in the channel list and the Calls panel and are always drawn.
+- Admin announcement banners start collapsed to one line and expand on click.
+- Custom themes use your colours exactly as picked.
+- The sticker picker shows each server's icon; uploading many emojis or stickers at once is about three times faster.
+- "Sign in with your phone" shows the account's real profile picture on the confirm step.
+- Locking or sleeping the computer sets you to Idle at once (Do Not Disturb and Invisible are never changed).
+- Night-time Dark theme title bar buttons match the title bar on Windows and Linux.
+- New accounts join the official Cipherline server by default (switchable on the last sign-up step).
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
 ## [0.1.3] - 2026-11-22
 
 ### What's new

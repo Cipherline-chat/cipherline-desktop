@@ -51,6 +51,31 @@ function harness(history: ChannelHistory, o: { failBatchOnce?: boolean; abortAft
 
 const hist = (messages: ImportMessage[], pins: ImportMessage[] = []): ChannelHistory => ({ messages, pins, truncated: false, names: { roles: {}, channels: {} } });
 
+describe('runHistoryImport: Discord\'s link previews (link embeds phase 4)', () => {
+    it('become the text row\'s embeds with their picture uploaded through the import path; an untied one stays quoted text', async () => {
+        const { deps, sealed, posted, api } = harness(hist([msg('900000000000000301', {
+            content: 'look https://news.example/a',
+            linkEmbeds: [
+                { url: 'https://news.example/a', type: 'article', title: 'A headline', description: 'Body', site: 'News', author: null, color: '#ff4e00', thumbRef: 'thumb-1', thumbWidth: 1200, thumbHeight: 630, videoUrl: null },
+                { url: 'https://gone.example/x', type: 'link', title: 'Elsewhere', description: null, site: null, author: null, color: null, thumbRef: null, thumbWidth: null, thumbHeight: null, videoUrl: null },
+            ],
+        })]));
+        deps.encryptFile = async (bytes) => ({ blob: new Blob([bytes as BlobPart, new Uint8Array(28)]), keyB64: 'A'.repeat(43) + '=', nonceB64: 'B'.repeat(16), sha256B64: null });
+        deps.reencodeThumb = async () => ({ blob: new Blob([new Uint8Array(30_000).fill(5)]), mime: 'image/webp', width: 920, height: 483 });
+        const st = await runHistoryImport(deps, { serverId: 's', channels: [{ channel: 1, channelId: CH, name: 'general' }], convert: {} }, newHistoryState(), () => {}, new AbortController().signal);
+        const row = JSON.parse(sealed[0]);
+        expect(row.type).toBe('text');
+        expect(row.embeds).toHaveLength(1);
+        expect(row.embeds[0]).toMatchObject({ url: 'https://news.example/a', kind: 'card', title: 'A headline', site: 'News', color: '#ff4e00', thumb: { mime: 'image/webp', byte_size: 30_000 } });
+        expect(row.text).toContain('Elsewhere');
+        expect(row.text).not.toContain('A headline');
+        // avatar + the preview picture went up through initiateFiles; the picture is attached to the row.
+        expect((api.initiateFiles as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+        expect(posted[0].rows).toHaveLength(1);
+        expect(st.reports[0].linkPreviews).toBe(1);
+    });
+});
+
 describe('runHistoryImport', () => {
     it('posts rows in order with gap-free seqs, every row carrying a VALID imported_from for its author', async () => {
         const { deps, posted, sealed } = harness(hist(Array.from({ length: 230 }, (_, i) => msg(`9000000000000${String(i).padStart(5, '0')}`))));

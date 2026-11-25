@@ -122,15 +122,18 @@ describe('cl-audio worklet: offline, real wasm', () => {
         expect(Math.abs(lag - CL_AUDIO_LATENCY_SAMPLES[kind])).toBeLessThanOrEqual(tol);
     });
 
-    it('auto gain as fitted to Discord: normal gets the make-up gain, quiet is lifted, hot is held by the compressor, nothing is turned down', async () => {
+    it('auto gain (2026-11-23): every mic is brought to about the same level, quiet is lifted, hot is turned down by the gain', async () => {
         const out = async (db: number) => activeRmsDb(runAll(await load(), speechDb(25, db)), 18);
         const normal = await out(-25), quiet = await out(-45), hot = await out(-8);
-        expect(normal).toBeGreaterThan(-25);      // never quieter than it came in
-        expect(normal).toBeLessThan(-19);         // about +2.5 dB
-        expect(quiet).toBeGreaterThan(-45 + 10);  // lifted well over 10 dB
+        expect(normal).toBeGreaterThan(-28);      // about the target (-22 dBFS at the 75th percentile of the frames), no make-up gain
+        expect(normal).toBeLessThan(-19);
+        expect(quiet).toBeGreaterThan(-45 + 7);   // lifted most of the way to the cap (half of the shortfall, at most +12 dB: the owner's "lift them less", 2026-11-23, then 80 % past a 6 dB shortfall, 2026-11-24)
         expect(quiet).toBeLessThan(normal + 1);
-        expect(hot).toBeLessThan(-7.5);           // held near the compressor threshold
-        expect(hot).toBeGreaterThan(-15);         // ... not turned down below a normal voice
+        // a normal mic is lifted only half of its shortfall (lift_ratio 0.5), a hot one is turned down in full, so the hot one lands about
+        // 4 dB above the normal one (measured 4.1; the bound was 3.5 at full lift, plus half of the normal mic's ~4 dB shortfall)
+        expect(hot).toBeLessThan(normal + 5.5);   // a hot mic comes out about where a normal one does...
+        expect(hot).toBeGreaterThan(normal - 2.5);
+        expect(hot).toBeLessThan(-17);            // ... far under the -8 dBFS it came in at (the old rule left it at about -10)
     });
 
     it('a restored device gain starts settled: the first seconds are already near the final level', async () => {
@@ -138,7 +141,7 @@ describe('cl-audio worklet: offline, real wasm', () => {
         const cold = await load();
         const coldOut = runAll(cold, x);
         const gain = ofType(cold, 'stats').at(-1)!.deviceGainDb as number;
-        expect(gain).toBeGreaterThan(10);
+        expect(gain).toBeGreaterThan(9);          // a very quiet mic sits at the +12 dB cap (at least 9)
         const warm = await load({ initialDeviceGainDb: gain });
         const warmOut = runAll(warm, x.subarray(0, SR * 4));
         const finalDb = activeRmsDb(coldOut, 18);
@@ -196,12 +199,12 @@ describe('cl-audio worklet: offline, real wasm', () => {
 
     it('settings and a restored gain that arrive before the module is up are applied once it is (nothing is lost)', async () => {
         const p = await loadModuleWorklet(CL_AUDIO_WORKLET_SOURCE, 'cl-audio-worklet', { wasmBytes: clAudioWasmBytes() });
-        send(p, { type: 'setInitialDeviceGain', db: 12 });
+        send(p, { type: 'setInitialDeviceGain', db: 8 });
         send(p, { type: 'setSettings', noise: 0, autoGain: true, manualGainDb: 0, originalSound: false });
         await waitFor(() => !!p.ready, 30_000);
         send(p, { type: 'getStats' });
         const r = msgs(p).filter(m => m.type === 'stats' && m.reply).at(-1)!;
-        expect(r.deviceGainDb as number).toBeCloseTo(12, 1);
+        expect(r.deviceGainDb as number).toBeCloseTo(8, 1);  // under the +12 dB cap, which would clamp it
         expect(r.effectiveNoise).toBe(0); // the Off profile
     });
 
@@ -226,7 +229,7 @@ describe('cl-audio worklet: offline, real wasm', () => {
         runAll(p, speechDb(20, -50));
         send(p, { type: 'getStats' });
         const g1 = msgs(p).filter(m => m.type === 'stats' && m.reply).at(-1)!.deviceGainDb as number;
-        expect(g1).toBeGreaterThan(10);
+        expect(g1).toBeGreaterThan(9); // at the +12 dB cap (at least 9)
         send(p, { type: 'setSettings', noise: 0, autoGain: true, manualGainDb: 0, originalSound: false });
         send(p, { type: 'getStats' });
         const r = msgs(p).filter(m => m.type === 'stats' && m.reply).at(-1)!;
@@ -234,15 +237,15 @@ describe('cl-audio worklet: offline, real wasm', () => {
         expect(r.deviceGainDb as number).toBeCloseTo(g1, 1);
     });
 
-    it('deviceChanged starts over (from the make-up gain, or from the remembered gain of the new microphone)', async () => {
+    it('deviceChanged starts over (from the make-up gain, 0 dB, or from the remembered gain of the new microphone)', async () => {
         const p = await load();
         runAll(p, speechDb(15, -45)); // a quiet mic: the gain has walked well up
         const gainNow = () => { send(p, { type: 'getStats' }); return msgs(p).filter(m => m.type === 'stats' && m.reply).at(-1)!.deviceGainDb as number; };
         expect(gainNow()).toBeGreaterThan(8);
         send(p, { type: 'deviceChanged', hasGain: false });
-        expect(gainNow()).toBeCloseTo(2.2, 1); // a new microphone starts at the make-up gain
-        send(p, { type: 'deviceChanged', hasGain: true, gainDb: 11 });
-        expect(gainNow()).toBeCloseTo(11, 1);
+        expect(gainNow()).toBeCloseTo(0, 1); // a new microphone starts at the make-up gain (0 dB since 2026-11-23, was 2.2)
+        send(p, { type: 'deviceChanged', hasGain: true, gainDb: 8 });
+        expect(gainNow()).toBeCloseTo(8, 1);
     });
 
     it('hostile input (NaN, Infinity, huge, silence, a missing input) never produces a non-finite or out-of-range output', async () => {

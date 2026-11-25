@@ -188,6 +188,7 @@ describe('wiring (read from source)', () => {
     });
     it('the clip is allowed by the renderer CSP (blob: media)', () => {
         const main = readFileSync(join(__dirname, '..', '..', '..', 'electron', 'main.ts'), 'utf8');
-        expect(main).toMatch(/"media-src 'self' blob:"/);
+        // blob: stays; clmedia: (link-embed streams, electron/csp-policy.test.ts) may follow it.
+        expect(main).toMatch(/"media-src 'self' blob:( clmedia:)?"/);
     });
 });

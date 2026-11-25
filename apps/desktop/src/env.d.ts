@@ -451,6 +451,25 @@ declare global {
         /** "Import from Discord" bridge into electron/discord-import (the bot token never crosses back). */
         discordImport?: import('./utils/discordImport/types').DiscordImportApi;
         fetchBinary: (url: string) => Promise<{ b64: string; mimeType: string }>;
+        /** Link embeds: YouTube title/channel via main (electron/media-embed). null on any failure. */
+        youtubeOEmbed?: (id: string) => Promise<{ title: string; author: string } | null>;
+        /** Link embeds: a direct media link → its clmedia:// stream URL (electron/media-embed). */
+        registerMedia?: (url: string, kind: 'video' | 'image') => Promise<{ ok: true; src: string } | { ok: false }>;
+        /** Link embeds: a clip page (Medal, Streamable, …) → the clmedia:// URL of its video, resolved by main on click. */
+        resolveClipMedia?: (pageUrl: string) => Promise<{ ok: true; src: string; width?: number; height?: number; title?: string } | { ok: false; reason: 'unsupported' | 'no-media' | 'failed' }>;
+        /** Link embeds: a SENDER-named video file for a clip page → its clmedia:// URL (provider media hosts only). */
+        registerClipMedia?: (pageUrl: string, mediaUrl: string) => Promise<{ ok: true; src: string } | { ok: false }>;
+        /** Link embeds (phase 4): a SENDER-named video file for an X / Reddit post → its clmedia:// URL (video.twimg.com / v.redd.it only). */
+        registerPostMedia?: (pageUrl: string, mediaUrl: string) => Promise<{ ok: true; src: string } | { ok: false }>;
+        /** The SENDER's frame grab: a fresh, byte-budgeted clmedia:// URL for the video its unfurler found (clip page, post, direct video link). */
+        registerThumbMedia?: (pageUrl: string, mediaUrl: string) => Promise<{ ok: true; src: string } | { ok: false }>;
+        /** Sender-side link preview (electron/unfurl): a draft embed + preview image bytes, built on THIS device. */
+        unfurlLink?: (url: string) => Promise<{ ok: true; embed: Record<string, unknown>; image?: { bytes: Uint8Array; mime: string }; icon?: { bytes: Uint8Array; mime: string }; images?: { bytes: Uint8Array; mime: string }[]; snapshot?: true; snapshotable?: true; copy?: { mediaUrl: string; mime: string; bytes?: number } } | { ok: false; reason: string }>;
+        /** A snapshot of a page unfurlLink flagged `snapshot: true` (electron/unfurl/page-snapshot.ts). */
+        snapshotPage?: (url: string, token: string) => Promise<{ ok: true; bytes: Uint8Array; mime: 'image/png'; width: number; height: number; ms: number } | { ok: false; reason: string }>;
+        cancelPageSnapshot?: (token: string) => Promise<boolean>;
+        /** The sender's copy of media from an expiring link that unfurlLink offered (`copy`): the whole file, capped and sniffed in main. */
+        fetchMediaCopy?: (url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mime: string; width?: number; height?: number; duration_s?: number; has_audio?: boolean; animated?: boolean } | { ok: false; reason: string }>;
         openExternal: (url: string) => Promise<void>;
         configureDesktopShortcuts?: () => Promise<boolean>;
         syncGlobalShortcuts: (map: Record<string, string>, portalMap?: Record<string, string>) => Promise<{ failed: string[]; status?: { mode: 'native' | 'portal' | 'unavailable'; reason: string; desktop: string; portal?: { bound: string[]; notBound: string[] }; appId?: string } }>;
@@ -511,6 +530,8 @@ declare global {
         previewTheme?: (payload: unknown) => Promise<unknown>;
         /** End a live theme preview: main repaints the stored theme (theme:preview-end). */
         endThemePreview?: () => Promise<unknown>;
+        /** Night dive on screen: main paints the Windows/Linux caption overlay to match the darkened title bar (window:night-dive). Absent on an older preload. */
+        setNightDive?: (active: boolean) => void;
         getMinimizeToTray: () => Promise<boolean>;
         setMinimizeToTray: (enabled: boolean) => Promise<void>;
         readClipboard: () => Promise<string>;
@@ -520,10 +541,6 @@ declare global {
         attestSign: () => Promise<string | null>;
         solvePow: (challenge: string, difficulty: number) => Promise<string | null>;
         getDeviceRegisterProof: (userId: string, proofTs: number) => Promise<{ identityPub: string; sig: string } | null>;
-        /** C-2b — sign the history-sync capability advertisement with this
-         *  device's identity key. null when the identity is unavailable; the
-         *  caller must abandon the request rather than send it unsigned. */
-        getHistoryRequestProof: (userId: string, requestingDeviceId: string, ts: number) => Promise<{ identityPub: string; sig: string } | null>;
 
         // ── Device approval (DEVICE_APPROVAL_REQUIRED) — electron/device-approval-keys.ts.
         /** This device's identity public key (base64), generated on first need. */
@@ -564,6 +581,46 @@ declare global {
         /** Mirror role (this desktop approves a phone that scanned its
          *  invite): seals a v2 grant to the phone's ephemeral key. */
         linkSeal: (payload: import('./types/link').LinkGrantPayload, ekPubB64: string, linkId: string) => Promise<string>;
+
+        // ── Local history transfer between this account's own devices ("near" own-device role) ─────
+        // Implemented by the Rust near-helper behind Electron main (macOS, Linux, Windows) and by the Rust host (Cipherline
+        // Next). Present only on a build that ships the helper; the page always uses it (nearProbe says whether the helper runs). The proximity
+        // sign-in members (nearShowStart / nearInviteStart / nearApproverStart / biometric probes) are NOT part of this
+        // build. Types: ./types/near.ts.
+        nearProbe?: () => Promise<import('./types/near').NearCapabilities>;
+        nearGetState?: () => Promise<import('./types/near').NearSnapshot>;
+        /** Every state change (full snapshot). Returns the unsubscribe function. */
+        onNearState?: (cb: (s: import('./types/near').NearSnapshot) => void) => (() => void);
+        /** The holder, only from `awaiting_approval`: gate (native confirm / password) -> approve -> transfer may start. */
+        nearApprove?: () => Promise<import('./types/near').NearApproveResult>;
+        /** Holder: decline. */
+        nearRefuse?: () => Promise<void>;
+        nearCancel?: () => Promise<void>;
+        /** Sender, after approval: send the container file the backup writer spooled under `backupStagingDir()`. */
+        nearTransferSend?: (opts: { path: string }) => Promise<void>;
+        /** Receiver, after approval: start (or resume) receiving into the host's profile dir. */
+        nearTransferReceive?: () => Promise<void>;
+        /** Receiver: the finished container, or null while incomplete. */
+        nearTransferResult?: () => Promise<import('./types/near').NearReceivedHistory | null>;
+        /** Receiver: delete the received container and any partial progress. */
+        nearTransferDiscard?: () => Promise<void>;
+        /** Pause the running transfer (the host closes the connection after `abort { paused }`). */
+        nearTransferPause?: () => Promise<void>;
+        nearTransferResume?: () => Promise<void>;
+        /** "Keep what arrived": a stopped receive's verified parts as a full-size sparse container file + the byte ranges that are real. */
+        nearTransferKeepPartial?: () => Promise<import('./types/near').NearPartialFile>;
+        /** `K_xfer` (standard base64) for the transfer container, released only after this device is approved (contract 11.15). */
+        nearTransferKey?: () => Promise<Uint8Array | string>;
+        /** Own-device transfer (contract 7): ask ANOTHER device of this account for its history. `ownDeviceId` = this device. */
+        nearTransferRequest?: (opts: { deviceId: string; ownDeviceId: string }) => Promise<import('./types/near').NearSnapshot>;
+        /** A `near_*` control message the page verified came from another device of this account (see utils/nearOwnTransport.ts). */
+        nearOwnDeliver?: (a: { content: Record<string, unknown>; fromDeviceId: string; ownDeviceId: string; deviceLabel?: string; apiBase?: string; auth?: import('./types/near').NearAuth }) => Promise<string>;
+        /** Electron only (the password gate): main asks for the account secret while `nearApprove` runs; `nearGateSubmit` hands the typed value to MAIN, which verifies it with the server. */
+        onNearGatePrompt?: (cb: (p: import('./types/near').NearGatePrompt) => void) => (() => void);
+        nearGateSubmit?: (ticket: string, value: string) => Promise<import('./types/near').NearGateSubmitResult>;
+        nearGateCancel?: (ticket: string) => Promise<void>;
+        /** An outgoing own-device control message: the page sends it through its E2EE self-fan-out to `to`. */
+        onNearOwnOut?: (cb: (m: { to: string; content: Record<string, unknown> }) => void) => (() => void);
 
         onWindowFocus: (cb: () => void) => (() => void);
         /** Continuity (cross-device attention routing) — see preload.ts and

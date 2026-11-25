@@ -35,6 +35,22 @@ export function StoreLoadFailureHost() {
         });
     }), []);
 
+    // Some records could not be read, and the rest loaded (secureLocalStore:
+    // UNREADABLE RECORDS). Calmer than the failure above, because the app is
+    // working: it says what is missing and that nothing was deleted. Once per
+    // session; a launch that still cannot read them says so again.
+    const partialShown = useRef(false);
+    useEffect(() => secureLocalStore.onUnreadableRecords(() => {
+        if (partialShown.current) return;
+        partialShown.current = true;
+        pushRef.current({
+            kind: 'info',
+            title: 'Some older history couldn’t be read',
+            message: 'Part of what’s stored on this device couldn’t be read this time, so some older messages may be missing. Nothing was deleted, and it’s kept as it is. New messages in those chats wait on the server until it can be read.',
+            durationMs: 0,
+        });
+    }), []);
+
     return null;
 }
 

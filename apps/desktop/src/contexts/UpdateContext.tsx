@@ -15,6 +15,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { openExternalLink } from '../utils/openExternalLink';
 
 const IDLE: UpdateStateShape = { phase: 'idle' };
 
@@ -90,9 +91,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
     const openDownload = useCallback(() => {
         if (state.phase !== 'manual') return;
-        window.electronAPI?.openExternal?.(state.downloadUrl).catch((err) => {
-            console.warn('[UpdateContext] openExternal failed:', err);
-        });
+        // App-authored: the download page the update feed named (main pins it).
+        const r = openExternalLink(state.downloadUrl, { source: 'app' });
+        if (!r.ok) console.warn('[UpdateContext] refused to open the download page:', r.reason);
     }, [state]);
 
     const checkNow = useCallback(async () => {

@@ -245,20 +245,20 @@ describe('Voice & Video: noise suppression as one Off / Light / Strong control',
         await renderPane();
         expect(seg('Light').textContent).toContain('Silent pauses, clean voice');
         expect(seg('Light').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 20 ms');
-        expect(seg('Strong').textContent).toContain('Only your voice gets through');
-        expect(seg('Strong').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 104 ms'); // measured: 64 ms of model look-ahead + 30 ms reserved for the worker hand-off + 9 ms buffering + ~1 ms (clAudioLatency.ts)
+        expect(seg('Strong').textContent).toContain('Deeper cleanup, larger model');
+        expect(seg('Strong').textContent!.replace(/\u00a0/g, ' ')).toContain('Adds 60 ms'); // measured: 20 ms of model delay (rnnoise-wasm) + 30 ms reserved for the worker hand-off + 9 ms buffering + ~1 ms (clAudioLatency.ts)
         const line = host.querySelector('[data-testid="ns-difference"]')!.textContent!;
         expect(line).toContain('Both send silence while you are not talking');
-        expect(line).toContain('Strong cleans deeper and also cuts sounds that are not speech');
-        expect(line).toContain('about a tenth of a second later');
+        expect(line).toContain('Strong uses a larger noise model and cleans deeper');
+        expect(line).toContain('others hear you slightly later');
         // and the fuller version is in the "i": the engines by name, what each removes, the honest limit
         const b = host.querySelector('button[aria-label="About Noise suppression"]') as HTMLButtonElement;
         act(() => { b.click(); });
         const tip = document.getElementById(b.getAttribute('aria-describedby')!)!.textContent!;
         expect(tip).toContain('adds 20 ms');
-        expect(tip).toContain('adds 104 ms');
-        expect(tip).toContain('about a tenth of a second later'); // the honest cost of Strong, in plain words
-        expect(tip).toContain('only speech gets through');
+        expect(tip).toContain('adds 60 ms');
+        expect(tip).toContain('slightly later than with Light'); // the honest cost of Strong, in plain words
+        expect(tip).toContain('a larger noise model');
         expect(tip).not.toContain('DeepFilterNet');
         expect(tip).not.toMatch(/RNNoise|Speex/);
         expect(tip).not.toContain('40 ms');

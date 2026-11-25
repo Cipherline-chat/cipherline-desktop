@@ -192,10 +192,18 @@ export const KlipyGifEmbed: React.FC<Props> = ({ content }) => {
  * this one GIF), it loads straight from KLIPY with no referrer, and there is no
  * save button — a bare link has no KLIPY id to keep as a reference.
  */
-export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
+/**
+ * `size` (2026-11-24, embeds-media-everywhere): a KLIPY GIF reached from a
+ * KLIPY PAGE link the sender resolved carries the GIF's real size, so its box
+ * is right from the first paint. `data-embed-rendered="media"` marks a GIF that
+ * is actually on screen (ChatPane hides a bare link's text only then); the
+ * tap-to-load and failure states keep the link visible.
+ */
+export const KlipyLinkEmbed: React.FC<{ url: string; size?: { w: number; h: number } }> = ({ url, size }) => {
     const { settings: { klipyEnabled } } = useGifSettings();
     const [tapped, setTapped] = useState(false);
     const [failed, setFailed] = useState(false);
+    const [shown, setShown] = useState(false);
     const [lightboxOpen, setLightboxOpen] = useState(false);
     const [attempt, setAttempt] = useState(0);
 
@@ -252,14 +260,15 @@ export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
     }
 
     return (
-        <div className="mt-1 klipy-embed" style={{ position: 'relative', display: 'inline-block', width: 'fit-content', alignSelf: 'flex-start', maxWidth: '100%' }}>
+        <div className="mt-1 klipy-embed" data-embed="klipy-gif" data-embed-rendered={shown ? 'media' : undefined} style={{ position: 'relative', display: 'inline-block', width: 'fit-content', alignSelf: 'flex-start', maxWidth: '100%' }}>
             <GifPlayer
                 key={attempt}
                 src={url}
                 alt="GIF from KLIPY"
                 referrerPolicy="no-referrer"
                 onError={() => setFailed(true)}
-                imgStyle={{ maxWidth: 'min(300px, 100%)', maxHeight: 300, width: 'auto', height: 'auto', objectFit: 'contain', borderRadius: 10, display: 'block', cursor: 'zoom-in' }}
+                onLoadImg={(e) => { if (e.currentTarget.naturalWidth > 0) setShown(true); else setFailed(true); }}
+                imgStyle={{ maxWidth: 'min(300px, 100%)', maxHeight: 300, width: 'auto', height: 'auto', objectFit: 'contain', borderRadius: 10, display: 'block', cursor: 'zoom-in', ...(size ? klipyBox(size) : {}) }}
                 onClick={(e) => { e.stopPropagation(); setLightboxOpen(true); }}
             />
             {lightboxOpen && (
@@ -274,5 +283,11 @@ export const KlipyLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
         </div>
     );
 };
+
+/** The KLIPY GIF's box at its own shape within 300 × 300 (never upscaled). */
+function klipyBox(size: { w: number; h: number }): React.CSSProperties {
+    const k = Math.min(1, 300 / size.w, 300 / size.h);
+    return { width: Math.round(size.w * k), aspectRatio: `${size.w} / ${size.h}`, height: 'auto' };
+}
 
 export default KlipyGifEmbed;

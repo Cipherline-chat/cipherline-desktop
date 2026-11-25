@@ -4,10 +4,11 @@ import React, { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 /**
- * The REAL `QrSignInPanel` / `TransferQrPanel`, mounted the way the app mounts
- * them: inside `<StrictMode>` (main.tsx).
+ * The REAL `QrSignInPanel`, mounted the way the app mounts
+ * it: inside `<StrictMode>` (main.tsx).
  *
- * The bug this pins: both panels used to build their controller DURING RENDER
+ * The bug this pins: the panel (and the since-removed QR history-transfer
+ * panel) used to build their controller DURING RENDER
  * (`if (!ref.current) ref.current = new Controller(...)`) and dispose it in the
  * mount effect's cleanup. React's development StrictMode mounts, unmounts and
  * re-mounts every component once — the ref survives that, the cleanup does
@@ -17,8 +18,7 @@ import { createRoot, type Root } from 'react-dom/client';
  * staging installer worked while the Tier-1 dev renderer (Vite dev server,
  * React development build) was dead on arrival.
  *
- * The controller-level suites (`QrSignInPanel.test.ts`,
- * `TransferQrPanel.test.ts`) cannot see this: they `new` the controller
+ * The controller-level suite (`QrSignInPanel.test.ts`) cannot see this: they `new` the controller
  * themselves and never let React own its lifetime. Only mounting the real
  * component under StrictMode can.
  */
@@ -67,10 +67,8 @@ vi.mock('../../utils/deviceRegistration', () => ({
 }));
 
 import QrSignInPanel from './QrSignInPanel';
-import { TransferQrPanel } from './TransferQrPanel';
 
 const LINK_ID = 'LiNK1234567890abcdEF-_';
-const XFER_ID = 'XFeR1234567890abcdEF-_';
 
 const electronAPI = {
     linkBegin: vi.fn(async () => ({ ekPubB64: 'A'.repeat(43) + '=', fingerprint: 'ABCD-EFGH' })),
@@ -250,20 +248,5 @@ describe('QrSignInPanel under StrictMode', () => {
         await act(async () => { root!.unmount(); });
         root = null;
         expect(electronAPI.linkEnd).toHaveBeenCalled();
-    });
-});
-
-describe('TransferQrPanel under StrictMode', () => {
-    it('"Show a code" actually shows a transfer code', async () => {
-        post.mockResolvedValue({ data: { transfer_id: XFER_ID, ttl_s: 120, expires_at: new Date(Date.now() + 120_000).toISOString() } });
-
-        await mount(React.createElement(TransferQrPanel));
-        await click('Show a code');
-
-        expect(post).toHaveBeenCalledTimes(1);
-        expect(String(post.mock.calls[0][0])).toMatch(/\/link\/transfers$/);
-        const img = qrImg();
-        expect(img).not.toBeNull();
-        expect(atob(img!.getAttribute('src')!.split(',')[1])).toBe(`cipherline://xfer/1?t=${XFER_ID}`);
     });
 });

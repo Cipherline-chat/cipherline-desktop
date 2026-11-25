@@ -72,7 +72,11 @@ describe('main.ts wiring (source)', () => {
     });
 
     it('a page (re)load ends a preview: the preload\'s synchronous boot ask drops it first', () => {
-        expect(main).toContain("ipcMain.on('theme:get-sync', (e) => { windowThemePreview.end(); e.returnValue = deviceThemeState(); });");
+        const h = block("ipcMain.on('theme:get-sync',");
+        expect(h).toContain('windowThemePreview.end()');
+        expect(h).toContain('e.returnValue = deviceThemeState();');
+        // The preview is dropped before the answer goes back.
+        expect(h.indexOf('windowThemePreview.end()')).toBeLessThan(h.indexOf('e.returnValue'));
     });
 
     it('a real theme change during a preview keeps the window on the preview colours but still tells the renderer', () => {

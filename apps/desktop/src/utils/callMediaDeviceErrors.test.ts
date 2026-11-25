@@ -43,11 +43,14 @@ describe('describeMediaDeviceUnavailable', () => {
 
 describe('CallPane wiring (no render harness: pinned at the source level)', () => {
     const src = readFileSync(join(__dirname, '..', 'components', 'CallPane.tsx'), 'utf8');
-    const start = src.indexOf('onError={(err) => {');
+    // The handler lives in `const onRoomError = useStableCallback(...)` (stable identity, see CallPane) and is passed as
+    // onError={onRoomError}.
+    const start = src.indexOf('const onRoomError = useStableCallback((err: Error) => {');
     const body = src.slice(start, start + 1400);
 
     it('onError checks for a device problem BEFORE failing the connection, and returns', () => {
         expect(start).toBeGreaterThan(-1);
+        expect(src).toContain('onError={onRoomError}');
         const check = body.indexOf('isMediaDeviceUnavailableError(err)');
         const fail = body.indexOf('failConnection(');
         expect(check).toBeGreaterThan(-1);

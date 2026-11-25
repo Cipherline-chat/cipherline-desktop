@@ -20,3 +20,22 @@ describe('native Strong survives settings changes', () => {
         expect(worklet).toContain('this.natAckWait > CLA_NAT_ACK_TIMEOUT_FRAMES * 4');
     });
 });
+
+// Owner 2026-11-24: a heavy game once starved the audio thread and nobody could hear each other (Oct: Strong ran on that thread).
+describe('new engine: an overloaded audio thread gives Strong up for the call', () => {
+    it('the load guard sees Strong as running on the new engine (it used to see only the old engine\'s worklets)', () => {
+        expect(vp).toContain("if (this._engineBuilt === 'v2') {");
+        expect(vp).toContain("return this._settings.noiseSuppressionMode === 'strong' && this._natBuilt && !this._natFailed ? 'strong' : 'light';");
+    });
+    it('a trip on the new engine tells the worklet to drop Strong, announces it once, and the worker is closed by the failure path', () => {
+        const at = vp.indexOf("d.trip && this._engineBuilt === 'v2'");
+        expect(at).toBeGreaterThan(0);
+        const body = vp.slice(at, at + 1200);
+        expect(body).toContain("postMessage({ type: 'nativeOverload' })");
+        expect(body).toContain('onNsLoadFallback');
+        expect(worklet).toContain("d.type === 'nativeOverload'");
+        expect(worklet).toContain("this.natFail('render-overload')");
+        // the worklet's nativeFailed comes back to onNativeFailed, which closes the worker but does not toast a second time
+        expect(vp).toContain("if (reason === 'render-overload') return;");
+    });
+});

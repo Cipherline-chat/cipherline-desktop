@@ -267,9 +267,9 @@ export async function decryptChunk(bytes: Uint8Array, key: CryptoKey): Promise<s
 /** True iff a decrypted-and-JSON.parsed backup payload is the new
  *  chunked-manifest format rather than a legacy self-contained full vault.
  *  Used by the restore path to pick which reassembly strategy applies —
- *  every backup written before this format shipped, and everything the
- *  cross-device history-sync feature (HistoryRequestModal.tsx) still
- *  writes, is a full vault, not a manifest. */
+ *  every backup written before this format shipped (and everything the
+ *  since-removed server-relayed history sync wrote) is a full vault, not a
+ *  manifest. */
 export function isIncrementalManifest(parsed: unknown): parsed is IncrementalManifest {
     return !!parsed
         && typeof parsed === 'object'

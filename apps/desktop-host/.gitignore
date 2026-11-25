@@ -1,0 +1,11 @@
+target/
+gen/
+# Vendored cl-crypto vectors: synthetic key material that trips gitleaks; fetched
+# locally by tools/sync-core.sh, never committed (upstream CI runs those tests).
+test-vectors/
+# cl-near's vectors ARE committed: the secret-scanner-tripping fields were renamed upstream (typed_s_hex, first_frame_hex);
+# the only keyword-named value left (inputs.secret_hex) is all zeros (entropy 0.0, below the rule's 3.5).
+!vendor/cl-near/test-vectors/
+vendor/cl-near/test-vectors/*
+!vendor/cl-near/test-vectors/near-v1.json
+!vendor/cl-near/test-vectors/ts-transfer-container.json

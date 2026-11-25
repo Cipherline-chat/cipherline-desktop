@@ -18,7 +18,7 @@ describe('message column', () => {
         expect(cp).toMatch(/className=\{`cl-msg-row group relative flex gap-3 py-0\.5 pr-2 pl-3 /);
         expect(cp).toMatch(/className="cl-msg-av w-10 h-10 shrink-0 mt-0\.5 ring-1 ring-white\/5 shadow-sm"/);
         expect(cp).toMatch(/<div className="cl-msg-gutter w-10 shrink-0"/);
-        expect(cp).toMatch(/<div className="relative flex flex-col min-w-0 flex-1">/);
+        expect(cp).toMatch(/<div className="cl-msg-col relative flex flex-col min-w-0 flex-1">/);
     });
     it('feed content width minus the gutter (the scrollbar is already outside clientWidth)', () => {
         const feed = document.createElement('div');

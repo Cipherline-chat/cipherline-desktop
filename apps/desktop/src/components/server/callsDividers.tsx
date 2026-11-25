@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
+import { useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { callsDividerKey } from './callsLayout';
 
@@ -35,5 +36,28 @@ export function SortableCallsDivider({ id, disabled, isDragging, dropLine, child
                 {children}
             </div>
         </div>
+    );
+}
+
+/** dnd-kit id of the end-of-Calls-list drop zone (the top of the Calls list: under no category). */
+export const CALLS_TOP_END_ID = 'calls-top-end';
+
+/**
+ * Drop target for "the end of the Calls list's top level" - how a divider is
+ * dragged out of a Calls category to sit under none (the text list's
+ * UncategorizedDropzone does the same). Always mounted, so a Calls list whose
+ * top level is empty still has somewhere to drop; only opens up (and only for a
+ * divider drag, `dragActive`) while a drag is in progress. Calls channels never
+ * live at the top (they need a category), so a channel drag leaves it closed.
+ */
+export function CallsTopDropzone({ dragActive, overHere }: { dragActive: boolean; overHere: boolean }) {
+    const { setNodeRef, isOver } = useDroppable({ id: CALLS_TOP_END_ID, disabled: !dragActive });
+    const over = isOver || overHere;
+    return (
+        <div
+            ref={setNodeRef}
+            data-calls-top-drop={dragActive && over ? 'over' : undefined}
+            className={`rounded-md transition-colors ${dragActive ? (over ? 'h-7 my-0.5 bg-cl-lume/10 ring-1 ring-cl-lume/30' : 'h-5') : 'h-0'}`}
+        />
     );
 }

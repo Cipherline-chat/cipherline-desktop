@@ -74,7 +74,8 @@ export function useSteamConnect(opts: {
         try {
             const res = await axios.post(`${API_BASE}/steam/link`, {}, { headers: { Authorization: `Bearer ${token}` } });
             const url = typeof res.data?.url === 'string' ? res.data.url : '';
-            if (!openExternalLink(url).ok) throw new Error('bad url');
+            // App-authored: Steam's sign-in URL from our server, for a flow the user started.
+            if (!openExternalLink(url, { source: 'app' }).ok) throw new Error('bad url');
             forgetSteamCard(userId);
             setWaitingSince(Date.now());
         } catch (err) {

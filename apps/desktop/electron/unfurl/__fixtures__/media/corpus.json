@@ -1,0 +1,457 @@
+{
+  "saved": "2026-11-24T03:59:17.653Z",
+  "entries": [
+    {
+      "id": "discord-cdn-gif",
+      "url": "https://cdn.discordapp.com/emojis/1113579886439833690.gif?size=128&quality=lossless&ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+      "note": "a real Discord CDN animated GIF (an emoji: attachments need a fresh signature) with the signed ex/is/hm params an attachment link carries",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/emojis/1113579886439833690.gif?size=128&quality=lossless&ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+          "status": 200,
+          "headers": {
+            "content-type": "image/gif",
+            "content-length": "95920",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=31536000"
+          },
+          "body": "discord-cdn-gif.bin",
+          "bodyBytes": 95920,
+          "total": 95920,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "discord-cdn-png",
+      "url": "https://cdn.discordapp.com/embed/avatars/0.png?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+      "note": "a real Discord CDN PNG with signed-link params",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/embed/avatars/0.png?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+          "status": 200,
+          "headers": {
+            "content-type": "image/png",
+            "content-length": "1268",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=14400"
+          },
+          "body": "discord-cdn-png.bin",
+          "bodyBytes": 1268,
+          "total": 1268,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "discord-cdn-expired",
+      "url": "https://cdn.discordapp.com/attachments/1083749285425856633/1176234513312391178/cat.gif?ex=656a5c4b&is=6557e74b&hm=2b0ef6b2c6b8e63bd3a6e1f2e2c9c54d0f0e0c5c4b3a2a1a0f9e8d7c6b5a4938&",
+      "note": "an EXPIRED Discord attachment link: Discord answers 404 text/plain",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/attachments/1083749285425856633/1176234513312391178/cat.gif?ex=656a5c4b&is=6557e74b&hm=2b0ef6b2c6b8e63bd3a6e1f2e2c9c54d0f0e0c5c4b3a2a1a0f9e8d7c6b5a4938&",
+          "status": 404,
+          "headers": {
+            "content-type": "text/plain;charset=UTF-8",
+            "content-length": "36"
+          },
+          "body": "discord-cdn-expired.bin",
+          "bodyBytes": 36,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "discord-media-expired",
+      "url": "https://media.discordapp.net/attachments/1083749285425856633/1176234513312391178/cat.gif?ex=656a5c4b&is=6557e74b&hm=2b0ef6b2c6b8e63bd3a6e1f2e2c9c54d0f0e0c5c4b3a2a1a0f9e8d7c6b5a4938&=&width=400&height=300",
+      "note": "the same expired attachment through media.discordapp.net",
+      "hops": [
+        {
+          "url": "https://media.discordapp.net/attachments/1083749285425856633/1176234513312391178/cat.gif?ex=656a5c4b&is=6557e74b&hm=2b0ef6b2c6b8e63bd3a6e1f2e2c9c54d0f0e0c5c4b3a2a1a0f9e8d7c6b5a4938&=&width=400&height=300",
+          "status": 404,
+          "headers": {
+            "content-type": "text/plain;charset=UTF-8",
+            "content-length": "36"
+          },
+          "body": "discord-media-expired.bin",
+          "bodyBytes": 36,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "klipy-page",
+      "url": "https://klipy.com/gifs/livvy-dunne",
+      "note": "the owner's KLIPY page link (head only)",
+      "hops": [
+        {
+          "url": "https://klipy.com/gifs/livvy-dunne",
+          "status": 200,
+          "headers": {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate"
+          },
+          "body": "klipy-page.bin",
+          "bodyBytes": 10264,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "klipy-gif",
+      "url": "https://static2.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/1d/1b/H3If9Bb35lxCdqQAOo.gif",
+      "note": "KLIPY media: headers + magic bytes only",
+      "hops": [
+        {
+          "url": "https://static2.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/1d/1b/H3If9Bb35lxCdqQAOo.gif",
+          "status": 206,
+          "headers": {
+            "content-type": "image/gif",
+            "content-length": "64",
+            "content-range": "bytes 0-63/2750200",
+            "cache-control": "public, max-age=86400"
+          },
+          "body": "klipy-gif.bin",
+          "bodyBytes": 64,
+          "total": 2750200,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "klipy-mp4",
+      "url": "https://static2.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/1d/1b/lDw3Gx0fT8Uf51timeC.mp4",
+      "note": "KLIPY media: headers + magic bytes only",
+      "hops": [
+        {
+          "url": "https://static2.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/1d/1b/lDw3Gx0fT8Uf51timeC.mp4",
+          "status": 206,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "64",
+            "content-range": "bytes 0-63/188412",
+            "cache-control": "public, max-age=86400"
+          },
+          "body": "klipy-mp4.bin",
+          "bodyBytes": 64,
+          "total": 188412,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "giphy-media",
+      "url": "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
+      "note": "Giphy media GIF (head)",
+      "hops": [
+        {
+          "url": "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
+          "status": 206,
+          "headers": {
+            "content-type": "image/gif",
+            "content-length": "16384",
+            "content-range": "bytes 0-16383/1799229",
+            "accept-ranges": "bytes",
+            "cache-control": "max-age=604800"
+          },
+          "body": "giphy-media.bin",
+          "bodyBytes": 16384,
+          "total": 1799229,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "tenor-media-gif",
+      "url": "https://media1.tenor.com/m/K-NNKd7DXOMAAAAC/morning-morning-coffee.gif",
+      "note": "Tenor media GIF: IGNORES Range and sends all 9.5 MB (head kept)",
+      "hops": [
+        {
+          "url": "https://media1.tenor.com/m/K-NNKd7DXOMAAAAC/morning-morning-coffee.gif",
+          "status": 200,
+          "headers": {
+            "content-type": "image/gif",
+            "content-length": "9570868",
+            "cache-control": "public,max-age=3600"
+          },
+          "body": "tenor-media-gif.bin",
+          "bodyBytes": 16384,
+          "total": 9570868,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "tenor-media-mp4",
+      "url": "https://media.tenor.com/K-NNKd7DXOMAAAPo/morning-morning-coffee.mp4",
+      "note": "Tenor media mp4 (head)",
+      "hops": [
+        {
+          "url": "https://media.tenor.com/K-NNKd7DXOMAAAPo/morning-morning-coffee.mp4",
+          "status": 206,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "65536",
+            "content-range": "bytes 0-65535/203413",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=86400"
+          },
+          "body": "tenor-media-mp4.bin",
+          "bodyBytes": 65536,
+          "total": 203413,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "reddit-i",
+      "url": "https://i.redd.it/kq2f2p8g093i1.jpeg",
+      "note": "i.redd.it image (head)",
+      "hops": [
+        {
+          "url": "https://i.redd.it/kq2f2p8g093i1.jpeg",
+          "status": 206,
+          "headers": {
+            "content-type": "image/jpeg",
+            "content-length": "16384",
+            "content-range": "bytes 0-16383/697888",
+            "accept-ranges": "bytes"
+          },
+          "body": "reddit-i.bin",
+          "bodyBytes": 16384,
+          "total": 697888,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "wikimedia-gif",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif",
+      "note": "a direct .gif on an arbitrary host (head)",
+      "hops": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif",
+          "status": 206,
+          "headers": {
+            "content-type": "image/gif",
+            "content-length": "16384",
+            "content-range": "bytes 0-16383/1001718",
+            "accept-ranges": "bytes"
+          },
+          "body": "wikimedia-gif.bin",
+          "bodyBytes": 16384,
+          "total": 1001718,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "animated-webp",
+      "url": "https://mathiasbynens.be/demo/animated-webp-supported.webp",
+      "note": "an animated WebP",
+      "hops": [
+        {
+          "url": "https://mathiasbynens.be/demo/animated-webp-supported.webp",
+          "status": 200,
+          "headers": {
+            "content-type": "image/webp",
+            "content-length": "37342",
+            "accept-ranges": "bytes",
+            "cache-control": "max-age=31536000,immutable"
+          },
+          "body": "animated-webp.bin",
+          "bodyBytes": 37342,
+          "total": 37342,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "mdn-mp4",
+      "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+      "note": "a direct .mp4 on an arbitrary host (head)",
+      "hops": [
+        {
+          "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+          "status": 206,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "65536",
+            "content-range": "bytes 0-65535/1128375",
+            "accept-ranges": "bytes",
+            "cache-control": "public,max-age=3600"
+          },
+          "body": "mdn-mp4.bin",
+          "bodyBytes": 65536,
+          "total": 1128375,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "gravatar-extensionless",
+      "url": "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=identicon&s=128",
+      "note": "an extensionless image URL (PNG)",
+      "hops": [
+        {
+          "url": "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=identicon&s=128",
+          "status": 200,
+          "headers": {
+            "content-type": "image/png",
+            "content-length": "3032",
+            "accept-ranges": "bytes",
+            "cache-control": "max-age=300"
+          },
+          "body": "gravatar-extensionless.bin",
+          "bodyBytes": 3032,
+          "total": 3032,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "picsum-extensionless",
+      "url": "https://picsum.photos/id/237/400/300",
+      "note": "an extensionless image URL that redirects to a signed .jpg",
+      "hops": [
+        {
+          "url": "https://picsum.photos/id/237/400/300",
+          "status": 302,
+          "headers": {
+            "content-length": "0",
+            "location": "https://fastly.picsum.photos/id/237/400/300.jpg?hmac=32RuLp2fb9I2fzPP3U-6REXQ6sZAbN8ML7_dt3R7wQ8",
+            "cache-control": "public, max-age=86400, stale-while-revalidate=60, stale-if-error=43200"
+          }
+        },
+        {
+          "url": "https://fastly.picsum.photos/id/237/400/300.jpg?hmac=32RuLp2fb9I2fzPP3U-6REXQ6sZAbN8ML7_dt3R7wQ8",
+          "status": 206,
+          "headers": {
+            "content-type": "image/jpeg",
+            "content-length": "16384",
+            "content-range": "bytes 0-16383/23774",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=2592000, stale-while-revalidate=60, stale-if-error=43200, immutable"
+          },
+          "body": "picsum-extensionless-hop1.bin",
+          "bodyBytes": 16384,
+          "total": 23774,
+          "whole": false
+        }
+      ]
+    },
+    {
+      "id": "wikimedia-404",
+      "url": "https://mathiasbynens.be/demo/does-not-exist-12345.gif",
+      "note": "a broken media link (404)",
+      "hops": [
+        {
+          "url": "https://mathiasbynens.be/demo/does-not-exist-12345.gif",
+          "status": 404,
+          "headers": {
+            "content-type": "text/html; charset=UTF-8"
+          },
+          "body": "wikimedia-404.bin",
+          "bodyBytes": 1614,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "imgur-direct-extensionless",
+      "url": "https://i.imgur.com/A61SaA1",
+      "note": "i.imgur.com without an extension",
+      "hops": [
+        {
+          "url": "https://i.imgur.com/A61SaA1",
+          "status": 302,
+          "headers": {
+            "content-length": "0",
+            "accept-ranges": "bytes",
+            "location": "https://imgur.com/A61SaA1"
+          }
+        },
+        {
+          "url": "https://imgur.com/A61SaA1",
+          "status": 206,
+          "headers": {
+            "content-type": "text/html",
+            "content-range": "bytes 0-5589/5590",
+            "accept-ranges": "bytes",
+            "cache-control": "max-age=60, stale-while-revalidate=600, stale-if-error=86400, public"
+          },
+          "body": "imgur-direct-extensionless-hop1.bin",
+          "bodyBytes": 8438,
+          "total": 5590,
+          "whole": true
+        }
+      ]
+    },
+    {
+      "id": "discord-cdn-mp4-loop",
+      "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123920/loop2s.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+      "constructed": true,
+      "note": "CONSTRUCTED: the real Discord CDN response headers (from discord-cdn-gif) with content-type video/mp4; body loop2s.mp4 generated with ffmpeg",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123920/loop2s.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+          "status": 200,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "11509",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=31536000"
+          },
+          "body": "discord-cdn-mp4-loop.bin",
+          "bodyBytes": 11509,
+          "whole": true,
+          "total": 11509
+        }
+      ]
+    },
+    {
+      "id": "discord-cdn-mp4-audio",
+      "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123921/clip20s.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+      "constructed": true,
+      "note": "CONSTRUCTED: the real Discord CDN response headers (from discord-cdn-gif) with content-type video/mp4; body clip20s.mp4 generated with ffmpeg",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123921/clip20s.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+          "status": 200,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "112893",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=31536000"
+          },
+          "body": "discord-cdn-mp4-audio.bin",
+          "bodyBytes": 112893,
+          "whole": true,
+          "total": 112893
+        }
+      ]
+    },
+    {
+      "id": "discord-cdn-mp4-tailmoov",
+      "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123924/notfast.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+      "constructed": true,
+      "note": "CONSTRUCTED: the real Discord CDN response headers (from discord-cdn-gif) with content-type video/mp4; body notfast.mp4 generated with ffmpeg",
+      "hops": [
+        {
+          "url": "https://cdn.discordapp.com/attachments/1083749285425856633/11762345133123924/notfast.mp4?ex=6745d2a1&is=67448121&hm=9f3c2e1d0b8a7f6e5d4c3b2a19f8e7d6c5b4a39281f0e9d8c7b6a5f4e3d2c1b0&",
+          "status": 200,
+          "headers": {
+            "content-type": "video/mp4",
+            "content-length": "15258",
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=31536000"
+          },
+          "body": "discord-cdn-mp4-tailmoov.bin",
+          "bodyBytes": 15258,
+          "whole": true,
+          "total": 15258
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+[package]
+name = "cl-near"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Cipherline proximity sign-in and local-network transfer: pure, platform-independent protocol core"
+
+[features]
+default = ["system-interfaces"]
+# Default interface enumeration via getifaddrs (desktop / CLI). Phones that supply their own prefixes can disable it.
+system-interfaces = ["dep:if-addrs"]
+# TEST / DEMO ONLY. Lets the LAN layer accept loopback addresses so two processes on one machine can run a
+# session. Never enable in a shipped build: it is refused at compile time on android and ios, no workspace
+# member enables it, and only the `near-demo` binary (required-features) and this crate's own tests use it.
+dangerous-loopback = []
+
+[dependencies]
+cl-crypto = { path = "../cl-crypto" }
+aes = "0.8"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pki-types = "1"
+socket2 = { version = "0.6", features = ["all"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+if-addrs = { version = "0.13", optional = true }
+
+# free space of the receiver's directory (statvfs); other platforms inject a probe into the sink
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+# only so a test can build a TLS 1.2-only client and prove the listener refuses it
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+hex = "0.4"
+tempfile = "3"
+
+[[bin]]
+name = "near-demo"
+path = "src/bin/near-demo.rs"
+required-features = ["dangerous-loopback"]

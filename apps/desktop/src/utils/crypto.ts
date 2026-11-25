@@ -1,6 +1,7 @@
 import { encryptBlobOffThread, decryptBlobOffThread } from './attachmentCryptoWorker';
 import secureLocalStore from './secureLocalStore';
 import * as messageStore from './messageStore';
+import { mergeVaultThreads, mergeTopics } from './historyMerge';
 import {
     collectIncludedKv, applyIncludedKv, dropShadowingRailLayout, repairSoundPaths, APP_PREF_KEYS, BACKUP_RESTORED_EVENT,
     ownedCustomSounds, isCustomSoundName, CUSTOM_SOUND_MAX_BYTES, CUSTOM_SOUND_TRANSFER_MAX,
@@ -663,6 +664,10 @@ export async function buildLocalVault(
 }
 
 export interface ImportLocalHistoryOpts {
+    /** `replace` (default, a backup restore: authoritative, a thread absent from the vault is dropped) or `merge` (a device-to-device
+     *  transfer: NEVER clears anything; threads merge by message id with this device's copy winning, topics are unioned, and a
+     *  setting this device already has is kept). See utils/historyMerge.ts. */
+    mode?: 'replace' | 'merge';
     /** The record-based backup's `emoji:<id>` files (backupRecords.ts): handed to
      *  restoreEmojiVaultPart so each image file lands BEFORE the index that lists it. */
     emojiSealedFile?: (id: string) => Promise<Uint8Array | null>;
@@ -680,8 +685,16 @@ export async function importLocalHistory(userId: string, blob: Blob, opts: Impor
     // another account, a missing account id, a damaged or foreign file)
     // throws from here, with nothing on this device changed.
     const payload = classifyHistoryPayload(text, userId);
+    const merging = opts.mode === 'merge';
+    // In merge mode a value this device already has is kept; only a missing one is filled in.
+    const put = (key: string, value: string): void => {
+        if (merging && secureLocalStore.getItem(key) != null) return;
+        secureLocalStore.setItem(key, value);
+    };
 
     if (payload.kind === 'legacy-bare') {
+        // A transfer never produces a bare dump; refuse rather than clear.
+        if (merging) throw new Error('A bare history dump cannot be merged.');
         // Genuine pre-wrapper dump (no envelope, so no account id to bind):
         // `text` is the raw history JSON. Rather than re-serialise it, clear the
         // account and hand the blob to the legacy slot, which messageStore
@@ -700,12 +713,18 @@ export async function importLocalHistory(userId: string, blob: Blob, opts: Impor
     // `vault.privateKey` / `vault.publicKey` (old vaults only) are deliberately
     // never read: that pair belongs to the device that exported it, and this
     // device keeps its own. See BackupVault.privateKey.
-    messageStore.replaceAll('dm', userId, vault.history);
-    secureLocalStore.setItem(`cipherline_convs_${userId}`, JSON.stringify(vault.topics));
+    if (merging) {
+        await messageStore.mergeThreads('dm', userId, vault.history, mergeVaultThreads);
+        secureLocalStore.setItem(`cipherline_convs_${userId}`, JSON.stringify(mergeTopics(secureLocalStore.getItem(`cipherline_convs_${userId}`), vault.topics)));
+    } else {
+        messageStore.replaceAll('dm', userId, vault.history);
+        secureLocalStore.setItem(`cipherline_convs_${userId}`, JSON.stringify(vault.topics));
+    }
 
     // V3: channel messages, mirroring the DM/group history slot.
     if (vault.channelHistory && typeof vault.channelHistory === 'object') {
-        messageStore.replaceAll('channel', userId, vault.channelHistory);
+        if (merging) await messageStore.mergeThreads('channel', userId, vault.channelHistory, mergeVaultThreads);
+        else messageStore.replaceAll('channel', userId, vault.channelHistory);
     }
 
     // V3: rehydrate attachment ciphertexts into IndexedDB so they decrypt
@@ -730,33 +749,33 @@ export async function importLocalHistory(userId: string, blob: Blob, opts: Impor
 
     // V2 carryovers (prefs, GIFs, avatar keys). Each is optional so legacy
     // vaults restore cleanly without these fields.
-    if (vault.voiceSettings)   secureLocalStore.setItem('cipherline_voice_settings',                JSON.stringify(vault.voiceSettings));
-    if (vault.keybinds)        secureLocalStore.setItem('cipherline_keybinds',                     JSON.stringify(vault.keybinds));
+    if (vault.voiceSettings)   put('cipherline_voice_settings',                JSON.stringify(vault.voiceSettings));
+    if (vault.keybinds)        put('cipherline_keybinds',                     JSON.stringify(vault.keybinds));
     // The one-time migration markers follow the blobs they describe.
-    applyMigrationMarker(VOICE_DEFAULTS_MIGRATION_KEY, !!vault.voiceSettings, vault.voiceDefaultsMigrated);
-    applyMigrationMarker(KEYBINDS_MIGRATION_KEY, !!vault.keybinds, vault.keybindsMigrated);
-    if (vault.gameSettings)    secureLocalStore.setItem(`cipherline_game_settings_${userId}`,      JSON.stringify(vault.gameSettings));
+    applyMigrationMarker(VOICE_DEFAULTS_MIGRATION_KEY, !!vault.voiceSettings && !merging, vault.voiceDefaultsMigrated);
+    applyMigrationMarker(KEYBINDS_MIGRATION_KEY, !!vault.keybinds && !merging, vault.keybindsMigrated);
+    if (vault.gameSettings)    put(`cipherline_game_settings_${userId}`,      JSON.stringify(vault.gameSettings));
     // Retention is per-device: a vault's retention windows (legacy
     // `retentionPolicy`) are NEVER applied — this device keeps whatever it
     // chose (or asks, via the first-run storage prompt). Only explicitly
     // saved ids are merged in, and only additively. See retentionPortability.ts.
     applyRestoredSaves(userId, portableSavesFromVault(vault));
-    if (vault.hiddenConversations) secureLocalStore.setItem(`cipherline_hidden_convs_${userId}`,   JSON.stringify(vault.hiddenConversations));
-    if (vault.mutedConversations)  secureLocalStore.setItem(`cipherline_muted_convs_${userId}`,    JSON.stringify(vault.mutedConversations));
-    if (vault.pinnedMessages)      secureLocalStore.setItem(`cipherline_pinned_${userId}`,         JSON.stringify(vault.pinnedMessages));
-    if (vault.localChannelPins)   secureLocalStore.setItem(`cipherline_local_channel_pins_${userId}`, JSON.stringify(vault.localChannelPins));
-    if (vault.userStatus?.status) secureLocalStore.setItem(`cipherline_status_${userId}`,          vault.userStatus.status);
-    if (vault.userStatus?.text)   secureLocalStore.setItem(`cipherline_status_text_${userId}`,     vault.userStatus.text);
-    if (vault.userStatus?.emoji)  secureLocalStore.setItem(`cipherline_status_emoji_${userId}`,    vault.userStatus.emoji);
+    if (vault.hiddenConversations) put(`cipherline_hidden_convs_${userId}`,   JSON.stringify(vault.hiddenConversations));
+    if (vault.mutedConversations)  put(`cipherline_muted_convs_${userId}`,    JSON.stringify(vault.mutedConversations));
+    if (vault.pinnedMessages)      put(`cipherline_pinned_${userId}`,         JSON.stringify(vault.pinnedMessages));
+    if (vault.localChannelPins)   put(`cipherline_local_channel_pins_${userId}`, JSON.stringify(vault.localChannelPins));
+    if (vault.userStatus?.status) put(`cipherline_status_${userId}`,          vault.userStatus.status);
+    if (vault.userStatus?.text)   put(`cipherline_status_text_${userId}`,     vault.userStatus.text);
+    if (vault.userStatus?.emoji)  put(`cipherline_status_emoji_${userId}`,    vault.userStatus.emoji);
 
     // Restore into the account-scoped namespace, never the legacy device-global
     // keys — writing those back would re-share this account's library with every
     // other account on the machine.
-    if (vault.gifFavorites) secureLocalStore.setItem(`cipherline_gif_favorites_${userId}`, JSON.stringify(vault.gifFavorites));
-    if (vault.gifLedger) secureLocalStore.setItem(`cipherline_gif_ledger_${userId}`, JSON.stringify(vault.gifLedger));
+    if (vault.gifFavorites) put(`cipherline_gif_favorites_${userId}`, JSON.stringify(vault.gifFavorites));
+    if (vault.gifLedger) put(`cipherline_gif_ledger_${userId}`, JSON.stringify(vault.gifLedger));
     if (vault.gifKeys) {
         for (const [id, keyB64] of Object.entries(vault.gifKeys as Record<string, string>)) {
-            secureLocalStore.setItem(`cipherline_gif_key_${userId}_${id}`, keyB64);
+            put(`cipherline_gif_key_${userId}_${id}`, keyB64);
         }
     }
     if (vault.gifFiles && window.electronAPI?.writeGifFile) {
@@ -806,10 +825,12 @@ export async function importLocalHistory(userId: string, blob: Blob, opts: Impor
         // BEFORE the apply: a legacy-order-only backup must remove the local v2
         // rail layout that would otherwise shadow the order it restores.
         dropShadowingRailLayout(secureLocalStore, vault.kv as Record<string, string>, userId);
-        applyIncludedKv(secureLocalStore, vault.kv as Record<string, string>, userId, kvMergerFor);
+        applyIncludedKv(secureLocalStore, vault.kv as Record<string, string>, userId,
+            merging ? (k, u) => kvMergerFor(k, u) ?? ((local, incoming) => local ?? incoming) : kvMergerFor);
     }
     mergeWarnings(userId, localWarnings);
-    if (vault.appPrefs && typeof vault.appPrefs === 'object' && window.electronAPI?.secureReplaceMany) {
+    // App preferences are this device's own: a transfer (merge) never replaces them.
+    if (!merging && vault.appPrefs && typeof vault.appPrefs === 'object' && window.electronAPI?.secureReplaceMany) {
         const entries: Record<string, string> = {};
         for (const k of APP_PREF_KEYS) {
             const v = (vault.appPrefs as Record<string, unknown>)[k];

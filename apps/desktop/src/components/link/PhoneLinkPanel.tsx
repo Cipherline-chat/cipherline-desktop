@@ -29,7 +29,7 @@ import { useLinkController } from './useLinkController';
  * and asks for the six digits that phone is now showing (+ an authenticator
  * code when the account has TOTP) → Approve → "Finish on your phone".
  *
- * Same visual language as `TransferQrPanel` (sd-card, sd-tile header), and
+ * Same visual language as the other Settings cards (sd-card, sd-tile header), and
  * the same StrictMode-safe controller lifetime via `useLinkController`.
  */
 

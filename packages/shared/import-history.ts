@@ -72,8 +72,6 @@ export const IMPORT_CAPS = {
     importsPerServerPer30Days: 3,
     /** An active session nobody posted to for this long is expired. */
     sessionIdleHours: 72,
-    /** Anti-abuse gate (D11). */
-    accountMinAgeDays: 7,
 } as const;
 
 /** Version of the consent text the importer accepted (stored on the session). */
