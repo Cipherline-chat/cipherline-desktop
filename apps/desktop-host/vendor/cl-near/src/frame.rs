@@ -18,6 +18,10 @@ pub const T_RECORD_END: u8 = 0x13;
 pub const T_DONE: u8 = 0x14;
 pub const T_PING: u8 = 0x20;
 pub const T_PONG: u8 = 0x21;
+/// The payload of a PROGRESS ping: the receiver is still verifying and storing records the sender has already sent (see
+/// `transfer`). A plain keep-alive ping is empty. Every connection answers any ping with a pong and never hands it to the
+/// application, so an older peer simply ignores the payload: the beacon needs no new frame type and stays wire-compatible.
+pub const PROGRESS_BEACON: &[u8] = b"progress";
 pub const T_ABORT: u8 = 0x7F;
 
 /// Largest data chunk inside a `record` frame.

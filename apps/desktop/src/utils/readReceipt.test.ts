@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { lastReadableMessageId, readReceiptToSend } from './readReceipt';
+import { buildMessageReadData, lastReadableMessageId, readReceiptToSend } from './readReceipt';
 
 /**
  * Message integrity §5 (mobile handoff, 2026-09-24): keep
@@ -39,7 +39,7 @@ describe('lastReadableMessageId', () => {
 });
 
 describe('readReceiptToSend — no read without a reader; receipts-off still syncs my devices', () => {
-    const base = { lastId: B, lastSentId: A, attended: true, showReadReceipts: true };
+    const base = { lastId: B, lastSentId: A, attended: true, recentInput: true, showReadReceipts: true };
     it('sends the classic receipt when a human is looking and receipts are on', () => {
         expect(readReceiptToSend(base)).toEqual({ id: B, selfOnly: false });
     });
@@ -62,8 +62,12 @@ describe('the receipt keeps its field, and ChatPane picks the id through the hel
     it('useRealtime sends message:read WITH last_read_message_id (mobile\'s gap detector reads it)', () => {
         const src = code('hooks/useRealtime.ts');
         expect(src).toContain("event: 'message:read'");
-        expect(src).toContain('{ conversation_id, last_read_message_id, read_at: Date.now() }');
-        expect(src).toContain('{ conversation_id, last_read_message_id, read_at: Date.now(), self_only: true }');
+        // The payload is built by buildMessageReadData (conversation_id + last_read_message_id +
+        // read_at, optional self_only and idle_ms), and useRealtime attaches the live idle_ms.
+        expect(src).toContain('buildMessageReadData(conversation_id, last_read_message_id, opts, serverAcceptsReadIdleMs() ? getInputIdleMs() : undefined)');
+        const data = buildMessageReadData('c', 'm', undefined, undefined, 1);
+        expect(data).toEqual({ conversation_id: 'c', last_read_message_id: 'm', read_at: 1 });
+        expect(buildMessageReadData('c', 'm', { selfOnly: true }, undefined, 1)).toEqual({ conversation_id: 'c', last_read_message_id: 'm', read_at: 1, self_only: true });
     });
 
     it('ChatPane derives the id with lastReadableMessageId, not "the last row"', () => {
@@ -72,6 +76,7 @@ describe('the receipt keeps its field, and ChatPane picks the id through the hel
         // ...and decides through readReceiptToSend, which needs an attended window.
         expect(src).toContain('readReceiptToSend({');
         expect(src).toContain('attended: windowAttended');
+        expect(src).toContain('recentInput,');
         expect(src).not.toContain('const lastMsg = messages[messages.length - 1];\n        if (!lastMsg?.id || lastMsg.id === lastSentReceiptRef.current) return;');
     });
 });

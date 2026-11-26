@@ -30,6 +30,9 @@ import {
 import { RestorePasswordModal } from './RestorePasswordModal';
 import { StaleBackupModal } from './StaleBackupModal';
 import { ShrinkBackupModal } from './ShrinkBackupModal';
+import { DamagedItemsModal, type DamagedItemsAsk } from './DamagedItemsModal';
+import secureLocalStore from '../utils/secureLocalStore';
+import { recordBackupDiag } from '../utils/backupDiagnostics';
 import { BackupProgressBars } from './BackupProgressBars';
 import {
     initProgressRows, advanceProgressRows, finishProgressRows, type ProgressRows,
@@ -121,6 +124,14 @@ const PROGRESS_LABEL: Record<string, string> = {
     upload: 'Uploading to Drive…', verify: 'Verifying…', download: 'Downloading…', decrypt: 'Decrypting…', apply: 'Restoring…',
 };
 
+/** What a backup that had to keep records from the previous one says about them (HeldOutcome). */
+function heldNote(held: { unreadable: number; kept: number; lost: number } | undefined): string {
+    if (!held || held.unreadable === 0) return '';
+    const kept = held.kept > 0 ? ' Some data on this device couldn’t be read, so your previous backup’s copy of it was kept.' : ' Some data on this device couldn’t be read.';
+    const lost = held.lost > 0 ? ` ${held.lost} part${held.lost === 1 ? '' : 's'} of it weren’t in your previous backup, so ${held.lost === 1 ? 'it isn’t' : 'they aren’t'} in this one.` : '';
+    return kept + lost;
+}
+
 export const BackupSection: React.FC = () => {
     const { user, token } = useAuth();
     const toast = useToast();
@@ -202,6 +213,39 @@ export const BackupSection: React.FC = () => {
         }),
         [],
     );
+    // Records this device could not read (secureLocalStore: UNREADABLE RECORDS). Backups still
+    // run and keep the previous backup's copy of them (services/backupHold.ts); the user can
+    // remove them, and a restore asks first because it has to.
+    const [damagedCount, setDamagedCount] = useState(() => { try { return secureLocalStore.unreadableRecordCount(); } catch { return 0; } });
+    useEffect(() => secureLocalStore.onUnreadableRecords(() => { try { setDamagedCount(secureLocalStore.unreadableRecordCount()); } catch { /* not hydrated */ } }), []);
+    const [damagedAsk, setDamagedAsk] = useState<null | { ask: DamagedItemsAsk; decide: (ok: boolean) => void }>(null);
+    const askAboutDamaged = useCallback(
+        (ask: DamagedItemsAsk) => new Promise<boolean>(resolve => {
+            setDamagedAsk({ ask, decide: (ok) => { setDamagedAsk(null); resolve(ok); } });
+        }),
+        [],
+    );
+    /** Remove the damaged records, after the user says so. Reports and toasts either way. */
+    const removeDamaged = useCallback(async (): Promise<boolean> => {
+        const held = secureLocalStore.unreadableRecordCount();
+        try {
+            const removed = await secureLocalStore.discardUnreadableRecords();
+            recordBackupDiag('repair', { ok: true, step: 'done', held: removed });
+            setDamagedCount(secureLocalStore.unreadableRecordCount());
+            if (removed > 0) toast.push({ kind: 'success', title: 'Damaged items removed', message: 'Cipherline can save there again. Restore from your backup to bring their contents back.' });
+            return true;
+        } catch (err) {
+            recordBackupDiag('repair', { ok: false, step: 'delete', err, held });
+            toast.push({ kind: 'error', title: 'Couldn’t remove the damaged items', message: 'Nothing was changed. Restart Cipherline and try again.' });
+            return false;
+        }
+    }, [toast]);
+    const onRemoveDamaged = useCallback(async () => {
+        const n = secureLocalStore.unreadableRecordCount();
+        if (n === 0) { setDamagedCount(0); return; }
+        if (!(await askAboutDamaged({ mode: 'remove', count: n }))) return;
+        await removeDamaged();
+    }, [askAboutDamaged, removeDamaged]);
     const askAboutStaleBackup = useCallback(
         (warning: BackupStaleWarning) => new Promise<boolean>(resolve => {
             setStaleAsk({ warning, decide: (ok) => { setStaleAsk(null); resolve(ok); } });
@@ -401,7 +445,8 @@ export const BackupSection: React.FC = () => {
             }
             if (res.drive && !res.drive.skipped) parts.push(`Google Drive uploaded (${fmtBytes(res.drive.bytes)})`);
             const skippedAtt = res.attachments?.attachmentsSkipped ?? 0;
-            const attNote = skippedAtt > 0 ? ` ${skippedAtt} file${skippedAtt === 1 ? '' : 's'} over the size limit left out.` : '';
+            const attNote = (skippedAtt > 0 ? ` ${skippedAtt} file${skippedAtt === 1 ? '' : 's'} over the size limit left out.` : '')
+                + heldNote(res.held);
 
             // Each destination is reported on its own — a Drive failure
             // (auth expired, network down, 403/SCOPE_MISSING) never masks
@@ -418,7 +463,7 @@ export const BackupSection: React.FC = () => {
                 toast.push({ kind: 'error', title: 'Backup failed', message: failParts.join(' ') });
             } else {
                 toast.push(parts.length
-                    ? { kind: 'success', title: 'Backed up', message: `${res.fileName}: ${parts.join('; ')}.${attNote}` }
+                    ? { kind: res.held && res.held.lost > 0 ? 'warning' : 'success', title: 'Backed up', message: `${res.fileName}: ${parts.join('; ')}.${attNote}` }
                     : { kind: 'success', title: 'Already up to date', message: 'Nothing changed since your last backup.' });
             }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
@@ -480,6 +525,13 @@ export const BackupSection: React.FC = () => {
      * backups; the file being restored may be under a different password) and
      * does not call setCachedPassword — a restore password is never persisted.
      */
+    /** Once the backup has opened, before the first write: damaged records would swallow the restore, so they go first, with a yes. */
+    const beforeRestoreApply = useCallback(async (): Promise<boolean> => {
+        const n = secureLocalStore.unreadableRecordCount();
+        if (n === 0) return true;
+        if (!(await askAboutDamaged({ mode: 'restore', count: n }))) return false;
+        return removeDamaged();
+    }, [askAboutDamaged, removeDamaged]);
     const doRestore = useCallback(async (restorePassword: string) => {
         if (!userId || !restorePrompt || !restorePassword) return;
         const { source, filePath } = restorePrompt;
@@ -487,7 +539,7 @@ export const BackupSection: React.FC = () => {
         try {
             let applied = true;
             if (source === 'drive') {
-                const res = await restoreFromDrive({ userId, password: restorePassword, folderId: cfg.driveFolderId, fileBase: cfg.backupFileBase, onProgress: setProgress, onStaleBackup: askAboutStaleBackup });
+                const res = await restoreFromDrive({ userId, password: restorePassword, folderId: cfg.driveFolderId, fileBase: cfg.backupFileBase, onProgress: setProgress, onStaleBackup: askAboutStaleBackup, beforeApply: beforeRestoreApply });
                 // Same stale-folder recovery as backing up: the stored folder
                 // ID no longer worked, so this restored from the app folder
                 // instead — stop pointing at the dead one.
@@ -499,7 +551,7 @@ export const BackupSection: React.FC = () => {
                 if (!filePath) throw new Error('No backup file selected.');
                 // Read by path: the main process serves the file by range, so a
                 // large backup isn't pulled into memory just to check the index.
-                const res = await restoreFromLocalFile({ userId, filePath, password: restorePassword, onProgress: setProgress, onStaleBackup: askAboutStaleBackup });
+                const res = await restoreFromLocalFile({ userId, filePath, password: restorePassword, onProgress: setProgress, onStaleBackup: askAboutStaleBackup, beforeApply: beforeRestoreApply });
                 applied = res.restored;
             }
             setRestorePrompt(null);
@@ -520,7 +572,7 @@ export const BackupSection: React.FC = () => {
                 toast.push({ kind: 'error', title: 'Restore failed', message: (err instanceof Error && err.message) || 'No backup found, or it could not be read.' });
             }
         } finally { setBusy(null); setProgress(null); }
-    }, [userId, restorePrompt, cfg.driveFolderId, cfg.backupFileBase, toast, persist, askAboutStaleBackup]);
+    }, [userId, restorePrompt, cfg.driveFolderId, cfg.backupFileBase, toast, persist, askAboutStaleBackup, beforeRestoreApply]);
 
     /** Hide is always free; show is gated once a passphrase is actually stored. */
     const onToggleShowPw = async () => {
@@ -775,6 +827,22 @@ export const BackupSection: React.FC = () => {
                     </div>
                 </SettingsDisclosure>
 
+                {/* Records this device could not read (a crash, a power loss). Backups still run. */}
+                {damagedCount > 0 && (
+                    <div className="rounded-xl px-3.5 py-3 text-[12.5px] leading-relaxed" role="status" style={{ border: '1px solid var(--cl-border)', background: 'var(--cl-raise)', color: 'var(--cl-muted)' }}>
+                        <div className="font-bold" style={{ color: 'var(--cl-text)' }}>
+                            {damagedCount} item{damagedCount === 1 ? '' : 's'} on this device couldn’t be read
+                        </div>
+                        <p style={{ margin: '4px 0 0' }}>
+                            This usually follows a crash or a power loss. Backups still run and keep your previous backup’s copy of {damagedCount === 1 ? 'it' : 'them'}.
+                            To get {damagedCount === 1 ? 'it' : 'them'} back, restore from your backup; Cipherline asks before removing anything.
+                        </p>
+                        <div className="mt-2">
+                            <ClButton variant="ghost" size="sm" onClick={() => { void onRemoveDamaged(); }} disabled={busy !== null}>Remove damaged items…</ClButton>
+                        </div>
+                    </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex flex-wrap items-center gap-2.5">
                     <ClButton
@@ -896,6 +964,7 @@ export const BackupSection: React.FC = () => {
             {/* Before a backup replaces one holding far more conversations.
                 Keeping the existing backup is the default and the dismiss. */}
             <ShrinkBackupModal warning={shrinkAsk?.warning ?? null} onDecide={ok => shrinkAsk?.decide(ok)} />
+            <DamagedItemsModal ask={damagedAsk?.ask ?? null} onDecide={ok => damagedAsk?.decide(ok)} />
         </div>
     );
 };

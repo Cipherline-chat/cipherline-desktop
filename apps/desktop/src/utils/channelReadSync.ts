@@ -135,8 +135,13 @@ export function shouldAdvanceChannelCursor(p: {
     windowFocused: boolean;
     documentVisible: boolean;
     isOwnMessage: boolean;
+    /** Real input within AUTO_READ_MAX_IDLE_MS (utils/inputRecency.ts). An idle
+     *  PC with the channel open must not report a read: it cancels the phone's
+     *  notification. Required: an explicit user action is not this path. */
+    recentInput: boolean;
 }): boolean {
     return !p.isOwnMessage
+        && p.recentInput
         && p.activeChannelIsText
         && p.activeChannelId === p.messageChannelId
         && p.windowFocused

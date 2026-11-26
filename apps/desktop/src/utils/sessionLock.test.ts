@@ -92,12 +92,24 @@ describe('status goes idle on lock and is restored on unlock', () => {
         expect(effectiveIdleSeconds(3600, T + 3_600_000 + 2000)).toBeCloseTo(2, 1);
         expect(verdict({ wasIdle: true, idleSeconds: effectiveIdleSeconds(3600, T + 3_600_000 + 2000) })).toBe(false);
         // ...but it is not a permanent override: long after, the clock rules again
-        // (400 s after the unlock with no input: past the 300 s timeout, so idle again)
-        expect(effectiveIdleSeconds(3600, T + 3_600_000 + 400_000)).toBe(400);
+        // (past the 10 s unlock window the OS clock decides again, so a late or
+        // repeated signal cannot hold idle near 0 for a whole timeout)
+        expect(effectiveIdleSeconds(3600, T + 3_600_000 + 400_000)).toBe(3600);
+        expect(effectiveIdleSeconds(3600, T + 3_600_000 + 11_000)).toBe(3600);
         expect(verdict({ wasIdle: false, idleSeconds: 400 })).toBe(true);
         // unknown / negative readings stay unknown (never promoted to "recent input")
         expect(effectiveIdleSeconds(Number.NaN, T)).toBeNaN();
         expect(effectiveIdleSeconds(-1, T)).toBe(-1);
+    });
+
+    it('a repeated or spurious unlock-screen (no lock before it) does not refresh the "just used" cap', () => {
+        applySessionPowerSignal('unlock-screen', T); // never locked: spurious
+        expect(effectiveIdleSeconds(3600, T + 2000)).toBe(3600);
+        applySessionPowerSignal('lock-screen', T + 5000);
+        applySessionPowerSignal('unlock-screen', T + 6000); // real
+        expect(effectiveIdleSeconds(3600, T + 8000)).toBeCloseTo(2, 1);
+        applySessionPowerSignal('unlock-screen', T + 60_000); // repeated, no lock between
+        expect(effectiveIdleSeconds(3600, T + 62_000)).toBe(3600);
     });
 
     describe('what the verdict does to the user\'s chosen status', () => {
@@ -182,7 +194,7 @@ describe('wiring (hooks import Electron-bound code, so the source is pinned)', (
         const src = read('../hooks/useRealtime.ts');
         expect(src).toContain('applySessionPowerSignal(signal)');
         expect(src).toContain("document.addEventListener('pointerdown', onInteraction, true)");
-        expect(src).toContain('effectiveIdleSeconds(secs)');
+        expect(src).toContain('transform: effectiveIdleSeconds');
     });
 
     it('useUserStatus: a session flip re-evaluates idle at once, and a locked session skips the idle clock', () => {

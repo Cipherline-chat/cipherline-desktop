@@ -10,6 +10,7 @@ import { apiUrl } from '../utils/apiPath';
 import type { OpenedBackupFile } from '../services/driveBackup';
 import { Lock, Mail, Eye, EyeOff, Upload, KeyRound, Smartphone, Calendar, ShieldCheck, Monitor, Sparkles, CheckCircle2, ChevronRight, HardDrive, Gift, Check, X, Loader2 } from 'lucide-react';
 import { markLocalHistory, probeLocalHistory } from '../utils/localHistoryFlag';
+import { recordBackupDiag } from '../utils/backupDiagnostics';
 import { restartApp } from '../utils/restartApp';
 import { startOnboarding } from '../utils/onboardingProgress';
 import cipherlineMark from '../assets/cipherline-mark.svg';
@@ -1146,6 +1147,7 @@ const AuthScreen: React.FC = () => {
                 const { openBackupFile } = await import('../services/driveBackup');
                 backup = await openBackupFile(restoreFile, restorePassword);
             } catch (err: unknown) {
+                recordBackupDiag('restore', { ok: false, step: 'decrypt', err, dest: 'local' });
                 // A wrong passphrase and a corrupt file both surface as an
                 // AES-GCM auth-tag failure, so those keep the generic message;
                 // anything the reader explains for itself is shown verbatim.
@@ -1183,10 +1185,18 @@ const AuthScreen: React.FC = () => {
             // and every registry-included setting are applied by the shared
             // restore code. The hand-maintained subset that used to live here
             // had already drifted away from it.
+            // Records this device could not read are held: a restore written over
+            // them would stay in memory only and be gone after the next restart,
+            // so the restore would look done and change nothing. Choosing to
+            // restore a file here is the consent to replace them (they were
+            // unreadable anyway); nothing else is removed.
+            try { await secureLocalStore.discardUnreadableRecords(); } catch { /* restore anyway; Settings → Backup can remove them */ }
             await backup.apply(pendingRegPayload.userId);
+            recordBackupDiag('restore', { ok: true, step: 'done', dest: 'local' });
             markLocalHistory(pendingRegPayload.userId);
             login(pendingRegPayload.token, pendingRegPayload.userId, pendingRegPayload.deviceId, false, pendingRegPayload.refresh_token);
         } catch (err: unknown) {
+            recordBackupDiag('restore', { ok: false, step: 'apply', err, dest: 'local' });
             setError(errText(err) || 'Restore failed.');
         } finally {
             setRestoring(false);

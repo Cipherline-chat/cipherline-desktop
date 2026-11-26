@@ -20,6 +20,9 @@ import {
     isCoolingOff,
     CHANNEL_KEY_RETRY_LIMIT,
     CHANNEL_KEY_COOL_OFF_MS,
+    planFallbackRotations,
+    FALLBACK_ROTATION_AFTER_MS,
+    FALLBACK_ROTATION_BUSY_AFTER_MS,
     computeEpochsToDistribute,
     decideEnvelopesReadyAction,
     ROTATION_REASONS,
@@ -353,6 +356,16 @@ describe('shouldGiveUpOnChannelKey', () => {
 
     it('gives up beyond the retry limit', () => {
         expect(shouldGiveUpOnChannelKey(CHANNEL_KEY_RETRY_LIMIT + 5)).toBe(true);
+    });
+});
+
+describe('computeCoolOffUntil growth on repeated give-ups', () => {
+    it('doubles per consecutive give-up and caps at 2 h', () => {
+        expect(computeCoolOffUntil(0, 1)).toBe(CHANNEL_KEY_COOL_OFF_MS);
+        expect(computeCoolOffUntil(0, 2)).toBe(2 * CHANNEL_KEY_COOL_OFF_MS);
+        expect(computeCoolOffUntil(0, 3)).toBe(4 * CHANNEL_KEY_COOL_OFF_MS);
+        expect(computeCoolOffUntil(0, 99)).toBe(2 * 60 * 60 * 1000);
+        expect(computeCoolOffUntil(0)).toBe(CHANNEL_KEY_COOL_OFF_MS); // default unchanged
     });
 });
 
@@ -818,5 +831,26 @@ describe('splitMissingKeyChannels — only a device with NO key is gated', () =>
     it('together they are exactly computeMissingKeyChannels', () => {
         const { noKey, stale } = splitMissingKeyChannels(chans, local);
         expect([...noKey, ...stale].sort()).toEqual(computeMissingKeyChannels(chans, local).sort());
+    });
+});
+
+describe('planFallbackRotations', () => {
+    const c = (id: string, waitedMs: number, othersOnline = false) => ({ channelId: id, waitedMs, othersOnline });
+    it('POSITIVE CONTROL: a channel gated past 10 min with nobody else online is rotated', () => {
+        expect(planFallbackRotations([c('a', FALLBACK_ROTATION_AFTER_MS)], { ownIdentityPublished: true })).toEqual(['a']);
+    });
+    it('not before the wait', () => {
+        expect(planFallbackRotations([c('a', FALLBACK_ROTATION_AFTER_MS - 1)], { ownIdentityPublished: true })).toEqual([]);
+    });
+    it('139 due channels: only 3 per sweep, the longest-waiting first', () => {
+        const many = Array.from({ length: 139 }, (_, i) => c(`c${i}`, FALLBACK_ROTATION_AFTER_MS + i * 1000));
+        expect(planFallbackRotations(many, { ownIdentityPublished: true })).toEqual(['c138', 'c137', 'c136']);
+    });
+    it('another member online: waits the longer 60 min', () => {
+        expect(planFallbackRotations([c('a', FALLBACK_ROTATION_BUSY_AFTER_MS - 1, true)], { ownIdentityPublished: true })).toEqual([]);
+        expect(planFallbackRotations([c('a', FALLBACK_ROTATION_BUSY_AFTER_MS, true)], { ownIdentityPublished: true })).toEqual(['a']);
+    });
+    it('an install whose identity is not the published one re-keys nothing', () => {
+        expect(planFallbackRotations([c('a', 9e9)], { ownIdentityPublished: false })).toEqual([]);
     });
 });

@@ -8,6 +8,10 @@
 //!   done { sha256(manifest) } ------->    verify, every record present
 //!             <-----------------------  done { same }          (completion acknowledgement)
 //! ```
+//! While the receiver verifies and stores records it sends a progress beacon (a ping carrying [`crate::frame::PROGRESS_BEACON`]) at most every
+//! [`beacon_every`]. The sender's last byte leaves long before the receiver has stored it (socket buffers and the frame queues hold
+//! megabytes), so the sender's wait for the acknowledgement only times out after a whole step timeout WITHOUT a beacon: a receiver that is
+//! still working is waited for, one that stopped is not. Beacons are pings, so a peer without this rule ignores them.
 //! Memory is constant: at most a handful of 1 MiB frames are alive at once, whatever the history size.
 //! Resume is a NEW authenticated connection running the same two functions again: the receiver's `want`
 //! lists only the records it does not yet hold. Records are always resent whole.
@@ -407,6 +411,20 @@ async fn send_frame(conn: &Conn, opts: &TransferOpts, ty: u8, payload: Vec<u8>) 
 
 fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
 
+/// How often a receiver that is working through records says so: a quarter of its step timeout, at most once a second. The sender's step
+/// timeout is not known here; peers use the same defaults, and a quarter leaves room for a peer configured shorter.
+pub fn beacon_every(step_timeout: Duration) -> Duration { (step_timeout / 4).min(Duration::from_secs(1)) }
+
+/// The receiver's progress beacon, sent when one is due. Best effort: see [`Conn::try_beacon`].
+struct Beacon { every: Duration, last: tokio::time::Instant }
+
+impl Beacon {
+    fn new(step_timeout: Duration) -> Self { Self { every: beacon_every(step_timeout), last: tokio::time::Instant::now() } }
+    fn tick(&mut self, conn: &Conn) {
+        if self.last.elapsed() >= self.every { conn.try_beacon(); self.last = tokio::time::Instant::now(); }
+    }
+}
+
 fn report(opts: &TransferOpts, p: Progress) {
     if let Some(f) = &opts.progress { f(p) }
 }
@@ -489,7 +507,15 @@ async fn sender_inner<S: RecordSource>(conn: &mut Conn, src: &mut S, opts: &Tran
     }
 
     send_frame(conn, opts, T_DONE, mdigest.to_vec()).await?;
-    let f = next_frame(conn, opts).await?;
+    // The receiver may still be verifying and storing everything that was in flight when our last byte left. Its silence counts only while
+    // it shows no progress: a step timeout that saw a progress beacon starts another one.
+    let f = loop {
+        let seen = conn.beacons();
+        match next_frame(conn, opts).await {
+            Err(NearError::Timeout("peer silent")) if conn.beacons() != seen => continue,
+            r => break r?,
+        }
+    };
     if f.ty != T_DONE || f.payload != mdigest { return Err(NearError::Protocol("bad completion acknowledgement".into())); }
     Ok(summary)
 }
@@ -546,6 +572,7 @@ async fn receiver_inner<K: RecordSink, S: ReceiverStore>(conn: &mut Conn, sink: 
     report(opts, progress(done_bytes, &have));
 
     let mut summary = RecvSummary { records_received: 0, bytes_received: 0, complete: false };
+    let mut beacon = Beacon::new(opts.step_timeout);
     for idx in wanted {
         let meta = &manifest.records[idx as usize];
         let mut hasher = Sha256::new();
@@ -566,6 +593,7 @@ async fn receiver_inner<K: RecordSink, S: ReceiverStore>(conn: &mut Conn, sink: 
                     next_chunk += 1;
                     summary.bytes_received += data.len() as u64;
                     report(opts, progress(done_bytes + got, &have));
+                    beacon.tick(conn);
                 }
                 T_RECORD_END => {
                     if f.payload.len() != 36 || u32::from_be_bytes(f.payload[..4].try_into().unwrap()) != idx { return Err(NearError::Protocol("bad record_end".into())); }
@@ -590,6 +618,7 @@ async fn receiver_inner<K: RecordSink, S: ReceiverStore>(conn: &mut Conn, sink: 
         done_bytes += meta.bytes;
         summary.records_received += 1;
         report(opts, progress(done_bytes, &have));
+        beacon.tick(conn);
     }
 
     let f = next_frame(conn, opts).await?;

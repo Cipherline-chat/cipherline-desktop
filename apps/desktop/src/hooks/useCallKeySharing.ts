@@ -92,7 +92,8 @@ export interface KeyRequestInput {
     /** The requester's user and device, from the decrypted envelope. */
     senderUserId: string;
     senderDeviceId: string | null | undefined;
-    /** `actionFor(verdict, 'key_material') === 'accept'` for this envelope. */
+    /** The call-key trust decision for this envelope is 'accept' or 'accept_warn'
+     *  (utils/callKeyTrust.ts `routeIncomingKeyRequest`). */
     senderTrusted: boolean;
 }
 

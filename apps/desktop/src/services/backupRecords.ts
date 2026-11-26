@@ -57,6 +57,8 @@ import { ownedCustomSounds } from './backupRegistry';
 import { personalEmojis } from '../utils/personalEmoji/service';
 import { getEncryptedAttachment, putEncryptedAttachment } from '../utils/attachmentCache';
 import { sha256Hex, IMMUTABLE_HASH, type ContainerWriter, type OpenedContainer } from '../utils/backupContainer';
+import secureLocalStore from '../utils/secureLocalStore';
+import { holdFromUnreadable, type BackupHold } from './backupHold';
 
 /** Server fallback for attachment bytes not in the local cache. Imported
  *  lazily: attachmentDownload pulls in axios, which reads `window.location`
@@ -97,6 +99,12 @@ export interface BackupPlan {
     /** How many `att:` specs are subject to the size cap / server fetch. */
     attachmentIds: string[];
     attachmentSizeHints: Record<string, number>;
+    /**
+     * Set when the store loaded without some records it could not read. The export
+     * lacks what those held, so the run keeps the previous backup's copy of it
+     * instead of dropping it (backupHold.ts; applied in runSingleFileBackup).
+     */
+    hold?: BackupHold;
 }
 
 export interface WriteRecordsOpts {
@@ -210,7 +218,7 @@ export async function fingerprintPlan(p: {
     }));
 }
 
-const jsonSpec = async (id: string, value: unknown): Promise<RecordSpec> => {
+export const jsonSpec = async (id: string, value: unknown): Promise<RecordSpec> => {
     const bytes = enc.encode(JSON.stringify(value));
     return { id, kind: 'json', hash: await sha256Hex(bytes), load: async () => bytes };
 };
@@ -320,12 +328,16 @@ export async function buildBackupPlan(
         },
     });
 
+    let hold: BackupHold | undefined;
+    try { hold = holdFromUnreadable(secureLocalStore.unreadableKeyList(), userId); } catch { hold = undefined; }
+
     return {
         userId,
         fingerprint: await fingerprintFromSpecs(records),
         records,
         attachmentIds: refs.ids,
         attachmentSizeHints: refs.sizeHints,
+        ...(hold ? { hold } : {}),
     };
 }
 

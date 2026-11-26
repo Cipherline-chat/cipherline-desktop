@@ -75,6 +75,19 @@ export const PREFETCH_REASK_DEDUP_MS = 60_000;
 /** A newer newest-epoch than the one last asked about is asked at once — but
  *  not twice inside this gap. */
 export const PREFETCH_NEWER_EPOCH_MIN_GAP_MS = 10_000;
+/**
+ * A KEYLESS channel is re-asked by the background tick on the plain 60 s dedup
+ * for its first this-many asks (someone is probably waiting on it, and the
+ * holder may simply not have been online yet), and on the history-gap back-off
+ * (5 min doubling to 2 h) after that. The request stays OPEN on the API and
+ * every holder serves it the moment it connects, so an unservable channel
+ * (its holders are gone) must not be re-POSTed every tick forever: that was
+ * one request per keyless channel per device per 5 min, indefinitely
+ * (2026-11-25 key-load audit). Event triggers (open, reconnect, permission
+ * change, envelopes ready) are unaffected and still re-ask after 60 s.
+ */
+export const KEYLESS_TICK_FREE_ASKS = 4;
+
 /** A planned ask whose channel was asked about by ANOTHER path (opening it, the
  *  fast re-ask schedule) while it waited in the queue is moot if that was this
  *  recently; forced asks are exempt. */
@@ -280,6 +293,9 @@ export function planKeyPrefetch(args: PlanArgs): PrefetchPlan {
             plan.skipped.push({ channelId: cid, reason: 'recently_asked' });
         } else if (mode === 'tick' && !isKeyless) {
             if (now - entry.at >= gapReaskDelayMs(entry.count)) reason = 'stale_backoff';
+            else plan.skipped.push({ channelId: cid, reason: 'backoff' });
+        } else if (mode === 'tick' && entry.count > KEYLESS_TICK_FREE_ASKS) {
+            if (now - entry.at >= gapReaskDelayMs(entry.count - KEYLESS_TICK_FREE_ASKS)) reason = 'stale_backoff';
             else plan.skipped.push({ channelId: cid, reason: 'backoff' });
         } else {
             reason = 'reask';

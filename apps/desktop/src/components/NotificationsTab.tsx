@@ -236,7 +236,7 @@ export const NotificationsTab: React.FC = () => {
                 <Divider />
                 <Row
                     label="Idle timeout"
-                    desc="How long you can be away from this computer before it counts as idle. You show as Away, and new messages start going to your phone."
+                    desc="How long you can be away from this computer before you show as Away. New messages start going to your phone after this time, but never later than 5 minutes, even if this is set higher."
                     right={
                         <ClSelect<string>
                             value={String(normalizeIdleTimeoutMinutes(prefs.idle_timeout_minutes))}

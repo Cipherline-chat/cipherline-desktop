@@ -169,12 +169,42 @@ export type AttentionLostReason = 'lock' | 'suspend' | 'idle' | 'quit';
 
 /**
  * The one `presence:heartbeat` frame this client sends, in every state:
- * `{"event":"presence:heartbeat","data":{"active":<boolean>}}`. The server
- * (gateway.gateway.ts onHeartbeat, HeartbeatEventDto) owns what it does with
- * `active`; this client only guarantees it is never `true` while the session
- * is locked or suspended, or once input idle time has reached the user's
- * idle timeout.
+ * `{"event":"presence:heartbeat","data":{"active":<boolean>[,"idle_ms":<n>]}}`.
+ * The server (gateway.gateway.ts onHeartbeat, HeartbeatEventDto) owns what it
+ * does with `active`; this client only guarantees it is never `true` while the
+ * session is locked or suspended, or once input idle time has reached the
+ * user's idle timeout.
+ *
+ * `idle_ms` (only ever alongside `active:true`) is how long ago this PC last
+ * had real input. It is what lets the server tell "the user is at this PC"
+ * from "this PC is merely still inside its idle timeout", so a phone the user
+ * picked up afterwards is not held back by it ("the device you used most
+ * recently wins", apps/api gateway/attention-takeover.ts). Omitted when
+ * unknown; an older server never sees it as anything but an extra field it
+ * does not read.
  */
-export function heartbeatPayload(active: boolean): string {
-    return JSON.stringify({ event: 'presence:heartbeat', data: { active } });
+export function heartbeatPayload(active: boolean, idleMs?: number): string {
+    const data: { active: boolean; idle_ms?: number } = { active };
+    if (active && idleMs !== undefined && Number.isInteger(idleMs) && idleMs >= 0) data.idle_ms = idleMs;
+    return JSON.stringify({ event: 'presence:heartbeat', data });
+}
+
+/** Mirrors the server's bound (24 h): beyond it the field would be ignored. */
+export const MAX_REPORTED_IDLE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The `idle_ms` to report from the last polled OS idle reading.
+ *
+ * The reading is polled (up to ~30 s apart) and heartbeats are sent between
+ * polls, so the raw value understates how long the PC has been idle by the
+ * reading's age. Adding the age errs toward "idle longer than it may really
+ * be", the safe direction: the worst case is one extra phone buzz until the
+ * next poll, never a phone silenced because of input that did not happen.
+ * An unknown / non-finite / negative reading is reported as unknown
+ * (`undefined`), and the server then falls back to its time-based rule.
+ */
+export function idleMsForHeartbeat(idleSeconds: number, readAgeMs: number): number | undefined {
+    if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return undefined;
+    const age = Number.isFinite(readAgeMs) && readAgeMs > 0 ? readAgeMs : 0;
+    return Math.min(MAX_REPORTED_IDLE_MS, Math.round(idleSeconds * 1000 + age));
 }

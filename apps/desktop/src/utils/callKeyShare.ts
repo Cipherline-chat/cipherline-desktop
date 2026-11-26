@@ -111,7 +111,7 @@ export function decideKeyRequestResponse(input: {
     requestedCallId: string;
     /** Do we hold an accepted (epoch >= 1) key for the call in this conversation? */
     holdsAcceptedKey: boolean;
-    /** `actionFor(verdict, 'key_material') === 'accept'` for the requester. */
+    /** The call-key trust decision for the requester is 'accept' or 'accept_warn' (utils/callKeyTrust.ts). */
     senderTrusted: boolean;
     /** false = known non-member; true/undefined = member or not knowable here. */
     requesterIsMember: boolean | undefined;

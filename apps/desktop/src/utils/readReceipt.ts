@@ -49,14 +49,46 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  *  - **Receipts off meant no sync at all.** With "show read receipts" off the
  *    effect returned early, so reading on the desktop never cleared the phone.
  *    It now sends a `self_only` read: the user's own devices learn, nobody else.
+ *
+ * Notification-reliability audit (2026-11-25): focus alone is not a reader
+ * either. A focused window on an idle PC is not looked at, so an auto read also
+ * needs `recentInput`; the id is not marked sent, and the effect re-runs when
+ * input returns, so it goes out then.
  */
 export function readReceiptToSend(p: {
     lastId: string | null;
     lastSentId: string | null;
     attended: boolean;
+    /** Real input (OS idle clock or this window) within AUTO_READ_MAX_IDLE_MS.
+     *  An AUTO read needs it; explicit user actions pass `true`. See
+     *  utils/inputRecency.ts: an idle PC with a chat focused used to "read"
+     *  every arriving message and cancel the phone's notification. */
+    recentInput: boolean;
     showReadReceipts: boolean;
 }): { id: string; selfOnly: boolean } | null {
     if (!p.lastId || p.lastId === p.lastSentId) return null;
     if (!p.attended) return null;
+    if (!p.recentInput) return null;
     return { id: p.lastId, selfOnly: !p.showReadReceipts };
+}
+
+/**
+ * The `message:read` WS payload. `idle_ms` (ms since real input, same source as
+ * the heartbeat's) lets the server cancel the phone's pending notification only
+ * for a read a person plausibly made; omitted when unknown. Minimal on purpose.
+ */
+export function buildMessageReadData(
+    conversationId: string,
+    lastReadMessageId: string,
+    opts: { selfOnly?: boolean } | undefined,
+    idleMs: number | undefined,
+    readAt: number = Date.now(),
+): Record<string, unknown> {
+    return {
+        conversation_id: conversationId,
+        last_read_message_id: lastReadMessageId,
+        read_at: readAt,
+        ...(opts?.selfOnly ? { self_only: true } : {}),
+        ...(idleMs !== undefined && Number.isInteger(idleMs) && idleMs >= 0 ? { idle_ms: idleMs } : {}),
+    };
 }

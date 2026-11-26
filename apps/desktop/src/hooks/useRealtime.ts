@@ -25,7 +25,11 @@ import {
     computeIsAttentive, heartbeatPayload, isSessionInUse, reduceSessionPowerState, nextIdlePollDelayMs,
     SESSION_AVAILABLE, type SessionPowerState,
 } from '../utils/attentionState';
-import { getIdleThresholdSeconds } from '../utils/idleThreshold';
+import { getPushPresenceThresholdSeconds } from '../utils/idleThreshold';
+import { createIdlePoller, type IdlePoller } from '../utils/idlePoller';
+import { noteServerCaps, resetServerCaps, serverAcceptsReadIdleMs } from '../utils/serverCaps';
+import { buildMessageReadData } from '../utils/readReceipt';
+import { getInputIdleMs, installLocalInputTracking, publishOsIdleReading } from '../utils/inputRecency';
 import { applySessionPowerSignal, effectiveIdleSeconds, noteSessionInteraction } from '../utils/sessionLock';
 import { applyRemoteAttention, resetRemoteAttention } from '../utils/remoteAttention';
 import { parseChannelReadEvent, type ChannelReadEvent } from '../utils/channelReadSync';
@@ -244,7 +248,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     // at send time from them:
     //   powerStateRef   — whether the OS session is locked / suspended, from
     //                     main's powerMonitor pushes (onOsPowerSignal).
-    //   idleSecondsRef  — last polled electronAPI.getSystemIdleTime() reading.
+    //   idlePollerRef   — the polled electronAPI.getSystemIdleTime() reading.
     //                     Starts at +Infinity (unknown) so the FIRST heartbeat
     //                     this session sends — before any poll has completed —
     //                     reports not-attentive rather than guessing true. See
@@ -255,10 +259,23 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     // app is in use (the OS shows its own notification), so the phone stays
     // quiet. The threshold is the user's own "Idle timeout" setting.
     const powerStateRef = useRef<SessionPowerState>(SESSION_AVAILABLE);
-    const idleSecondsRef = useRef<number>(Number.POSITIVE_INFINITY);
-    /** The attention verdict, recomputed at send time from the live inputs. */
+    /** The hardened OS idle poll (utils/idlePoller.ts). It reports +Infinity
+     *  (unknown = not attentive) for a failed, hung or stale reading, so no
+     *  path can leave a stale low value standing in for "just used". */
+    const idlePollerRef = useRef<IdlePoller | null>(null);
+    const currentIdleSeconds = (): number => idlePollerRef.current?.idleSeconds() ?? Number.POSITIVE_INFINITY;
+    /** The attention verdict, recomputed at send time from the live inputs.
+     *  PUSH threshold = min(Idle timeout, 5 min): the setting drives the visible
+     *  auto-away status (useUserStatus) but must not let an unattended PC hold
+     *  the phone quiet for up to 30 min (audit 2026-11-25, A2). */
     const currentAttention = (): boolean =>
-        computeIsAttentive(isSessionInUse(powerStateRef.current), idleSecondsRef.current, getIdleThresholdSeconds());
+        computeIsAttentive(isSessionInUse(powerStateRef.current), currentIdleSeconds(), getPushPresenceThresholdSeconds());
+    /** The one heartbeat frame: the verdict plus, while active, how long ago the
+     *  PC last had real input (`idle_ms`: OS clock or trusted input in this
+     *  window, whichever is newer) so the server can tell a phone the user
+     *  picked up afterwards from a PC still inside its idle timeout. */
+    const currentHeartbeat = (active: boolean = currentAttention()): string =>
+        heartbeatPayload(active, active ? getInputIdleMs() : undefined);
     /** Send a presence:heartbeat carrying an explicit `active` value RIGHT
      *  NOW, outside the normal 15s cadence — the off-cycle half of the spec:
      *  `active:false` at once on screen lock, suspend or app quit, and on the
@@ -268,7 +285,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     const sendAttentionNow = useCallback((active: boolean) => {
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(heartbeatPayload(active));
+            ws.send(currentHeartbeat(active));
         }
     }, []);
     /** `presence:idle` — this connection's user is (not) idle, for a server
@@ -723,16 +740,17 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             let confirmedConnected = false;
 
             ws.onopen = () => {
+                resetServerCaps(); // a new socket may be an older server: re-learn what it accepts
                 netTiming().wsOpened(performance.now() - wsOpenStartedAt);
                 retryDelay = 1000;
                 lastInboundAt = Date.now();
                 console.log('[WS] Connected ✓');
                 // Continuity: carries the current attention verdict on every
-                // heartbeat, including this very first one — idleSecondsRef
+                // heartbeat, including this very first one — idle poller
                 // starts at +Infinity (see its declaration) until the idle
                 // poll's first read, so a fresh connect never CLAIMS
                 // attention it hasn't verified.
-                ws.send(heartbeatPayload(currentAttention()));
+                ws.send(currentHeartbeat());
                 // Signal consumers (useUserStatus) to re-push their status so
                 // friends see them as online after a reconnect. Fine to do
                 // this on the bare handshake, unlike 'cipherline:ws-connected'
@@ -758,7 +776,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     // inputs at send time (a locked or suspended session
                     // reports false even if a timer runs late), never a
                     // second timer or a second heartbeat.
-                    ws.send(heartbeatPayload(currentAttention()));
+                    ws.send(currentHeartbeat());
                 }, HEARTBEAT_INTERVAL_MS);
             };
 
@@ -806,6 +824,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     // notification pipeline reads it (utils/remoteAttention.ts);
                     // a missing field (older server, Redis hiccup) reads as
                     // unknown, which means "notify as before".
+                    if (msg.event === 'presence:ack') noteServerCaps(msg.data);
                     if (msg.event === 'presence:ack' || msg.event === 'presence:attention') {
                         applyRemoteAttention(msg.data);
                     }
@@ -1499,24 +1518,17 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         // threshold would be crossed while attentive and polls quickly once
         // idle, so both edges are precise to a second or two. A failed read is
         // "unknown", which is not-attentive (fail conservative).
-        let disposed = false;
-        let pollGen = 0;
-        let pollTimer: ReturnType<typeof setTimeout> | null = null;
-        const pollNow = () => {
-            if (disposed || !electronAPI?.getSystemIdleTime) return;
-            if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-            const gen = ++pollGen;
-            const before = currentAttention();
-            electronAPI.getSystemIdleTime()
-                .then((secs: number) => { idleSecondsRef.current = effectiveIdleSeconds(secs); })
-                .catch(() => { idleSecondsRef.current = Number.POSITIVE_INFINITY; })
-                .then(() => {
-                    if (disposed || gen !== pollGen) return;
-                    const after = currentAttention();
-                    if (after !== before) sendAttentionNow(after);
-                    pollTimer = setTimeout(pollNow, nextIdlePollDelayMs(idleSecondsRef.current, getIdleThresholdSeconds()));
-                });
-        };
+        const poller = createIdlePoller({
+            read: electronAPI?.getSystemIdleTime ? () => electronAPI.getSystemIdleTime() : undefined,
+            transform: effectiveIdleSeconds,
+            isAttentive: currentAttention,
+            onVerdictChange: sendAttentionNow,
+            onReading: (secs, at) => publishOsIdleReading(secs, at),
+            nextDelayMs: secs => nextIdlePollDelayMs(secs, getPushPresenceThresholdSeconds()),
+        });
+        idlePollerRef.current = poller;
+        const removeLocalInput = installLocalInputTracking();
+        const pollNow = () => poller.pollNow();
 
         // Lock / suspend: report not-attentive AT ONCE. The idle clock cannot
         // do this job (it would have to run out first, and a locked session
@@ -1531,17 +1543,19 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             if (!isSessionInUse(powerStateRef.current)) {
                 sendAttentionNow(false);
             } else {
-                idleSecondsRef.current = Number.POSITIVE_INFINITY;
+                poller.invalidate();
                 pollNow();
             }
         };
         const unsubPower = electronAPI?.onOsPowerSignal?.(onPowerSignal);
         // Backstop for a missed unlock edge: input in THIS window proves the
         // session is in use (see noteSessionInteraction).
-        const onInteraction = () => {
+        const onInteraction = (e: Event) => {
+            // Real input only: a synthetic event must not clear "locked".
+            if (!e.isTrusted) return;
             if (!noteSessionInteraction()) return;
             powerStateRef.current = SESSION_AVAILABLE;
-            idleSecondsRef.current = Number.POSITIVE_INFINITY;
+            poller.invalidate();
             pollNow();
         };
         document.addEventListener('pointerdown', onInteraction, true);
@@ -1557,8 +1571,9 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         pollNow();
 
         return () => {
-            disposed = true;
-            if (pollTimer) clearTimeout(pollTimer);
+            poller.dispose();
+            if (idlePollerRef.current === poller) idlePollerRef.current = null;
+            removeLocalInput();
             unsubPower?.();
             unsubQuit?.();
             document.removeEventListener('pointerdown', onInteraction, true);
@@ -1599,11 +1614,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
      */
     const sendReadReceipt = useCallback((conversation_id: string, last_read_message_id: string, opts?: { selfOnly?: boolean }): boolean => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
+            // `idle_ms`: how long ago this PC last had real input, so the server
+            // cancels the phone's pending notification only for a read a person
+            // plausibly made (<= 2 min). Omitted when unknown (server: not proven).
             wsRef.current.send(JSON.stringify({
                 event: 'message:read',
-                data: opts?.selfOnly
-                    ? { conversation_id, last_read_message_id, read_at: Date.now(), self_only: true }
-                    : { conversation_id, last_read_message_id, read_at: Date.now() },
+                data: buildMessageReadData(conversation_id, last_read_message_id, opts, serverAcceptsReadIdleMs() ? getInputIdleMs() : undefined),
             }));
             return true;
         }

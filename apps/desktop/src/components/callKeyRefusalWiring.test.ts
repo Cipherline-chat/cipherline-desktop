@@ -34,9 +34,14 @@ describe('a call_key refused at the sender-trust gate', () => {
         expect(at).not.toContain('keyB64');
         expect(at).not.toContain('e2ee_key_b64');
     });
-    it('the trust gate itself is unchanged: only accept adopts a key', () => {
-        expect(dashboard).toContain("? actionFor(senderVerdict, 'key_material')");
-        expect(dashboard).toContain("if (action === 'accept' && envelopeSenderUserId) {");
+    it('the call_key gate refuses through routeIncomingCallKey; only accept / accept_warn adopt (utils/callKeyTrust.ts)', () => {
+        // 2026-11-25 owner decision: the incident's own case (a verified contact's
+        // published, unverified device) is now accept_warn, not a refusal — the
+        // decision table is unit-tested in utils/callKeyTrust.test.ts.
+        const at = slice(dashboard, "if (content.type === 'call_key' && content.call_id && content.e2ee_key_b64) {", 5200);
+        expect(at).toContain('routeIncomingCallKey({');
+        expect(at).toContain('adopt: () => acceptRemoteCallKeyRef.current({');
+        expect(at).toContain('onRefused: () => {');
     });
     it('is forgotten once a key for that call is accepted', () => {
         const at = slice(dashboard, 'const d = callKeyStoreRef.current.recordRemote({ ...input, senderIsMember });', 600);
@@ -49,8 +54,11 @@ describe('the keyless call panel', () => {
         expect(dashboard).toContain('callKeyRefusalsRef.current.get(activeCall.conversation_id, activeCall.id)');
         const at = slice(dashboard, '<CallEncryptionIndicator\n                                            mode={keyNoticeMode}', 2200);
         expect(at).toContain('refusal={activeCallKeyRefusal');
-        expect(at).toContain('callKeyRefusalNotice(r.reason, who)');
-        expect(at).toContain('onReview: conv ? () => handleStartChat({');
+        expect(at).toContain('callKeyRefusalNotice(r.reason, callKeySenderName(r.senderUserId, r.conversationId))');
+        expect(at).toContain('onReview: reviewCallKeySender(r.senderUserId, r.conversationId)');
+        // Review opens the person's DM (where the identity banner lives), else the call's conversation.
+        const review = slice(dashboard, 'const reviewCallKeySender = (senderUserId: string, conversationId: string) => {', 900);
+        expect(review).toContain('return () => handleStartChat({');
     });
     it('renders the reason with a review action and a leave, and still never a plaintext way in', () => {
         const at = slice(indicator, 'if (refusal && !channelName) {', 2200);
@@ -68,7 +76,7 @@ describe('answering the identity warning re-asks for the key', () => {
         expect(dashboard).not.toContain('onKeyChangeResolved={clearSenderWarning}');
     });
     it('resolveSenderWarning retires the warning, then restarts the request schedule only when the refusal came from that person', () => {
-        const at = slice(dashboard, 'const resolveSenderWarning = useCallback((uid: string) => {', 900);
+        const at = slice(dashboard, 'const resolveSenderWarning = useCallback((uid: string) => {', 1500);
         expect(at).toContain('clearSenderWarning(uid);');
         expect(at).toContain('shouldRerequestAfterResolve({ resolvedUserId: uid, activeCall: call, hasKey, refusal })');
         expect(at).toContain('setCallKeyRerequestNonce(n => n + 1)');

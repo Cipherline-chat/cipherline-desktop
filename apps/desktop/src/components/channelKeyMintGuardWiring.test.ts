@@ -58,14 +58,16 @@ describe('the composer gate means "no key at all", consistently', () => {
     });
 
     it('the retry timer reads the gate through a ref, and never drives stale-epoch channels (the 2026-10-07 request storm)', () => {
-        const timer = body('const FALLBACK_ROTATION_AFTER_MS', 'One outstanding jittered serve timer');
+        const timer = body('// Backstop for the recovery driver pullChannelKeys already runs:', 'One outstanding jittered serve timer');
         expect(timer).toContain('awaitingChannelKeysRef.current');
         expect(timer).not.toMatch(/\}, \[[^\]]*awaitingChannelKeys[,\]]/);
         // stale channels must not be in the periodic sweep set, nor re-keyed on a timer
         expect(timer).toContain('const affectedChannelIds = new Set([...gatedChannelIds, ...undecryptableChannelsRef.current]);');
         expect(timer).not.toContain('staleLatestSinceRef');
         // fallback rotation remains for genuinely keyless (gated) channels only
-        expect(timer).toContain('for (const cid of gatedChannelIds) {');
+        expect(timer).toContain('gatedChannelIds.flatMap(cid => {');
+        // paced: a few per sweep, never from an install whose identity is not the published one
+        expect(timer).toContain('planFallbackRotations(candidates, { ownIdentityPublished: ownStatus !== \'mismatch\' })');
         expect(timer).toContain('void attemptFallbackRotation(sid, cid);');
     });
 });

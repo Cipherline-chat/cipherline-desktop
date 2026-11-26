@@ -519,15 +519,23 @@ describe('background import (owner: "do other stuff while servers are importing"
 });
 
 describe('"Watch a video" link (owner: "a link that says watch a video in the instructions")', () => {
-    it('hidden while DISCORD_IMPORT_VIDEO_URL is empty (the default)', async () => {
+    it('shown by default (DISCORD_IMPORT_VIDEO_URL) as a card, with no iframe or YouTube image in the dialog', async () => {
         const { DISCORD_IMPORT_VIDEO_URL } = await import('../../utils/discordImport/invite');
-        expect(DISCORD_IMPORT_VIDEO_URL).toBe('');
+        expect(DISCORD_IMPORT_VIDEO_URL).toBe('https://www.youtube.com/watch?v=Cm_mfwcGLIU');
         mount();
         await flush();
-        expect(q('[data-testid="video-link"]')).toBeNull();
-        expect(text()).not.toMatch(/Watch a video/);
-        await pasteToken();
-        await click(button(/^Continue$/));
+        const link = q('[data-testid="video-link"]')!;
+        expect(link.tagName).toBe('BUTTON');
+        expect(link.textContent).toMatch(/Opens in your browser · YouTube/);
+        expect(q('iframe')).toBeNull();
+        expect(q('img[src*="youtube"], img[src*="ytimg"]')).toBeNull();
+        await click(link);
+        expect(onOpenExternal).toHaveBeenCalledWith(DISCORD_IMPORT_VIDEO_URL);
+    });
+
+    it('empty videoUrl hides the card', async () => {
+        mount({ videoUrl: '' });
+        await flush();
         expect(q('[data-testid="video-link"]')).toBeNull();
     });
 
@@ -535,7 +543,7 @@ describe('"Watch a video" link (owner: "a link that says watch a video in the in
         mount({ videoUrl: 'https://youtu.be/dQw4w9WgXcQ' });
         await flush();
         const link = q('[data-testid="video-link"]')!;
-        expect(link.textContent).toMatch(/Watch a video/);
+        expect(link.textContent).toMatch(/Watch the walkthrough/);
         expect(link.querySelector('svg')).not.toBeNull();
         await click(link);
         expect(onOpenExternal).toHaveBeenCalledWith('https://youtu.be/dQw4w9WgXcQ');

@@ -22,6 +22,13 @@
  * again → the notice stays. The trust policy is untouched; keys still move
  * only inside the E2EE message channel, only to the call's participants.
  *
+ * Since 2026-11-25 (owner: warn only, like the phones) the incident's exact
+ * case — a verified contact's unverified device that the server publishes —
+ * is no longer refused at all: utils/callKeyTrust.ts adopts that key with an
+ * in-call warning. What still lands here is every other refusal: a changed
+ * key, an unattributed key, and `unrecognized_verified` with no device id or
+ * no positive directory match.
+ *
  * Pure and bounded; no ids are ever logged from here.
  */
 import type { SenderVerdict } from './senderTrust';

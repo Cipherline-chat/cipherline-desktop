@@ -591,8 +591,19 @@ export function shouldGiveUpOnChannelKey(failCount: number): boolean {
     return failCount >= CHANNEL_KEY_RETRY_LIMIT;
 }
 
-export function computeCoolOffUntil(nowMs: number): number {
-    return nowMs + CHANNEL_KEY_COOL_OFF_MS;
+/** Longest a channel's give-up cool-off grows to. */
+export const CHANNEL_KEY_COOL_OFF_MAX_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * `giveUps` = how many times in a row this channel has given up with no key
+ * ever installed in between: the cool-off doubles each time (10 min, 20, 40 ...
+ * capped at 2 h). A distributor whose keys are always refused (2026-11-25: one
+ * device's recovery keys, "unattributed") otherwise got a fresh ask every 10 min
+ * from every device forever.
+ */
+export function computeCoolOffUntil(nowMs: number, giveUps = 1): number {
+    const n = Math.max(1, Math.min(Math.floor(giveUps) || 1, 16));
+    return nowMs + Math.min(CHANNEL_KEY_COOL_OFF_MS * 2 ** (n - 1), CHANNEL_KEY_COOL_OFF_MAX_MS);
 }
 
 /** True while a channel is within its post-give-up cool-off window. */
@@ -939,4 +950,47 @@ export function resolveRotationClaim(params: {
     }) === 'won'
         ? 'distribute'
         : 'discard_and_request';
+}
+
+// ── Fallback-rotation (recovery re-key) pacing ─────────────────────────────
+//
+// 2026-11-25: one device that had sat gated for 10+ minutes re-keyed 139 channels
+// in 12 servers within 5 seconds; every other member then needed a key only that
+// device held, and its identity claim was refused by every desktop, which ended in
+// a request storm. The recovery re-key is a last resort for "no holder is coming
+// back": it must be paced, must not run from an install whose own identity is not
+// the one the server publishes (its keys would be refused anyway), and must wait
+// longer while anybody else in the server is online (they can answer).
+
+/** Channels one 75 s sweep may fallback-rotate. */
+export const FALLBACK_ROTATION_MAX_PER_SWEEP = 3;
+/** Gated this long, a channel may be re-keyed when no other member is online. */
+export const FALLBACK_ROTATION_AFTER_MS = 10 * 60 * 1000;
+/** …and this long when another member of the server is online (they may still answer). */
+export const FALLBACK_ROTATION_BUSY_AFTER_MS = 60 * 60 * 1000;
+
+export interface FallbackRotationCandidate {
+    channelId: string;
+    /** ms since the key request for this gated channel was first filed. */
+    waitedMs: number;
+    /** Another member of the channel's server is online right now. */
+    othersOnline: boolean;
+}
+
+/**
+ * Which gated channels this sweep may re-key: longest-waiting first, at most
+ * `max`. `ownIdentityPublished` false (this install's identity key is NOT the one
+ * the server lists for this device) re-keys nothing.
+ */
+export function planFallbackRotations(
+    candidates: readonly FallbackRotationCandidate[],
+    opts: { ownIdentityPublished: boolean; max?: number },
+): string[] {
+    if (!opts.ownIdentityPublished) return [];
+    const max = opts.max ?? FALLBACK_ROTATION_MAX_PER_SWEEP;
+    return candidates
+        .filter(c => c.waitedMs >= (c.othersOnline ? FALLBACK_ROTATION_BUSY_AFTER_MS : FALLBACK_ROTATION_AFTER_MS))
+        .sort((a, b) => b.waitedMs - a.waitedMs)
+        .slice(0, Math.max(0, max))
+        .map(c => c.channelId);
 }

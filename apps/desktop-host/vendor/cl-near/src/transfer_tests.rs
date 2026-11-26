@@ -512,3 +512,71 @@ async fn resume_rehashes_what_it_holds_not_just_the_length() {
     assert_eq!(rx.bytes_received, total - sizes[0]);
     for (i, m) in manifest.records.iter().enumerate() { assert!(sink.has_record(i as u32, m), "record {i} intact after resume"); }
 }
+
+// ---- the completion acknowledgement after a backlog (the 2026-11-25 pause/resume flake) -------------------------------------------
+
+/// A sink whose commit takes `delay` each (a receiver on slow or contended storage: every record is fsynced, and so is the progress file).
+/// `stall_on`: that ONE record's commit takes `stall` instead (a receiver that stops making progress).
+struct SlowSink { inner: MemSink, delay: Duration, stall_on: Option<u32>, stall: Duration }
+
+/// Runs one side of a transfer on its own thread and runtime, the way a second device would. A [`SlowSink`] blocks its thread (like a
+/// real fsync does); on the test's shared runtime that froze whatever else was queued on the same worker, sometimes the SENDER, which
+/// then could not time out during a stall it was meant to catch (`a_receiver_that_stops_making_progress_still_times_out` failed ~1 in 5).
+fn on_own_device<T: Send + 'static, F: std::future::Future<Output = T>>(f: impl FnOnce() -> F + Send + 'static) -> tokio::task::JoinHandle<T> {
+    tokio::task::spawn_blocking(move || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f()))
+}
+
+impl RecordSink for SlowSink {
+    fn begin_record(&mut self, index: u32, m: &RecordMeta) -> std::io::Result<()> { self.inner.begin_record(index, m) }
+    fn write_chunk(&mut self, index: u32, data: &[u8]) -> std::io::Result<()> { self.inner.write_chunk(index, data) }
+    fn commit_record(&mut self, index: u32) -> std::io::Result<()> {
+        std::thread::sleep(if self.stall_on == Some(index) { self.stall } else { self.delay }); // blocking, like fsync
+        self.inner.commit_record(index)
+    }
+    fn discard_record(&mut self, index: u32) { self.inner.discard_record(index) }
+    fn has_record(&self, index: u32, m: &RecordMeta) -> bool { self.inner.has_record(index, m) }
+}
+
+/// The sender's last byte leaves long before the receiver has stored it: socket buffers (megabytes on loopback and on Wi-Fi) plus the
+/// connection's frame queues hold the tail of the history. Here a 4 MiB pipe holds all 60 records, the receiver needs ~1.8 s to store
+/// them, and the step timeout is 300 ms. The sender used to give up on the completion acknowledgement after one step timeout and report a
+/// failure while the receiver went on to finish: the two sides disagreed about the same transfer (the approver "reconnecting" then timing
+/// out, the new device Done). A receiver that is still storing records says so with progress beacons, and the sender keeps waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_receiver_still_storing_the_backlog_is_waited_for_and_both_sides_finish() {
+    let mut src = SyntheticSource::new(60, 4096, 21);
+    let (a, b) = tokio::io::duplex(4 << 20);
+    let o = TransferOpts { step_timeout: Duration::from_millis(300), ..Default::default() };
+    let so = o.clone();
+    let cs = Conn::new(a, ConnConfig::default());
+    let tx = tokio::spawn(async move { run_sender(cs, &lanproof(), &mut src, &so).await });
+    let mut sink = SlowSink { inner: MemSink::new(false), delay: Duration::from_millis(30), stall_on: None, stall: Duration::ZERO };
+    let t0 = std::time::Instant::now();
+    let rx = on_own_device(move || async move {
+        run_receiver(Conn::new(b, ConnConfig::default()), &lanproof(), &mut sink, &mut SharedStore::default(), &o).await
+    }).await.unwrap();
+    let tx = tx.await.unwrap();
+    assert!(t0.elapsed() > Duration::from_millis(1200), "the receiver really was behind for several step timeouts ({:?})", t0.elapsed());
+    assert!(matches!(rx, Ok(RecvSummary { complete: true, .. })), "{rx:?}");
+    assert!(matches!(tx, Ok(SendSummary { records_sent: 60, .. })), "the sender waits for the acknowledgement instead of giving up: {tx:?}");
+}
+
+/// The beacon only says "still storing": a receiver that stops making progress is still timed out, within two step timeouts of its
+/// last beacon. (The connection's own keep-alive pings never count: see `silent_peer_times_out`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_receiver_that_stops_making_progress_still_times_out() {
+    let mut src = SyntheticSource::new(20, 4096, 22);
+    let (a, b) = tokio::io::duplex(4 << 20);
+    let o = TransferOpts { step_timeout: Duration::from_millis(300), ..Default::default() };
+    let so = o.clone();
+    let cs = Conn::new(a, ConnConfig::default());
+    let tx = tokio::spawn(async move { let t0 = std::time::Instant::now(); (run_sender(cs, &lanproof(), &mut src, &so).await, t0.elapsed()) });
+    let mut sink = SlowSink { inner: MemSink::new(false), delay: Duration::from_millis(5), stall_on: Some(10), stall: Duration::from_secs(3) };
+    let rx = on_own_device(move || async move {
+        run_receiver(Conn::new(b, ConnConfig::default()), &lanproof(), &mut sink, &mut SharedStore::default(), &o).await
+    });
+    let (tx, took) = tx.await.unwrap();
+    assert!(matches!(tx, Err(NearError::Timeout(_))), "{tx:?}");
+    assert!(took < Duration::from_millis(2500), "timed out during the stall, not after it ({took:?})");
+    let _ = rx.await;
+}

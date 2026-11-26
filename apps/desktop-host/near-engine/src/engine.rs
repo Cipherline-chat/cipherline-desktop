@@ -436,6 +436,9 @@ struct Shared {
     /// An own-device session that is still waiting on a person's decision (see [`Undecided`]): the only kind of session a newly
     /// arrived offer may replace.
     undecided: Mutex<Option<Undecided>>,
+    /// The device the running HOLDER session (own_sender_main) answers, from its first moment until the session ends or the next
+    /// one begins. A re-ask from that device replaces the session whatever it is doing (see yield_undecided_to).
+    holder_for: Mutex<Option<String>>,
     /// The nonces of the last offers handed over: the same offer delivered twice opens one sheet and is never answered twice.
     seen_offers: Mutex<VecDeque<[u8; 16]>>,
 }
@@ -489,6 +492,7 @@ impl Ctx {
     fn finish(&self, stop: Stop) {
         *self.sh.shown.lock().unwrap() = None;
         *self.sh.undecided.lock().unwrap() = None;
+        *self.sh.holder_for.lock().unwrap() = None;
         match stop {
             Stop::Cancelled | Stop::Declined => self.go(NearState::Cancelled, |_| {}),
             Stop::PeerCancelled => self.go(NearState::Cancelled, |s| s.error = Some(NearError_ { code: "peer_cancelled".into(), message: "the other device cancelled".into() }.into())),
@@ -1907,6 +1911,7 @@ impl Ctx {
             mr
         };
         let end = tokio::time::Instant::now() + self.env.own_answer;
+        *self.sh.holder_for.lock().unwrap() = Some(offer.from_device.clone());
         *self.sh.undecided.lock().unwrap() = Some(Undecided::Sheet(offer.from_device.clone()));
         // the person decides first (biometric), THEN the answer goes out (the phone core's order)
         loop {
@@ -2016,7 +2021,7 @@ impl NearEngine {
         if stale > 0 {
             crate::nlog!("near: discarded {stale} stale transfer file(s) left by an earlier run");
         }
-        let sh = Arc::new(Shared { m: Mutex::new(Machine::new()), sess: Mutex::new(None), result: Mutex::new(None), paused: AtomicBool::new(false), tok: Mutex::new(None), resume: tokio::sync::Notify::new(), recv_dir: Mutex::new(None), xfer_key: Mutex::new(None), xfer_released: AtomicBool::new(false), local_net: Mutex::new(LocalNetwork::Unknown), own: Mutex::new(None), shown: Mutex::new(None), cooldown: Mutex::new(Default::default()), undecided: Mutex::new(None), seen_offers: Mutex::new(VecDeque::new()) });
+        let sh = Arc::new(Shared { m: Mutex::new(Machine::new()), sess: Mutex::new(None), result: Mutex::new(None), paused: AtomicBool::new(false), tok: Mutex::new(None), resume: tokio::sync::Notify::new(), recv_dir: Mutex::new(None), xfer_key: Mutex::new(None), xfer_released: AtomicBool::new(false), local_net: Mutex::new(LocalNetwork::Unknown), own: Mutex::new(None), shown: Mutex::new(None), cooldown: Mutex::new(Default::default()), undecided: Mutex::new(None), holder_for: Mutex::new(None), seen_offers: Mutex::new(VecDeque::new()) });
         Self { env, rt, sh }
     }
 
@@ -2057,6 +2062,7 @@ impl NearEngine {
         *self.sh.result.lock().unwrap() = None;
         self.sh.paused.store(false, Ordering::SeqCst);
         *self.sh.tok.lock().unwrap() = None;
+        *self.sh.holder_for.lock().unwrap() = None;
         self.wipe_xfer_key();
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
@@ -2150,7 +2156,13 @@ impl NearEngine {
     fn yield_undecided_to(&self, from_device: &str) -> bool {
         {
             let u = self.sh.undecided.lock().unwrap();
-            let replaceable = match u.as_ref() {
+            // A session this device is HOLDING for `from_device` is stale the moment that device asks again, whatever it was doing (its
+            // sheet, the person's confirmation, the proof, waiting for the page's file, a transfer): the asker's core runs one request
+            // at a time, so it has abandoned the old one (Cancel / Try again / its process was killed and restarted) and can never finish
+            // it. Without this an approved session whose phone died answered every retry "busy" until its own give-up (owner 2026-11-26).
+            // Another device's session is never touched by this branch.
+            let stale_holder = self.sh.holder_for.lock().unwrap().as_deref() == Some(from_device);
+            let replaceable = stale_holder || match u.as_ref() {
                 Some(Undecided::Sheet(d)) => d == from_device,
                 Some(Undecided::Asking) => true,
                 None => false,

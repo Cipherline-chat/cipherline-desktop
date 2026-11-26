@@ -23,11 +23,17 @@ const toastPush = vi.fn();
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { user_id: 'u1' }, token: 'tok' }) }));
 vi.mock('../contexts/ToastContext', () => ({ useToast: () => ({ push: toastPush }) }));
 
-const store = vi.hoisted(() => ({ setItem: vi.fn(), cachedPw: null as string | null }));
-vi.mock('../utils/secureLocalStore', () => ({
-    default: { getItem: () => null, setItem: store.setItem, removeItem: vi.fn() },
-    secureLocalStore: { getItem: () => null, setItem: store.setItem, removeItem: vi.fn() },
-}));
+const store = vi.hoisted(() => ({ setItem: vi.fn(), cachedPw: null as string | null, damaged: 0, discard: vi.fn(async () => 0) }));
+vi.mock('../utils/secureLocalStore', () => {
+    const fake = {
+        getItem: () => null, setItem: store.setItem, removeItem: vi.fn(),
+        // Records this device could not read: none unless a test says so.
+        unreadableRecordCount: () => store.damaged,
+        onUnreadableRecords: () => () => {},
+        discardUnreadableRecords: store.discard,
+    };
+    return { default: fake, secureLocalStore: fake };
+});
 
 const svc = vi.hoisted(() => ({
     restoreFromDrive: vi.fn(),
@@ -377,5 +383,52 @@ describe('restore asks for the backup password in a prompt', () => {
         await flush(60);
         expect(svc.restoreFromDrive).toHaveBeenCalledTimes(1);
         expect(toastPush).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Enter your backup passphrase.' }));
+    });
+});
+
+describe('restore over records this device could not read', () => {
+    afterEach(() => { store.damaged = 0; });
+
+    it('passes a gate that asks first; saying yes removes the damaged records, saying no cancels the restore', async () => {
+        store.damaged = 2;
+        let gate: (() => Promise<boolean>) | undefined;
+        svc.restoreFromDrive.mockImplementation(async (o: { beforeApply: () => Promise<boolean> }) => { gate = o.beforeApply; return { restored: true }; });
+        await click(button(/Restore from Drive/));
+        await flush(60);
+        await type(promptInput()!, 'pw');
+        await click(restoreBtn());
+        await flush(60);
+        expect(typeof gate).toBe('function');
+
+        // The service reaches the gate once the backup has opened: the modal asks.
+        let answer: boolean | undefined;
+        await act(async () => { void gate!().then(v => { answer = v; }); await sleep(30); });
+        expect(document.body.textContent).toContain('Replace damaged items with your backup?');
+        expect(document.body.textContent).toContain('2 items');
+        expect(store.discard).not.toHaveBeenCalled();
+        // The safe button is the default: Keep them cancels and removes nothing.
+        await click(button('Keep them'));
+        await flush(30);
+        expect(answer).toBe(false);
+        expect(store.discard).not.toHaveBeenCalled();
+
+        await act(async () => { void gate!().then(v => { answer = v; }); await sleep(30); });
+        await click(button('Remove and restore'));
+        await flush(30);
+        expect(store.discard).toHaveBeenCalledTimes(1);
+        expect(answer).toBe(true);
+    });
+
+    it('with nothing damaged the gate does not ask', async () => {
+        let gate: (() => Promise<boolean>) | undefined;
+        svc.restoreFromDrive.mockImplementation(async (o: { beforeApply: () => Promise<boolean> }) => { gate = o.beforeApply; return { restored: true }; });
+        await click(button(/Restore from Drive/));
+        await flush(60);
+        await type(promptInput()!, 'pw');
+        await click(restoreBtn());
+        await flush(60);
+        expect(await gate!()).toBe(true);
+        expect(document.body.textContent).not.toContain('Replace damaged items');
+        expect(store.discard).not.toHaveBeenCalled();
     });
 });

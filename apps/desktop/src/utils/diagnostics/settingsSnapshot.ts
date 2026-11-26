@@ -80,6 +80,12 @@ export interface SettingsSources {
      */
     storage?: { status?: string; failure?: string; attempts?: number; recovered?: boolean; unreadable?: number } | null;
     /**
+     * The last backup / restore / repair outcome as labels (utils/backupDiagnostics.ts: step, error
+     * name, reason code, a count). In every category's report, because "my backup won't run" is filed
+     * as anything.
+     */
+    backup?: Record<string, string | number | boolean> | null;
+    /**
      * Push-to-talk delivery (in every category's report: "I can't talk in my game" is
      * filed as anything). The key is reported as its kind and its token name
      * ("numpad1", "mouse4", "ctrl_shift_keyv"), never anything typed.
@@ -126,6 +132,20 @@ export function holdKeyFields(v: VoiceSettingsLike | null, h: HoldKeyReportLike 
     };
 }
 
+/** The `backup_last_*` / `restore_last_*` / `repair_last_*` keys, re-validated (labels, short, no free text). */
+const BACKUP_KEY_RE = /^(?:backup|restore|repair)_last_(?:ok|step|error|reason|dest|held|age_h)$/;
+function backupFields(src: Record<string, string | number | boolean> | null): Record<string, SettingsValue> {
+    const out: Record<string, SettingsValue> = {};
+    if (!src) return out;
+    for (const [k, v] of Object.entries(src)) {
+        if (!BACKUP_KEY_RE.test(k)) continue;
+        if (typeof v === 'boolean') out[k] = v;
+        else if (typeof v === 'number') out[k] = n(v);
+        else out[k] = /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : null;
+    }
+    return out;
+}
+
 export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
     const devs = s.devices ?? null;
     const count = (kind: string) => (devs ? devs.filter(d => d.kind === kind).length : null);
@@ -141,6 +161,7 @@ export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
         storage_load_attempts: n(s.storage?.attempts),
         storage_load_recovered: b(s.storage?.recovered),
         storage_unreadable_records: n(s.storage?.unreadable),
+        ...backupFields(s.backup ?? null),
         ...holdKeyFields(v, s.holdKeys ?? null),
     });
 

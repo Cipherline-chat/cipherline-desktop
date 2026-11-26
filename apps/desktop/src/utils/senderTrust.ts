@@ -151,6 +151,14 @@ export function evaluateSender(input: EvaluateSenderInput): SenderVerdict {
  * explicit statement of the preference "do not let keys I have not vouched
  * for act on my behalf", and adopting a call media key is precisely such an
  * action. The remedy is in the user's hands and is one modal away.
+ *
+ * EXCEPTION, owner decision 2026-11-25 — DM / group `call_key` only: when the
+ * device is named (`sd`) and the server's directory publishes this key for
+ * exactly that device, an `unrecognized_verified` call key is adopted WITH an
+ * in-call warning instead of refused, matching the phones. That carve-out
+ * lives in utils/callKeyTrust.ts (`decideCallKeyTrust`), not here: this
+ * function stays fail-closed for every key-material caller (channel keys,
+ * guest keys, answering key requests).
  */
 export function actionFor(verdict: SenderVerdict, payload: PayloadClass): TrustAction {
     if (verdict === 'ok' || verdict === 'first_contact') return 'accept';

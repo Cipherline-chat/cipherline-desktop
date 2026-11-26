@@ -21,6 +21,7 @@ import { buildSettingsSnapshot, type HoldKeyReportLike, type NotificationPrefsLi
 import { parseHoldKeySupport } from '../holdKeys';
 import { collectSensitiveTerms } from './sensitiveTerms';
 import { storeHealthSettings } from '../storeHealthReport';
+import { backupDiagSettings } from '../backupDiagnostics';
 import { getRecentErrors, type CapturedError } from './recentErrors';
 import { webrtcRing } from './webrtcRing';
 import { readCallEvents, readPinnedCallEvents, type CallEventInput } from './callEventsSource';
@@ -176,6 +177,7 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         startupFlags: flags,
         devices,
         storage: storageForReport(!!storeCorruption),
+        backup: (() => { try { return backupDiagSettings(); } catch { return null; } })(),
         holdKeys,
     });
     const sensitiveTerms = collectSensitiveTerms({

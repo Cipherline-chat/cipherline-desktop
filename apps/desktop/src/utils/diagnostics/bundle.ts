@@ -74,6 +74,7 @@ export function describeCollection(category: DiagnosticCategory): string[] {
     };
     lines.push(groups.length ? `Your ${groups.map(g => label[g]).join('; ')}` : 'Hardware acceleration on or off');
     lines.push('Whether this device’s stored data loaded (a status word and, if it failed, the step and error type — never file paths or contents)');
+    lines.push('Whether your last backup and restore worked and, if not, which step stopped and the error type (never folder or file names, or contents)');
     lines.push('How push to talk is set up: on or off, which key or mouse button (e.g. “numpad1”, “mouse4”) and whether it works while another app is focused');
     if (spec.entitlement) lines.push('Your plan’s limits (e.g. the highest screen-share frame rate you can pick)');
     if (spec.webrtc) lines.push('Call quality numbers from the last ~2 minutes of your current or most recent call: frame rates, resolution, codec and encoder, bitrate, packet loss, round-trip time — tracks are labelled “screen-1”, “remote-video-1”, never with who they belong to');

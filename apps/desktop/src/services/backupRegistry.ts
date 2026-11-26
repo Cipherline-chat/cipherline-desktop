@@ -249,7 +249,8 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_diag_auto_send_{uid}',       match: 'exact',  include: false, why: 'Automatically send crash reports — per-device consent, never restored' },
     { pattern: 'cipherline_diag_auto_send_log_{uid}',   match: 'exact',  include: false, why: 'Auto-send bookkeeping (hashed signatures + times) for the daily cap / dedupe' },
     { pattern: 'cipherline_beta_diag_{uid}',            match: 'exact',  include: false, why: 'Share beta diagnostics — per-device consent (closed beta), never restored' },
-    { pattern: 'cipherline_beta_diag_notice_{uid}',     match: 'exact',  include: false, why: 'Legacy (pre-opt-in) "diagnostics are on" notice seen — no longer written, kept classified for old vaults' },
+    { pattern: 'cipherline_backup_diag_v1',               match: 'exact',  include: false, why: 'Last backup / restore / repair outcome as labels (step, error type) for Report a problem — per-device, never restored (utils/backupDiagnostics.ts)' },
+    { pattern: 'cipherline_beta_diag_notice_{uid}',    match: 'exact',  include: false, why: 'Legacy (pre-opt-in) "diagnostics are on" notice seen — no longer written, kept classified for old vaults' },
     { pattern: 'cipherline_beta_diag_ask_{uid}',        match: 'exact',  include: false, why: 'Beta diagnostics one-time consent ask answered — device-local, consent is never restored onto another device' },
     { pattern: 'cipherline_beta_diag_rating_{uid}',     match: 'exact',  include: false, why: 'Call rating card frequency ledger (calls since last prompt + time) — device-local bookkeeping' },
 
@@ -548,6 +549,19 @@ function ruleFor(key: string, userId: string): KvRule | null {
 export function classifyKvKey(key: string, userId: string): 'include' | 'exclude' | 'unknown' {
     const r = ruleFor(key, userId);
     return r ? (r.include ? 'include' : 'exclude') : 'unknown';
+}
+
+/**
+ * The vault field an EXCLUDED key is backed up through (`vault.topics` → 'topics'),
+ * read from the rule's own `why`, or null when the key is not one of those. The
+ * backup keeps its previous copy of a field whose key could not be read
+ * (backupHold.ts), and this is how it learns which field that is without a
+ * second table that could drift from this one.
+ */
+export function vaultFieldForKey(key: string, userId: string): string | null {
+    const r = ruleFor(key, userId);
+    if (!r || r.include) return null;
+    return /\bvault\.([A-Za-z]+)/.exec(r.why)?.[1] ?? null;
 }
 
 /** Replace the account id in a key with the `{uid}` placeholder (export). */

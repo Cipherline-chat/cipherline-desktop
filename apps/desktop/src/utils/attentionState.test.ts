@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    computeIsAttentive, heartbeatPayload, IDLE_THRESHOLD_SECONDS,
+    computeIsAttentive, heartbeatPayload, idleMsForHeartbeat, MAX_REPORTED_IDLE_MS, IDLE_THRESHOLD_SECONDS,
     reduceSessionPowerState, isSessionInUse, SESSION_AVAILABLE, OS_POWER_SIGNALS,
     nextIdlePollDelayMs, type SessionPowerState,
 } from './attentionState';
@@ -172,6 +172,32 @@ describe('nextIdlePollDelayMs', () => {
     });
 });
 
+describe('idle_ms on the heartbeat (the phone-takeover signal)', () => {
+    it('rides only an active heartbeat, as a non-negative integer', () => {
+        expect(JSON.parse(heartbeatPayload(true, 12_000)).data).toEqual({ active: true, idle_ms: 12_000 });
+        expect(JSON.parse(heartbeatPayload(false, 12_000)).data).toEqual({ active: false });
+        expect(JSON.parse(heartbeatPayload(true)).data).toEqual({ active: true });
+        for (const bad of [-1, 1.5, NaN, Infinity]) {
+            expect(JSON.parse(heartbeatPayload(true, bad)).data).toEqual({ active: true });
+        }
+    });
+
+    it('adds the age of the polled reading, erring toward "idle longer" (never toward a silenced phone)', () => {
+        expect(idleMsForHeartbeat(3, 0)).toBe(3_000);
+        expect(idleMsForHeartbeat(3, 12_000)).toBe(15_000);
+        expect(idleMsForHeartbeat(0.4, 0)).toBe(400);
+        expect(idleMsForHeartbeat(3, -5)).toBe(3_000);
+        expect(idleMsForHeartbeat(3, NaN)).toBe(3_000);
+    });
+
+    it('an unknown reading is reported as unknown, and the value is capped at the server bound', () => {
+        expect(idleMsForHeartbeat(Number.POSITIVE_INFINITY, 0)).toBeUndefined();
+        expect(idleMsForHeartbeat(NaN, 0)).toBeUndefined();
+        expect(idleMsForHeartbeat(-1, 0)).toBeUndefined();
+        expect(idleMsForHeartbeat(10 * 24 * 3600, 0)).toBe(MAX_REPORTED_IDLE_MS);
+    });
+});
+
 describe('the heartbeat on the wire', () => {
     it('is exactly { event: "presence:heartbeat", data: { active } }', () => {
         expect(JSON.parse(heartbeatPayload(true))).toEqual({ event: 'presence:heartbeat', data: { active: true } });
@@ -187,10 +213,15 @@ describe('the heartbeat on the wire', () => {
         expect(src).not.toMatch(/event:\s*'presence:heartbeat'/);
         expect(src).not.toContain('active: attentiveRef.current');
         // Connect + periodic heartbeats read the live inputs; loss events send false.
-        expect(src.match(/ws\.send\(heartbeatPayload\(currentAttention\(\)\)\)/g)?.length).toBe(2);
-        expect(src).toContain('heartbeatPayload(active)');
-        // The verdict is idle + session state against the USER's threshold.
-        expect(src).toContain('computeIsAttentive(isSessionInUse(powerStateRef.current), idleSecondsRef.current, getIdleThresholdSeconds())');
+        expect(src.match(/ws\.send\(currentHeartbeat\(\)\)/g)?.length).toBe(2);
+        expect(src).toContain('currentHeartbeat(active)');
+        // The one place a frame is built: idle_ms rides only an active verdict, from the aged idle
+        // reading (OS clock or trusted window input, utils/inputRecency.ts getInputIdleMs).
+        expect(src).toContain('heartbeatPayload(active, active ? getInputIdleMs() : undefined)');
+        expect(src).not.toContain('ws.send(heartbeatPayload(');
+        // The verdict is idle + session state against min(user's Idle timeout, 5 min) for push, and
+        // reads the hardened poller (stale/failed reading = unknown = not attentive).
+        expect(src).toContain('computeIsAttentive(isSessionInUse(powerStateRef.current), currentIdleSeconds(), getPushPresenceThresholdSeconds())');
         // Focus / blur / minimise / hide no longer clear attention.
         expect(src).not.toContain('onWindowBlur');
         expect(src).not.toContain('onWindowMinimize');

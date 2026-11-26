@@ -26,9 +26,10 @@ describe('invite URL builder', () => {
 });
 
 describe('"Watch a video" address (DISCORD_IMPORT_VIDEO_URL, opened with shell.openExternal through main)', () => {
-    it('is empty until the owner sends the link (the wizard hides the link while empty)', () => {
-        expect(invite.DISCORD_IMPORT_VIDEO_URL).toBe('');
-        expect(invite.videoUrlToOpen(invite.DISCORD_IMPORT_VIDEO_URL)).toBeNull();
+    it('is the walkthrough video and passes the validator unchanged', () => {
+        expect(invite.DISCORD_IMPORT_VIDEO_URL).toBe('https://www.youtube.com/watch?v=Cm_mfwcGLIU');
+        expect(invite.videoUrlToOpen(invite.DISCORD_IMPORT_VIDEO_URL)).toBe(invite.DISCORD_IMPORT_VIDEO_URL);
+        expect(invite.videoUrlToOpen('')).toBeNull(); // empty still hides the card
     });
     it('accepts https links on youtube.com, www.youtube.com and youtu.be, returning the parsed href', () => {
         expect(invite.videoUrlToOpen('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ');

@@ -27,10 +27,13 @@ vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { user_id: '
 vi.mock('../contexts/ToastContext', () => ({ useToast: () => ({ push: toastPush }) }));
 
 const store = vi.hoisted(() => ({ setItem: vi.fn() }));
-vi.mock('../utils/secureLocalStore', () => ({
-    default: { getItem: () => null, setItem: store.setItem, removeItem: vi.fn() },
-    secureLocalStore: { getItem: () => null, setItem: store.setItem, removeItem: vi.fn() },
-}));
+vi.mock('../utils/secureLocalStore', () => {
+    const fake = {
+        getItem: () => null, setItem: store.setItem, removeItem: vi.fn(),
+        unreadableRecordCount: () => 0, onUnreadableRecords: () => () => {}, discardUnreadableRecords: async () => 0,
+    };
+    return { default: fake, secureLocalStore: fake };
+});
 
 const svc = vi.hoisted(() => ({
     setCachedPassword: vi.fn(async () => {}),

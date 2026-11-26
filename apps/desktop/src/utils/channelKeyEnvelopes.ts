@@ -126,8 +126,17 @@ export function isEnvelopeReplay(err: unknown): boolean {
  * Either way the envelope is acked: acking only tells the server to stop
  * serving ciphertext that can never be opened, it accepts no key.
  */
-export function decideReplayEnvelope(heldEpochKey: boolean): { ack: true; report: boolean; reask: boolean } {
-    return { ack: true, report: !heldEpochKey, reask: !heldEpochKey };
+export function decideReplayEnvelope(
+    heldEpochKey: boolean,
+    /** Failed installs already counted for this (channel, epoch). A replay after one is the SAME
+     *  failure seen again (the first look spent the envelope's ephemeral key), not a fresh loss. */
+    priorFailures = 0,
+): { ack: true; report: boolean; reask: boolean; continuesFailure: boolean } {
+    // 2026-11-25: a REPLAY after a refused envelope (distributor not attributable, ...) used to
+    // wipe the failure counter and ask again at once, so the give-up bound (3 failures -> cool-off)
+    // was never reached and every device re-asked every ~2 min for as long as the holder answered.
+    const continuesFailure = !heldEpochKey && priorFailures > 0;
+    return { ack: true, report: !heldEpochKey, reask: !heldEpochKey && !continuesFailure, continuesFailure };
 }
 
 export interface HeldDecrypt {

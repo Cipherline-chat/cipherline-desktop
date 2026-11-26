@@ -15,13 +15,14 @@ import {
     KEY_ASK_QUEUE_SLEEP_SLICE_MS,
     KEY_REQUEST_API_LIMIT_PER_MIN,
     PREFETCH_REASK_DEDUP_MS,
+    KEYLESS_TICK_FREE_ASKS,
     PREFETCH_NEWER_EPOCH_MIN_GAP_MS,
     type PrefetchChannelInput,
     type PlanArgs,
     type KeyAskOutcome,
     type QueuedAsk,
 } from './channelKeyPrefetch';
-import { gapReaskDelayMs } from './channelKeyDistribution';
+import { gapReaskDelayMs, GAP_REASK_MAX_MS } from './channelKeyDistribution';
 
 /**
  * The requester side of channel keys, for EVERY channel the member can see
@@ -230,6 +231,39 @@ describe('planKeyPrefetch — dedupe and re-ask rules', () => {
         ledger.noteSent('k', 3, t0);                           // count 3: the stale back-off would be 20 min
         const p = plan({ ledger, now: t0 + PREFETCH_REASK_DEDUP_MS, mode: 'tick', channels: [ch('k')], held: {}, lastAskedAt: () => t0 });
         expect(p.asks.map(a => a.reason)).toEqual(['reask']);
+    });
+
+    it('the tick stops re-asking a KEYLESS channel every 5 min once KEYLESS_TICK_FREE_ASKS asks went unanswered: back-off 5 min doubling to 2 h', () => {
+        const ledger = new PrefetchLedger();
+        const t0 = 100_000_000;
+        for (let i = 0; i < KEYLESS_TICK_FREE_ASKS + 1; i++) ledger.noteSent('k', 3, t0);   // count 5
+        const at = (dt: number) => plan({ ledger, now: t0 + dt, mode: 'tick', channels: [ch('k')], held: {}, lastAskedAt: () => t0 });
+        const MIN5 = 5 * 60_000;
+        expect(at(PREFETCH_REASK_DEDUP_MS).asks).toEqual([]);             // the old behaviour re-asked here
+        expect(at(MIN5 - 1).skipped).toEqual([{ channelId: 'k', reason: 'backoff' }]);
+        expect(at(MIN5).asks.map(a => a.reason)).toEqual(['stale_backoff']);
+        // keeps doubling, capped at 2 h
+        for (let i = 0; i < 6; i++) ledger.noteSent('k', 3, t0);
+        expect(at(GAP_REASK_MAX_MS - 1).asks).toEqual([]);
+        expect(at(GAP_REASK_MAX_MS).asks.map(a => a.keyless)).toEqual([true]);
+    });
+
+    it('positive control: an EVENT trigger (open, reconnect, permission change) still re-asks a long-unanswered keyless channel after the 60 s dedup', () => {
+        const ledger = new PrefetchLedger();
+        const t0 = 100_000_000;
+        for (let i = 0; i < 12; i++) ledger.noteSent('k', 3, t0);
+        const p = plan({ ledger, now: t0 + PREFETCH_REASK_DEDUP_MS, mode: 'event', channels: [ch('k')], held: {}, lastAskedAt: () => t0 });
+        expect(p.asks.map(a => a.reason)).toEqual(['reask']);
+    });
+
+    it('a NEWER epoch resets the budget: asked at once, count restarts', () => {
+        const ledger = new PrefetchLedger();
+        const t0 = 100_000_000;
+        for (let i = 0; i < 9; i++) ledger.noteSent('k', 3, t0);
+        const p = plan({ ledger, now: t0 + PREFETCH_NEWER_EPOCH_MIN_GAP_MS, mode: 'tick', channels: [ch('k', { latest_epoch: 4 })], held: {}, lastAskedAt: () => t0 });
+        expect(p.asks.map(a => a.reason)).toEqual(['newer_epoch']);
+        ledger.noteSent('k', 4, t0 + 20_000);
+        expect(ledger.get('k')!.count).toBe(1);
     });
 
     it('an unchanged ask is a fixed point: planning twice without new information plans the second time nothing', () => {

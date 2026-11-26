@@ -22,6 +22,49 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.5] - 2026-11-26
+
+### What's new
+
+- **Backups work again after a crash or power loss.** If some of your data on this computer was left unreadable, Cipherline now keeps backing up the rest instead of refusing, and Settings → Backups lets you remove the damaged items.
+- **Scan a friend's QR code while signed in.** Opening or scanning a friend's profile link now shows their profile with Add Friend, instead of doing nothing.
+- **Moving a Discord server is easier.** The import steps now include a short walkthrough video that opens in your browser.
+- **Bringing history over your network is steadier.** Trying again from the same phone no longer says the computer is busy, and the transfer waits for the receiving device to finish saving.
+- **Quieter notifications.** Messages are only marked as read when you have actually used your computer in the last two minutes, so an idle PC no longer cancels the notification on your phone.
+- **Calls with a friend's new device.** A call from a verified friend's brand-new device now connects with a clear warning instead of being refused.
+- **Lighter in the background.** Cipherline asks the server far less often about encryption keys while you are idle.
+
+### Changes
+
+#### Backups
+- A device whose data loaded with some unreadable records (after a crash or power loss) is backed up again instead of being refused for good. The previous backup's copy of anything that cannot be read is kept, never dropped.
+- Restore asks before removing the damaged records so the restore completes; Settings → Backups lists them with a "Remove damaged items" button.
+- The last backup, restore or repair result (which step failed and the kind of error, no file paths) is included in Report a problem.
+
+#### Friends and links
+- Opening or scanning a friend's profile-share link (`cipherline://ref/CODE`) while you are signed in opens their profile with Add Friend.
+
+#### Import from Discord
+- The "Watch a video" link on both Discord import instruction pages is now a "Watch the walkthrough" card that opens the video in your system browser. Nothing is embedded or loaded from YouTube.
+
+#### Devices and history
+- A retry from the same phone replaces a stale approved session on the computer instead of being told it is busy.
+- The sending device waits for a receiver that is still storing the backlog instead of racing a pause and resume.
+
+#### Notifications and presence
+- Messages are marked read automatically only when you touched the computer in the last 2 minutes; the idle check can no longer freeze.
+- The computer holds a phone notification for at most 5 minutes without input; Idle timeout still sets your status. Settings, Advanced shows idle time and whether phone notifications are being held.
+- The active heartbeat reports how long the computer has been idle.
+
+#### Calls and encryption keys
+- A call key from a verified contact's new, unverified device connects with an in-call warning instead of being refused; late joiners who ask such a device for the key get it too, with the same warning. Channel keys from such a device are still refused.
+- Servers with nothing outstanding are re-checked for keys every 15 minutes (was 5), key-epoch fetches are rate limited, and retries for stuck channels and keyless re-asks back off (75 s up to 10 min; 5 min up to 2 h), cutting idle key traffic by roughly three quarters.
+- A key the app already refused no longer resets its failure count when the same message is replayed, so a refused key cannot loop forever; repeated give-ups cool off for 10 minutes, doubling up to 2 hours.
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
 ## [0.1.4] - 2026-11-25
 
 ### What's new

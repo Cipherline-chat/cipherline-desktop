@@ -14,25 +14,16 @@
  * in a second phase that can itself fail during the export.
  */
 import secureLocalStore from '../utils/secureLocalStore';
+import { recordBackupDiag } from '../utils/backupDiagnostics';
 
-export type BackupStoreBlock = 'locked' | 'unread' | 'not-ready' | 'partial';
+export type BackupStoreBlock = 'locked' | 'unread' | 'not-ready';
 
 export const BACKUP_STORE_UNREADABLE_MESSAGE =
     'Your data on this device couldn’t be read, so backing up now could overwrite a good backup with an empty one. Restart Cipherline and try again.';
 
-/**
- * 'partial': the store loaded, but some records could not be read this launch
- * (secureLocalStore: UNREADABLE RECORDS). A backup would export the history
- * without them, and the backup writer drops what the new export no longer
- * holds — so the backup, possibly the only other copy of those records, would
- * lose them too.
- */
-export const BACKUP_STORE_PARTIAL_MESSAGE =
-    'Some of your data on this device couldn’t be read, so a backup now would leave it out of your backup. Nothing was deleted. Restart Cipherline and try again.';
-
-/** What to tell the user about a block. */
-export function backupStoreBlockMessage(block: BackupStoreBlock): string {
-    return block === 'partial' ? BACKUP_STORE_PARTIAL_MESSAGE : BACKUP_STORE_UNREADABLE_MESSAGE;
+/** What to tell the user about a block (one message for every kind: restart and try again). */
+export function backupStoreBlockMessage(_block?: BackupStoreBlock): string {
+    return BACKUP_STORE_UNREADABLE_MESSAGE;
 }
 
 export class BackupStoreUnreadableError extends Error {
@@ -50,7 +41,11 @@ export function backupStoreBlock(userId: string): BackupStoreBlock | null {
         if (secureLocalStore.isLocked()) return 'locked';
         if (secureLocalStore.hasLoadFailure()) return 'unread';
         if (!secureLocalStore.isAccountReady(userId)) return 'not-ready';
-        if (secureLocalStore.unreadableRecordCount() > 0) return 'partial';
+        // NOT 'partial': a store that loaded minus some unreadable records IS backed
+        // up — backupHold.ts keeps the previous backup's copy of what it cannot
+        // read. Refusing here (as this did until 2026-11-26) could never clear: a
+        // restart reads the same damaged records, so the user's backups stopped for
+        // good while the rest of their data went unprotected.
         return null;
     } catch {
         // Not hydrated (or anything else unexpected): the safe answer is no.
@@ -61,5 +56,10 @@ export function backupStoreBlock(userId: string): BackupStoreBlock | null {
 /** Throw BackupStoreUnreadableError when a backup of `userId` must not run. */
 export function assertBackupStoreReadable(userId: string): void {
     const block = backupStoreBlock(userId);
-    if (block) throw new BackupStoreUnreadableError(block);
+    if (block) {
+        const err = new BackupStoreUnreadableError(block);
+        // A refusal is a failed backup like any other: the report must say so.
+        recordBackupDiag('backup', { ok: false, step: 'guard', err });
+        throw err;
+    }
 }

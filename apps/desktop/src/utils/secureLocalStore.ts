@@ -1013,6 +1013,46 @@ class SecureLocalStore {
     /** How many records IndexedDB listed but would not hand back this session. */
     unreadableRecordCount(): number { return this.unreadableKeys.size; }
 
+    /**
+     * The keys of the unreadable records. For the backup writer ONLY: it has to
+     * know which of the backup's records stand for data this launch cannot read,
+     * so it keeps the previous copy instead of dropping them (services/backupHold.ts).
+     * A key can name an account or a conversation — never log it or put it in a report.
+     */
+    unreadableKeyList(): string[] { return [...this.unreadableKeys.keys()]; }
+
+    /**
+     * Remove the unreadable records from disk, so the keys can be written again.
+     * ONLY ever on the user's explicit say-so (BackupSection's "Remove damaged
+     * items", or the confirm before a restore): until then the hold on these keys
+     * is what keeps a record that may still come back from being replaced.
+     *
+     * The values were never readable this session, so nothing readable is lost
+     * HERE; whatever they held is gone unless a backup has it. Returns how many
+     * were removed. Throws (and removes nothing) when the delete transaction
+     * fails, leaving every record held as it was.
+     */
+    async discardUnreadableRecords(): Promise<number> {
+        if (this.hasLoadFailure() || this.locked) throw new Error('The data on this device is not loaded, so nothing was removed.');
+        const keys = [...this.unreadableKeys.keys()];
+        if (keys.length === 0) return 0;
+        const db = await openDb();
+        await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(KV_STORE, 'readwrite');
+            const store = tx.objectStore(KV_STORE);
+            // delete() needs no value, so it works on a record whose blob file is gone.
+            for (const k of keys) store.delete(k);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError'));
+        });
+        for (const k of keys) this.unreadableKeys.delete(k);
+        this.unreadableNotified = false;
+        // What was held for them (built without them) may now reach disk.
+        if (this.dirty.size > 0) this.scheduleFlush(0);
+        return keys.length;
+    }
+
     /** True when `key` is an unreadable record: present on disk, value unknown. */
     isUnreadable(key: string): boolean { return this.unreadableKeys.has(key); }
 

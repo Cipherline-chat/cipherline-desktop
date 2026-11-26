@@ -27,6 +27,9 @@ import { SESSION_AVAILABLE, isSessionInUse, reduceSessionPowerState, type Sessio
 
 export const POST_WAKE_QUIET_MS = 20_000;
 
+/** How long after an unlock the idle reading may be capped by "time since unlock". */
+export const UNLOCK_CAP_WINDOW_SECONDS = 10;
+
 let state: SessionPowerState = SESSION_AVAILABLE;
 let quietUntil = 0;
 let lastUnlockAt = Number.NEGATIVE_INFINITY;
@@ -36,7 +39,10 @@ const listeners = new Set<() => void>();
 export function applySessionPowerSignal(signal: string, now: number = Date.now()): void {
     const next = reduceSessionPowerState(state, signal);
     if (signal === 'resume') quietUntil = now + POST_WAKE_QUIET_MS;
-    if (signal === 'unlock-screen') lastUnlockAt = now;
+    // Only an unlock that follows a lock counts as "signing back in": a repeated
+    // or spurious `unlock-screen` (RDP / fast-user-switch reconnects) must not
+    // keep refreshing the "just used" cap below.
+    if (signal === 'unlock-screen' && state.locked) lastUnlockAt = now;
     const wasInUse = isSessionInUse(state);
     state = next;
     if (wasInUse !== isSessionInUse(state)) {
@@ -89,7 +95,10 @@ export function subscribeSessionAway(fn: () => void): () => void {
 export function effectiveIdleSeconds(osIdleSeconds: number, now: number = Date.now()): number {
     if (!Number.isFinite(osIdleSeconds) || osIdleSeconds < 0) return osIdleSeconds;
     const sinceUnlock = (now - lastUnlockAt) / 1000;
-    return sinceUnlock >= 0 && sinceUnlock < osIdleSeconds ? sinceUnlock : osIdleSeconds;
+    // Only inside UNLOCK_CAP_WINDOW_SECONDS: past it the OS clock decides, so a
+    // late or repeated signal cannot hold idle near 0 for a whole timeout
+    // (notification-reliability audit 2026-11-25, A5).
+    return sinceUnlock >= 0 && sinceUnlock < UNLOCK_CAP_WINDOW_SECONDS && sinceUnlock < osIdleSeconds ? sinceUnlock : osIdleSeconds;
 }
 
 /**

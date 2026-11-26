@@ -41,6 +41,7 @@ import {
     type ManualCheckState,
 } from '../utils/manualUpdateCheck';
 import { formatClock } from '../utils/a11y/timeFormat';
+import { getAttentionDiagnostics, formatAttentionDiagnostics } from '../utils/attentionDiagnostics';
 
 /**
  * Settings → Advanced
@@ -288,6 +289,7 @@ export const AdvancedSettings: React.FC = () => {
                     </div>
                 </div>
                 <WhatsNewRow />
+                <AttentionDiagnosticsRow />
                 <CheckForUpdatesRow />
             </div>
 
@@ -912,6 +914,28 @@ const CopyChip: React.FC<{ text: string; shown: string; title: string; enabled?:
 const BuildCommit: React.FC = () => (
     <CopyChip text={BUILD_COMMIT} shown={BUILD_COMMIT} title="Copy commit" enabled={BUILD_COMMIT !== 'unknown'} />
 );
+
+/** Read-only: how this PC is currently deciding whether the phone gets notified. Local only. */
+const AttentionDiagnosticsRow: React.FC = () => {
+    const [line, setLine] = useState(() => formatAttentionDiagnostics(getAttentionDiagnostics()));
+    useEffect(() => {
+        const tick = () => setLine(formatAttentionDiagnostics(getAttentionDiagnostics()));
+        tick();
+        const id = setInterval(tick, 3_000);
+        return () => clearInterval(id);
+    }, []);
+    return (
+        <div className="sd-row">
+            <div className="sd-rl">
+                <b>Phone notifications</b>
+                <span>If “Idle for” never climbs while you are away from the PC, something is resetting its idle clock. Nothing here leaves this device.</span>
+            </div>
+            <div className="sd-rc">
+                <span className="mono" style={{ fontSize: 12 }} aria-live="off" data-testid="attention-diagnostics">{line}</span>
+            </div>
+        </div>
+    );
+};
 
 /** Reopen the "What's new" notes for this version (they show by themselves once, after an update). */
 const WhatsNewRow: React.FC = () => {

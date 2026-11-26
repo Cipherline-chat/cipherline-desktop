@@ -318,9 +318,12 @@ describe('one unreadable record — never written over', () => {
         expect(await messageStore.hasAny('dm', USER)).toBe(true);
     });
 
-    it('backups are refused while records are unreadable (the backup would drop them)', async () => {
+    it('backups are NOT refused while records are unreadable (the writer keeps the previous backup\'s copy — services/backupHold.ts)', async () => {
         await boot({ [THREAD]: 'NotReadableError' });
-        expect(backupStoreBlock(USER)).toBe('partial');
+        expect(secureLocalStore.loadHealth().status).toBe('partial');
+        // Refusing could never clear: a restart reads the same damaged records.
+        expect(backupStoreBlock(USER)).toBeNull();
+        expect(secureLocalStore.unreadableKeyList()).toEqual([THREAD]);
         await boot();
         expect(backupStoreBlock(USER)).toBeNull();
     });

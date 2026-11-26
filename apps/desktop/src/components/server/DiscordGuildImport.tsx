@@ -6,7 +6,7 @@ import { DialogForm, DialogField, DialogStack, DialogNote, DialogSteps } from '.
 import { BusyLabel } from '../dialog/BusyLabel';
 import { ChannelTree } from './DiscordTemplateImport';
 import { roleColorCss, rolesForDisplay, sanitizeServerNameInput } from '../../utils/discordTemplate';
-import { DEVELOPER_PORTAL_URL, DISCORD_IMPORT_VIDEO_URL, botPageUrl, buildInviteUrl, videoUrlToOpen } from '../../utils/discordImport/invite';
+import { DEVELOPER_PORTAL_URL, DISCORD_IMPORT_VIDEO_URL, VIDEO_TITLE, botPageUrl, buildInviteUrl, videoUrlToOpen } from '../../utils/discordImport/invite';
 import { prepareGuildImage } from '../../utils/discordImport/image';
 import { writeToClipboard } from '../../utils/clipboard';
 import type { EncryptedUpload, RunnerDeps } from '../../utils/discordImport/runner';
@@ -149,11 +149,28 @@ const SUBTITLES: Record<WizardStep, string> = {
     keep: 'Imported messages are normal messages',
 };
 
-/** "Watch a video" (owner 2026-11-22), with a play icon; opens in the system browser. */
+/**
+ * "Watch the walkthrough" card (owner 2026-11-22 / 2026-11-26). Our own markup only: no YouTube iframe,
+ * thumbnail or request on render. A real button; opens in the system browser via onOpen.
+ */
 const VideoLink: React.FC<{ href: string | null; onOpen: (url: string) => void }> = ({ href, onOpen }) => href ? (
-    <div className="flex justify-start" data-testid="video-link-row">
-        <button type="button" className="dlg-linkbtn" data-testid="video-link" onClick={() => onOpen(href)}>
-            <PlayCircle size={14} aria-hidden="true" /> Watch a video <ExternalLink size={12} aria-hidden="true" />
+    <div data-testid="video-link-row">
+        <button
+            type="button"
+            data-testid="video-link"
+            onClick={() => onOpen(href)}
+            className="w-full min-w-0 flex items-center gap-3 rounded-xl bg-cl-sink/60 border border-cl-border p-3 text-left cursor-pointer transition-colors hover:border-cl-lume focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={{ outlineColor: 'var(--cl-lume-text)' }}
+        >
+            <span className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--cl-lume-tint)', color: 'var(--cl-lume-text)' }}>
+                <PlayCircle size={20} aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-cl-text">Watch the walkthrough</span>
+                <span className="block text-[12px] text-cl-faint truncate">{VIDEO_TITLE}</span>
+                <span className="block text-[11.5px] text-cl-faint">Opens in your browser · YouTube</span>
+            </span>
+            <ExternalLink size={14} className="shrink-0 text-cl-faint" aria-hidden="true" />
         </button>
     </div>
 ) : null;

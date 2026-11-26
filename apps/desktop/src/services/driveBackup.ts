@@ -42,7 +42,7 @@ import {
     type ByteSink, type ByteSource, type OpenedContainer, BackupWrongPasswordError,
 } from '../utils/backupContainer';
 import {
-    buildBackupPlan, writeBackupRecords, applyBackupContainer,
+    buildBackupPlan, writeBackupRecords, applyBackupContainer, jsonSpec,
     type BackupPlan, type WriteRecordsResult,
 } from './backupRecords';
 import {
@@ -51,6 +51,8 @@ import {
 } from './backupGenerationFloor';
 
 import { assertBackupStoreReadable } from './backupStoreGuard';
+import { heldRecordIds, mergeHeldMeta } from './backupHold';
+import { recordBackupDiag } from '../utils/backupDiagnostics';
 import {
     countConversations, isDrasticShrink, describeShrink, shrinkRefusedMessage,
     type BackupShrinkWarning, type ExistingBackupShape,
@@ -166,6 +168,13 @@ export interface BackupResult {
     attachments?: WriteRecordsResult;
     local?: DestinationResult;
     drive?: DestinationResult;
+    /**
+     * Set when the store had records it could not read: how many records of the
+     * previous backup were kept for them (`kept`) and how many could not be
+     * (`lost`: the previous backup had none, or its copy was unreadable too).
+     * See backupHold.ts.
+     */
+    held?: HeldOutcome;
     /** Present when at least one requested destination failed — during setup
      *  (e.g. Drive auth/network/403) or during its own write/verify — while
      *  at least one other destination (or this one, partially) still
@@ -522,6 +531,20 @@ function driveDestination(
 
 // ── Orchestration (destination-agnostic; unit-tested) ───────────────────────
 
+/** What a run did about records the store could not read (see backupHold.ts). */
+export interface HeldOutcome {
+    /** Store records that could not be read. */
+    unreadable: number;
+    /** Records of the previous backup carried over for them. */
+    kept: number;
+    /** Held records the previous backup could not supply (absent there, or damaged there too). */
+    lost: number;
+}
+
+/** A hold is in force and this destination's file cannot be opened to take the held records from. */
+export const HELD_UNVERIFIABLE_MESSAGE =
+    'Some of your data on this device couldn’t be read, and the backup already here couldn’t be opened to keep its copy of that data, so it was not replaced. Use the passphrase it was made with, or remove the damaged items in Settings → Backup, then back up again.';
+
 export interface SingleFileRunOpts {
     destinations: SingleFileDestination[];
     plan: BackupPlan;
@@ -596,6 +619,7 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
     results: Partial<Record<SingleFileDestination['label'], DestinationResult>>;
     attachments?: WriteRecordsResult;
     errors?: Partial<Record<SingleFileDestination['label'], string>>;
+    held?: HeldOutcome;
 }> {
     const { destinations, plan, password, fileName, basePattern, lastFingerprints, writeRecords, onProgress } = opts;
     const compactAbove = opts.compactAbove ?? 0.3;
@@ -605,12 +629,13 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
     /** Resolve with whatever succeeded, UNLESS nothing did — in which case
      *  throw, matching the pre-isolation contract for a single failing
      *  destination (and for every destination failing together). */
+    let heldOutcome: HeldOutcome | undefined;
     const finish = (attachments?: WriteRecordsResult) => {
         const errorEntries = Object.entries(errors);
         if (Object.keys(results).length === 0 && errorEntries.length > 0) {
             throw new AllDestinationsFailedError(errorEntries.map(([, msg]) => msg).join(' '), { ...errors });
         }
-        return { results, attachments, errors: errorEntries.length ? errors : undefined };
+        return { results, attachments, errors: errorEntries.length ? errors : undefined, ...(heldOutcome ? { held: heldOutcome } : {}) };
     };
 
     const active: SingleFileDestination[] = [];
@@ -639,6 +664,10 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
     type Opened = { dest: SingleFileDestination; mode: WriteMode; existing?: OpenedContainer; sink?: DestinationSink };
     let opened: Opened[] = [];
     const shapes: Partial<Record<SingleFileDestination['label'], ExistingBackupShape>> = {};
+    // Hold (backupHold.ts): files to take the previous copy of unreadable records from.
+    const hold = plan.hold;
+    const holdSources: OpenedContainer[] = [];
+    const refused = new Set<SingleFileDestination['label']>();
     for (const d of active) {
         let existing: OpenedContainer | undefined;
         if (d.supportsUpdate) {
@@ -646,6 +675,19 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
                 const src = await d.openSource(fileName);
                 if (src) existing = await openContainer(src, password);
             } catch { existing = undefined; } // not a container, or a different passphrase → rewrite
+        }
+        if (hold && existingBytes[d.label] !== undefined) {
+            // The backup here may be the only other copy of what the store cannot
+            // read. Replacing a file we cannot open would drop it unseen.
+            let from = existing;
+            if (!from) {
+                try {
+                    const src = await d.openSource(fileName);
+                    if (src) from = await openContainer(src, password);
+                } catch { from = undefined; }
+            }
+            if (from) holdSources.push(from);
+            else { refused.add(d.label); errors[d.label] = HELD_UNVERIFIABLE_MESSAGE; continue; }
         }
         if (existingBytes[d.label] !== undefined) {
             shapes[d.label] = {
@@ -666,10 +708,52 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
         opened.push({ dest: d, mode, existing: mode === 'update' ? existing : undefined });
     }
 
+    if (refused.size) {
+        opened = opened.filter(o => !refused.has(o.dest.label));
+        if (opened.length === 0) return finish();
+    }
+
+    // Records the store could not read are kept from the previous backup: the
+    // export lacks them, and the writer drops whatever the new export lacks.
+    const heldFrom = new Map<string, OpenedContainer>();
+    let heldLostMeta = false;
+    if (hold && holdSources.length) {
+        const planIds = new Set(plan.records.map(r => r.id));
+        for (const c of holdSources) {
+            for (const id of heldRecordIds(c.index.records.map(r => r.id), planIds, hold)) if (!heldFrom.has(id)) heldFrom.set(id, c);
+        }
+        // Attachments of held conversations: `att:` records are planned from the
+        // messages the export HAS, so the held conversations' would be dropped too.
+        for (const [id, c] of [...heldFrom]) {
+            if (!id.startsWith('dm:') && !id.startsWith('ch:')) continue;
+            try {
+                const msgs = await c.readJson<unknown[]>(id);
+                for (const m of Array.isArray(msgs) ? msgs : []) {
+                    const aid = (m as { content?: { attachment_id?: unknown } } | null)?.content?.attachment_id;
+                    if (typeof aid !== 'string' || !aid) continue;
+                    for (const r of c.index.records) {
+                        if ((r.id === `att:${aid}` || r.id.startsWith(`att:${aid}:`)) && !planIds.has(r.id) && !heldFrom.has(r.id)) heldFrom.set(r.id, c);
+                    }
+                }
+            } catch { /* this held record is unreadable in the old file too; the carry below counts it as lost */ }
+        }
+        // `meta` holds the settings and the conversation list: take the previous
+        // values of the fields the store could not read.
+        const base = holdSources[0];
+        const mi = plan.records.findIndex(r => r.id === 'meta');
+        if (mi >= 0 && base.has('meta')) {
+            try {
+                const nextBytes = await plan.records[mi].load();
+                const next = nextBytes ? JSON.parse(new TextDecoder().decode(nextBytes)) as Record<string, unknown> : null;
+                const merged = next ? mergeHeldMeta(next, await base.readJson('meta'), hold) : null;
+                if (merged && merged !== next) plan.records[mi] = await jsonSpec('meta', merged);
+            } catch { heldLostMeta = true; }
+        }
+    }
     // Second safety net (backupShrinkGuard.ts): a vault drastically emptier
     // than the backup already there replaces it only on an explicit yes. Asked
     // BEFORE any sink opens, so a "no" writes nothing anywhere.
-    const nextConversations = countConversations(plan.records.map(r => r.id));
+    const nextConversations = countConversations([...plan.records.map(r => r.id), ...heldFrom.keys()]);
     const drastic = opened.filter(o => {
         const shape = shapes[o.dest.label];
         return !!shape && isDrasticShrink(shape, nextConversations);
@@ -700,6 +784,28 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
             freshWriter = await ContainerWriter.create(password, teeSink(freshSinks), { keyMaterial });
         }
         attachments = await writeRecords({ update: updateWriter, fresh: freshWriter });
+        if (hold) {
+            let kept = 0;
+            let lost = heldLostMeta ? 1 : 0;
+            for (const [id, c] of heldFrom) {
+                try {
+                    const ref = c.index.records.find(r => r.id === id);
+                    // The update writer's own copy is carried as it is; any other is re-sealed from the file it was found in.
+                    const ownCopy = !!updateWriter && updateWriter.has(id);
+                    const bytes = (updateWriter && !ownCopy) || freshWriter ? await c.readBytes(id) : null;
+                    if (updateWriter) {
+                        if (ownCopy) updateWriter.carry(id);
+                        else await updateWriter.addBytes(id, bytes!, ref?.hash);
+                    }
+                    if (freshWriter) await freshWriter.addBytes(id, bytes!, ref?.hash);
+                    kept++;
+                } catch (e) {
+                    lost++;
+                    console.warn('[backup] could not keep a held record from the previous backup', id, e);
+                }
+            }
+            heldOutcome = { unreadable: hold.count, kept, lost };
+        }
         const finished = await Promise.all([
             updateWriter?.finish({ userId: plan.userId, fingerprint: plan.fingerprint }),
             freshWriter?.finish({ userId: plan.userId, fingerprint: plan.fingerprint }),
@@ -876,7 +982,7 @@ export async function runBackup(opts: {
         }
         const planConversations = countConversations(plan.records.map(r => r.id));
 
-        const { results, attachments, errors: writeErrors } = await runSingleFileBackup({
+        const { results, attachments, errors: writeErrors, held } = await runSingleFileBackup({
             destinations: dests, plan, password, fileName, basePattern, lastFingerprints, onProgress,
             knownConversations, confirmShrink: opts.confirmShrink,
             writeRecords: (writers) => writeBackupRecords(plan, writers, {
@@ -929,6 +1035,14 @@ export async function runBackup(opts: {
         if (results.local || results.drive) stampLastBackup(userId, at);
 
         const hasErrors = Object.keys(errors).length > 0;
+        // Kept on this device and sent with Report a problem (utils/backupDiagnostics.ts).
+        const firstError = Object.values(errors)[0];
+        recordBackupDiag('backup', {
+            ok: !hasErrors, step: hasErrors ? 'write' : 'done',
+            ...(hasErrors ? { err: new Error(firstError) } : {}),
+            dest: wantLocal && wantDrive ? 'both' : wantLocal ? 'local' : 'drive',
+            held: held?.unreadable ?? 0,
+        });
         onProgress?.(hasErrors
             ? { phase: 'error', message: summarizeDestinationErrors(errors) }
             : { phase: 'done' });
@@ -939,8 +1053,13 @@ export async function runBackup(opts: {
             errors: hasErrors ? errors : undefined,
             driveFolderRecovered,
             driveFolder,
+            ...(held ? { held } : {}),
         };
     } catch (err: unknown) {
+        recordBackupDiag('backup', {
+            ok: false, step: betaStage, err,
+            dest: wantLocal && wantDrive ? 'both' : wantLocal ? 'local' : 'drive',
+        });
         onProgress?.({ phase: 'error', message: errorMessage(err) || 'Backup failed.' });
         notifyBackupStateChanged(); // run failed — nothing was stamped, so subscribers keep their nudge
         // Beta diagnostics: the whole run failed. Per-destination setup errors
@@ -1102,6 +1221,20 @@ export async function getDriveBackupInfo(
     } catch { return null; }
 }
 
+/**
+ * Restore bookkeeping for Report a problem: the step a restore stopped at (the
+ * last progress phase it reported) and the outcome, as labels. See
+ * utils/backupDiagnostics.ts.
+ */
+function restoreTracker(onProgress?: (p: DriveBackupProgress) => void) {
+    const t = { step: 'open' };
+    return {
+        progress: (p: DriveBackupProgress) => { if (p.phase !== 'error' && p.phase !== 'done') t.step = p.phase; onProgress?.(p); },
+        failed: (err: unknown, dest: 'local' | 'drive') => recordBackupDiag('restore', { ok: false, step: t.step, err, dest }),
+        done: (dest: 'local' | 'drive') => recordBackupDiag('restore', { ok: true, step: 'done', dest }),
+    };
+}
+
 // ── Public: restore ─────────────────────────────────────────────────────────
 
 export async function restoreFromDrive(opts: {
@@ -1115,8 +1248,11 @@ export async function restoreFromDrive(opts: {
     /** Advisory: asked when the file is older than the last backup this
      *  device wrote to this Drive folder. Omit to always proceed. */
     onStaleBackup?: StaleBackupConfirm;
+    beforeApply?: BeforeApply;
 }): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning; folderRecovered?: { folderId: string; folderName: string } }> {
-    const { userId, password, folderId: folderIdOverride, fileBase, onProgress, onStaleBackup } = opts;
+    const { userId, password, folderId: folderIdOverride, fileBase, onStaleBackup, beforeApply } = opts;
+    const track = restoreTracker(opts.onProgress);
+    const onProgress = track.progress;
     try {
         await requireDriveLinked();
         onProgress?.({ phase: 'download', message: 'Downloading from Google Drive…' });
@@ -1147,14 +1283,15 @@ export async function restoreFromDrive(opts: {
             const st = await api.backupStat(stagedPath);
             if (!st) throw new Error('Downloaded backup could not be read.');
             const head = new Uint8Array(await api.backupReadRange(stagedPath, 0, 3));
-            if (isContainerFile(head)) return { ...(await applyContainer(userId, localFileSource(stagedPath, st.size), password, onProgress, site, onStaleBackup)), folderRecovered };
+            if (isContainerFile(head)) { const r = { ...(await applyContainer(userId, localFileSource(stagedPath, st.size), password, onProgress, site, onStaleBackup, beforeApply)), folderRecovered }; track.done('drive'); return r; }
             const whole = await readWholeLocalFile(stagedPath);
             if (!whole) throw new Error('Downloaded backup could not be read.');
-            return { ...(await applyLegacy(userId, new Blob([whole as BlobPart]), password, dest, onProgress)), folderRecovered };
+            const r = { ...(await applyLegacy(userId, new Blob([whole as BlobPart]), password, dest, onProgress, beforeApply)), folderRecovered }; track.done('drive'); return r;
         } finally {
             api.deleteFile(stagedPath).catch(() => {});
         }
     } catch (err: unknown) {
+        track.failed(err, 'drive');
         onProgress?.({ phase: 'error', message: errorMessage(err) || 'Restore failed.' });
         throw err;
     }
@@ -1170,8 +1307,11 @@ export async function restoreFromLocalFile(opts: {
     /** Advisory: asked when the picked file is older than the last backup
      *  this device wrote to that same path. Omit to always proceed. */
     onStaleBackup?: StaleBackupConfirm;
+    beforeApply?: BeforeApply;
 }): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning }> {
-    const { userId, filePath, file, password, onProgress, onStaleBackup } = opts;
+    const { userId, filePath, file, password, onStaleBackup, beforeApply } = opts;
+    const track = restoreTracker(opts.onProgress);
+    const onProgress = track.progress;
     try {
         const dir = filePath ? filePath.replace(/[\\/][^\\/]*$/, '') : null;
         const dest = dir ? localDestination(dir) : null;
@@ -1187,15 +1327,22 @@ export async function restoreFromLocalFile(opts: {
             if (!st) throw new Error('Backup file not found.');
             const head = new Uint8Array(await api.backupReadRange(filePath, 0, 3));
             if (isContainerFile(head)) {
-                return await applyContainer(userId, localFileSource(filePath, st.size), password, onProgress, site, onStaleBackup);
+                const r = await applyContainer(userId, localFileSource(filePath, st.size), password, onProgress, site, onStaleBackup, beforeApply);
+                track.done('local');
+                return r;
             }
             const whole = await readWholeLocalFile(filePath);
             if (!whole) throw new Error('Backup file not found.');
-            return await applyLegacy(userId, new Blob([whole as BlobPart]), password, dest, onProgress);
+            const r = await applyLegacy(userId, new Blob([whole as BlobPart]), password, dest, onProgress, beforeApply);
+            track.done('local');
+            return r;
         }
         if (!file) throw new Error('No backup file provided.');
-        return await applyBackupBytes(userId, new Uint8Array(await file.arrayBuffer()), password, dest, onProgress, site, onStaleBackup);
+        const r = await applyBackupBytes(userId, new Uint8Array(await file.arrayBuffer()), password, dest, onProgress, site, onStaleBackup, beforeApply);
+        track.done('local');
+        return r;
     } catch (err: unknown) {
+        track.failed(err, 'local');
         onProgress?.({ phase: 'error', message: errorMessage(err) || 'Restore failed.' });
         throw err;
     }
@@ -1289,11 +1436,12 @@ async function applyBackupBytes(
     onProgress?: (p: DriveBackupProgress) => void,
     site?: FloorSite | null,
     onStaleBackup?: StaleBackupConfirm,
+    beforeApply?: BeforeApply,
 ): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning }> {
-    if (isContainerFile(bytes)) return applyContainer(userId, memorySource(bytes), password, onProgress, site, onStaleBackup);
+    if (isContainerFile(bytes)) return applyContainer(userId, memorySource(bytes), password, onProgress, site, onStaleBackup, beforeApply);
     // Legacy v1/v2/chunked files carry no generation and no sealed
     // createdAt, so there is nothing to compare — silent, as everywhere else.
-    return applyLegacy(userId, new Blob([bytes as BlobPart]), password, chunkDest, onProgress);
+    return applyLegacy(userId, new Blob([bytes as BlobPart]), password, chunkDest, onProgress, beforeApply);
 }
 
 /**
@@ -1302,6 +1450,13 @@ async function applyBackupBytes(
  * means no comparison is possible, which is silent by design.
  */
 interface FloorSite { label: BackupDestinationLabel; target: string }
+
+/**
+ * Asked once the backup has been opened (right password, a real backup, this account's) and
+ * BEFORE the first write: return false to leave the device untouched. The Settings restore uses it
+ * to ask before removing damaged records (BackupSection: DamagedItemsModal).
+ */
+export type BeforeApply = () => boolean | Promise<boolean>;
 
 /** Asked before applying a backup that looks older than the last one this
  *  device wrote. Return false to leave the device untouched. Advisory only:
@@ -1313,6 +1468,7 @@ async function applyContainer(
     onProgress?: (p: DriveBackupProgress) => void,
     site?: FloorSite | null,
     onStaleBackup?: StaleBackupConfirm,
+    beforeApply?: BeforeApply,
 ): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning }> {
     onProgress?.({ phase: 'decrypt', message: 'Decrypting…' });
     const container = await openContainer(source, password); // throws on wrong password
@@ -1333,6 +1489,7 @@ async function applyContainer(
         catch { proceed = true; } // a broken handler must not block a restore
         if (!proceed) return { restored: false, staleWarning };
     }
+    if (beforeApply && !(await beforeApply())) return { restored: false, ...(staleWarning ? { staleWarning } : {}) };
 
     onProgress?.({ phase: 'apply', message: 'Restoring your data…' });
     await applyBackupContainer(userId, container, (done, total) => onProgress?.({ phase: 'apply', attachments: { done, total } }));
@@ -1354,6 +1511,7 @@ async function applyLegacy(
     userId: string, encBlob: Blob, password: string,
     chunkDest: SingleFileDestination | null,
     onProgress?: (p: DriveBackupProgress) => void,
+    beforeApply?: BeforeApply,
 ): Promise<{ restored: boolean }> {
     onProgress?.({ phase: 'decrypt', message: 'Decrypting…' });
     const vaultStr = await decryptBackup(encBlob, password); // throws on wrong password
@@ -1377,6 +1535,7 @@ async function applyLegacy(
         finalVaultJson = vaultStr;
     }
 
+    if (beforeApply && !(await beforeApply())) return { restored: false };
     onProgress?.({ phase: 'apply', message: 'Restoring your data…' });
     await importLocalHistory(userId, new Blob([finalVaultJson], { type: 'application/json' }));
     onProgress?.({ phase: 'done' });

@@ -22,10 +22,14 @@ const slice = (src: string, needle: string, len: number) => {
 
 describe('receiving a call_key_request', () => {
     it('is answered only after the sender-trust gate, through the sharing hook', () => {
-        const at = slice(dashboard, "content.type === 'call_key_request' && content.call_id", 1400);
-        expect(at).toContain("actionFor(senderVerdict, 'key_material') === 'accept'");
+        const at = slice(dashboard, "content.type === 'call_key_request' && content.call_id", 2600);
+        // Owner 2026-11-25: the request is judged by the call-key decision
+        // (utils/callKeyTrust.ts: accept, or accept_warn for a verified
+        // contact's listed unverified device), not by bare actionFor.
+        expect(at).toContain('routeIncomingKeyRequest({');
+        expect(at).toContain('verdict: senderVerdict,');
         expect(at).toContain('handleCallKeyRequestRef.current({');
-        expect(at).toContain('senderTrusted: trusted');
+        expect(at).toContain('senderTrusted,');
         // The requester's device id comes from the envelope, never the payload.
         expect(at).toContain('senderDeviceId: envelopeSenderDeviceId');
     });
@@ -33,7 +37,7 @@ describe('receiving a call_key_request', () => {
         expect(dashboard).toContain("(content?.type === 'call_key' || content?.type === 'call_key_request') && envelopeSenderUserId");
     });
     it('is logged by reason only — no user or device identifiers', () => {
-        const at = slice(dashboard, "content.type === 'call_key_request' && content.call_id", 1400);
+        const at = slice(dashboard, "content.type === 'call_key_request' && content.call_id", 2600);
         const logs = at.match(/console\.\w+\([^;]*\);/g) ?? [];
         expect(logs.length).toBeGreaterThan(0);
         for (const l of logs) expect(l).not.toMatch(/UserId|DeviceId|senderPub|env\./);

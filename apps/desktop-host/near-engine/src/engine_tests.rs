@@ -1089,6 +1089,56 @@ fn a_re_ask_from_the_same_device_replaces_its_undecided_sheet_instead_of_being_t
     asker.eng.cancel();
 }
 
+// "busy right now" that never cleared (2026-11-26): a phone whose transfer died after the person said Send (its foreground service
+// crashed, the OS killed the app, the Wi-Fi dropped) never tells the holder, and the holder's approved session waits for a peer that is
+// gone. Every retry of that SAME device (a new nonce: its core runs one request at a time) was answered "busy" until the stale session
+// gave up. A re-ask from the device the running holder session belongs to replaces it, whatever it was doing.
+#[test]
+fn a_re_ask_from_the_device_of_an_approved_stalled_holder_session_replaces_it_instead_of_being_told_busy() {
+    let t = tmp();
+    let r = router();
+    let holder = own_host(&r, t.path(), "h", "dev-H");
+    let asker = own_host(&r, t.path(), "a", "dev-N");
+    asker.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    wait_own(&holder, "the first sheet", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    wait_own(&holder, "the holder proved the LAN and waits to send", |s| s.state == NearState::Approved && s.proximity == Some("lan"));
+    // the phone's process dies mid-way: nothing is said to the holder. Its next start asks again (same device id, a new engine).
+    let phone2 = own_host(&r, t.path(), "a2", "dev-N");
+    phone2.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    let busy: Vec<_> = answers_to(&r, "dev-N").into_iter().filter(|a| a["busy"] == true).collect();
+    assert!(busy.is_empty(), "the stale session of the same device must give way, not answer busy: {busy:?}");
+    assert_eq!(phone2.eng.snapshot().state, NearState::AwaitingApproval, "the re-ask waits for the person");
+    let sheet = wait_own(&holder, "the holder shows a fresh sheet for the new request", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(sheet.peer.as_ref().unwrap().label, "Dawson's other PC");
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    wait_own(&phone2, "the new request is approved", |s| s.state == NearState::Approved);
+    holder.eng.cancel();
+    phone2.eng.cancel();
+    asker.eng.cancel();
+}
+
+// but another device never takes over a session that is past its sheet
+#[test]
+fn another_device_is_still_told_busy_while_a_holder_session_is_approved() {
+    let t = tmp();
+    let r = router();
+    let holder = own_host(&r, t.path(), "h", "dev-H");
+    let first = own_host(&r, t.path(), "a1", "dev-N");
+    let other = own_host(&r, t.path(), "a2", "dev-M");
+    first.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    wait_own(&holder, "the sheet", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    wait_own(&holder, "approved", |s| s.state == NearState::Approved && s.proximity == Some("lan"));
+    other.eng.own_request("dev-H".into(), "dev-M".into()).unwrap();
+    let s = wait_own(&other, "told busy", |s| s.state == NearState::Refused);
+    assert_eq!(s.error.unwrap().code, "busy");
+    assert_eq!(holder.eng.snapshot().state, NearState::Approved, "the first device's session is untouched");
+    holder.eng.cancel();
+    first.eng.cancel();
+}
+
 #[test]
 fn the_same_offer_delivered_twice_opens_one_sheet_and_is_never_declined() {
     let t = tmp();

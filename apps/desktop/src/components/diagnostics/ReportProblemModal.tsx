@@ -36,7 +36,7 @@ const CATEGORY_UI: Array<{ id: DiagnosticCategory; title: string; hint: string; 
     { id: 'performance', title: 'Performance or freezes', hint: 'Slow, stuttering, or “Not responding” moments', Icon: Gauge },
     { id: 'crash', title: 'Crash', hint: 'Cipherline closed, went blank, or showed an error screen', Icon: Bug },
     { id: 'notifications', title: 'Notifications', hint: 'Missing, late or unwanted notifications and sounds', Icon: Bell },
-    { id: 'other', title: 'Something else', hint: 'Anything that doesn’t fit the categories above', Icon: MessageCircleQuestion },
+    { id: 'other', title: 'Something else', hint: 'Backup or restore trouble, or anything that doesn’t fit the categories above', Icon: MessageCircleQuestion },
 ];
 const CATEGORY_BY_ID = Object.fromEntries(CATEGORY_UI.map(c => [c.id, c])) as Record<DiagnosticCategory, typeof CATEGORY_UI[number]>;
 
@@ -47,7 +47,7 @@ const PLACEHOLDER: Record<DiagnosticCategory, string> = {
     performance: 'e.g. The app freezes for a few seconds whenever I switch servers.',
     crash: 'What were you doing right before it closed? Anything you can remember helps.',
     notifications: 'e.g. I don’t get notifications for DMs while the window is minimized.',
-    other: 'Tell us what happened and what you expected to happen.',
+    other: 'Tell us what happened and what you expected to happen. For a backup or restore, say which one and what you saw.',
 };
 
 export interface ReportProblemModalProps {

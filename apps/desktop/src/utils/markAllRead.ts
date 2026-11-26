@@ -64,6 +64,7 @@ export function readEventFor(p: {
         lastId: lastReadableMessageId(p.messages ?? []),
         lastSentId: null,
         attended: true,
+        recentInput: true, // explicit: the user just clicked
         // A self chat never receipts to anyone: always the self-only form.
         showReadReceipts: p.showReadReceipts && !p.isSelfChat,
     });

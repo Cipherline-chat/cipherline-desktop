@@ -2,6 +2,8 @@
 //! stream. Pings every 10 s when otherwise quiet, pongs answered automatically, 30 s without any
 //! incoming byte is an idle timeout. Application code sees only non-ping frames, through channels of
 //! capacity 2-4, so memory stays at a few frames regardless of what is transferred.
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -10,7 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Instant};
 
 use crate::error::{NearError, Result};
-use crate::frame::{read_frame, write_frame, Frame, MAX_FRAME_LEN, T_PING, T_PONG};
+use crate::frame::{read_frame, write_frame, Frame, MAX_FRAME_LEN, PROGRESS_BEACON, T_PING, T_PONG};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConnConfig {
@@ -29,6 +31,8 @@ pub struct Conn {
     tx: Option<mpsc::Sender<Frame>>,
     reader: JoinHandle<()>,
     writer: Option<JoinHandle<()>>,
+    /// Progress beacons received so far (pings carrying [`PROGRESS_BEACON`]; plain keep-alive pings are not counted).
+    beacons: Arc<AtomicU64>,
 }
 
 impl Conn {
@@ -41,11 +45,14 @@ impl Conn {
         let (app_tx, app_rx) = mpsc::channel::<Result<Frame>>(4);
         let (wtx, mut wrx) = mpsc::channel::<Frame>(2);
         let pong_tx = wtx.clone();
+        let beacons = Arc::new(AtomicU64::new(0));
+        let seen = beacons.clone();
 
         let reader = tokio::spawn(async move {
             loop {
                 match read_frame(&mut rd, MAX_FRAME_LEN, cfg.idle).await {
                     Ok(f) if f.ty == T_PING => {
+                        if f.payload == PROGRESS_BEACON { seen.fetch_add(1, Ordering::SeqCst); }
                         let _ = pong_tx.send(Frame { ty: T_PONG, payload: vec![] }).await;
                     }
                     Ok(f) if f.ty == T_PONG => {}
@@ -87,7 +94,16 @@ impl Conn {
             let _ = timeout(Duration::from_secs(5), wr.shutdown()).await;
         });
 
-        Conn { rx: app_rx, tx: Some(wtx), reader, writer: Some(writer) }
+        Conn { rx: app_rx, tx: Some(wtx), reader, writer: Some(writer), beacons }
+    }
+
+    /// How many progress beacons the peer has sent on this connection.
+    pub fn beacons(&self) -> u64 { self.beacons.load(Ordering::SeqCst) }
+
+    /// Queue a progress beacon if there is room right now. Best effort and never blocking: a beacon that cannot be queued (the writer is
+    /// busy, or the connection is already gone) is simply skipped, so it can never turn a finished transfer into a failed one.
+    pub fn try_beacon(&self) {
+        if let Some(tx) = &self.tx { let _ = tx.try_send(Frame { ty: T_PING, payload: PROGRESS_BEACON.to_vec() }); }
     }
 
     /// Queue a frame. Applies backpressure (the queue holds two frames). Errors once the writer is gone.

@@ -58,11 +58,20 @@ import { ClButton } from '../ClButton';
  *                 call is now unencrypted" instead of "still fine, this
  *                 device just can't confirm the key stayed current."
  *
+ *   'unverified_device' — DM / group only, CallPane IS mounted: the call is
+ *                 connected on a key from a VERIFIED contact's UNVERIFIED device
+ *                 (utils/callKeyTrust.ts 'accept_warn', owner 2026-11-25: warn
+ *                 only, like the phones' "Unvouched device"). Non-blocking —
+ *                 no leave button, the call runs — but a card, not a pill, so
+ *                 the reason and the Review device action are visible without
+ *                 a hover. Never says or implies the call is unencrypted (it
+ *                 is not); it says encryption does not prove who is there.
+ *
  * Presentational only — composed from existing primitives and design tokens,
  * with no edits under components/cl (which would drag in the website build).
  */
 
-export type CallEncryptionIndicatorMode = 'loading' | 'stalled' | 'connected' | 'degraded' | 'mixed';
+export type CallEncryptionIndicatorMode = 'loading' | 'stalled' | 'connected' | 'degraded' | 'mixed' | 'unverified_device';
 
 interface CallEncryptionIndicatorProps {
     mode: CallEncryptionIndicatorMode;
@@ -86,9 +95,40 @@ interface CallEncryptionIndicatorProps {
      *  where the identity warning can be answered; answering it re-asks for the
      *  key, which the same gate judges again. */
     refusal?: { title: string; body: string; onReview?: () => void };
+    /** 'unverified_device' only: the copy (utils/callKeyTrust.ts callKeyWarningNotice)
+     *  and `onReview`, which opens the chat where that device can be verified. */
+    warning?: { title: string; body: string; onReview?: () => void };
 }
 
-export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencryptedNames, refusal }: CallEncryptionIndicatorProps) => {
+export const CallEncryptionIndicator = ({ mode, channelName, onLeave, unencryptedNames, refusal, warning }: CallEncryptionIndicatorProps) => {
+    if (mode === 'unverified_device') {
+        if (!warning) return null;
+        return (
+            <div className="shrink-0 px-2 pt-2 pb-1">
+                <div
+                    className="rounded-xl border p-2.5 bg-cl-raise"
+                    style={{ borderColor: 'rgb(var(--cl-glow-rgb) / .28)' }}
+                    role="status"
+                    aria-live="polite"
+                    data-call-key-unverified-device
+                >
+                    <div className="flex items-start gap-2 mb-1">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-[1px]" style={{ color: 'var(--cl-glow-text)' }} />
+                        <span className="text-[12px] font-semibold text-cl-text">{warning.title}</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-white/60">{warning.body}</p>
+                    {warning.onReview && (
+                        <div className="mt-2">
+                            <ClButton variant="ghost" size="sm" fullWidth onClick={warning.onReview}>
+                                Review device
+                            </ClButton>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
     if (mode === 'mixed') {
         // Deliberately NOT a padlock of any colour. 'degraded' is amber and
         // still says "Encrypted" because the call genuinely is; this state is

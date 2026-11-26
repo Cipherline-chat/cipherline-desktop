@@ -63,3 +63,20 @@ export function setIdleTimeoutMinutes(minutes: unknown): void {
 export function getIdleThresholdSeconds(): number {
     return currentMinutes * 60;
 }
+
+/**
+ * The most the PHONE-notification decision will wait on this PC, in seconds.
+ *
+ * The user's Idle timeout (up to 30 min) drives the VISIBLE auto-away status.
+ * It must NOT also drive how long an unattended PC can hold the phone quiet:
+ * with 30 min selected, a PC nobody is at silenced the phone for half an hour
+ * (notification-reliability audit 2026-11-25, A2). Slack bounds the same window
+ * at 10 min; we use 5. So the `active` flag sent on the heartbeat uses
+ * min(setting, 5 min); 1 and 2 min still apply as chosen.
+ */
+export const PUSH_PRESENCE_MAX_SECONDS = 5 * 60;
+
+/** Threshold for the heartbeat's `active` flag: min(Idle timeout, 5 min). */
+export function getPushPresenceThresholdSeconds(): number {
+    return Math.min(getIdleThresholdSeconds(), PUSH_PRESENCE_MAX_SECONDS);
+}

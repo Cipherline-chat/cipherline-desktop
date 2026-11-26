@@ -92,6 +92,7 @@ import { LongMessageBody } from './LongMessage';
 import { UNDECRYPTABLE_KIND, placeholderText } from '../utils/dmInbound';
 import { parseSafetyNumberContent } from '../utils/contentValidation';
 import { lastReadableMessageId, readReceiptToSend } from '../utils/readReceipt';
+import { useRecentInput } from '../hooks/useRecentInput';
 import { isSelfDm, chatAffordances } from '../utils/selfConversation';
 import { useWindowFocus } from '../hooks/useWindowFocus';
 import { EMOJI_RE, isEmojiOnly, countEmojis } from '../utils/emojiText';
@@ -2197,6 +2198,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // readReceiptToSend). Re-runs the effect below when attention returns, so
     // whatever arrived while the window was in the background is reported then.
     const windowAttended = useWindowFocus();
+    // ...and a person at the keyboard: a focused window on an idle PC is not
+    // being read, and a receipt from it cancels the phone's notification
+    // (notification-reliability audit 2026-11-25). Auto reads need real input
+    // within 2 min; the effect re-runs when input returns (a click that opens
+    // the chat is itself input, so an explicit open reads at once).
+    const recentInput = useRecentInput();
     useEffect(() => {
         if (!sendReadReceipt || !activeChat?.id) return;
         // The newest REAL message, never a row this device made up (an
@@ -2208,6 +2215,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             lastId: lastReadableMessageId(messages),
             lastSentId: lastSentReceiptRef.current,
             attended: windowAttended,
+            recentInput,
             // A self chat has no one to receipt to: always the self-only form, which
             // still clears the unread badge on your other devices.
             showReadReceipts: showReadReceipts && affordances.readReceipts,
@@ -2215,7 +2223,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (!send) return;
         lastSentReceiptRef.current = send.id;
         sendReadReceipt(activeChat.id, send.id, send.selfOnly ? { selfOnly: true } : undefined);
-    }, [messages, activeChat?.id, showReadReceipts, affordances.readReceipts, sendReadReceipt, windowAttended]);
+    }, [messages, activeChat?.id, showReadReceipts, affordances.readReceipts, sendReadReceipt, windowAttended, recentInput]);
 
     const [safetyModalOpen, setSafetyModalOpen] = useState(false);
     const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);

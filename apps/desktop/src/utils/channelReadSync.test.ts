@@ -126,7 +126,7 @@ describe('reconcileChannelUnread — the other-device read the old floor-only ru
 describe('shouldAdvanceChannelCursor', () => {
     const base = {
         messageChannelId: CH, activeChannelId: CH, activeChannelIsText: true,
-        windowFocused: true, documentVisible: true, isOwnMessage: false,
+        windowFocused: true, documentVisible: true, isOwnMessage: false, recentInput: true,
     };
     it('advances when a human is looking at that channel', () => {
         expect(shouldAdvanceChannelCursor(base)).toBe(true);
@@ -137,6 +137,7 @@ describe('shouldAdvanceChannelCursor', () => {
         ['the window is hidden/minimised', { documentVisible: false }],
         ['it is my own message', { isOwnMessage: true }],
         ['the open channel is a calls channel', { activeChannelIsText: false }],
+        ['nobody has touched the PC for over 2 min (idle but focused)', { recentInput: false }],
     ])('does not advance when %s', (_label, patch) => {
         expect(shouldAdvanceChannelCursor({ ...base, ...patch })).toBe(false);
     });

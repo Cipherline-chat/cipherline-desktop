@@ -42,10 +42,13 @@ export function botPageUrl(applicationId: unknown): string {
 /**
  * "Watch a video" in the wizard's instructions (owner 2026-11-22: "you can just
  * have a link that says watch a video in the instructions that takes it to the
- * youtube video"). The ONE place the address lives. Empty = the link is hidden;
- * paste the YouTube link here once the video is up.
+ * youtube video"). The ONE place the address lives. Empty = the link is hidden.
+ * Video: "How to Import Your Discord Server to Cipherline (Messages, Channels,
+ * Roles & Emojis)". It is only ever OPENED in the system browser; nothing is
+ * embedded or loaded from YouTube inside the app.
  */
-export const DISCORD_IMPORT_VIDEO_URL = '';
+export const VIDEO_TITLE = 'How to Import Your Discord Server to Cipherline';
+export const DISCORD_IMPORT_VIDEO_URL = 'https://www.youtube.com/watch?v=Cm_mfwcGLIU';
 
 const VIDEO_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'youtu.be']);
 

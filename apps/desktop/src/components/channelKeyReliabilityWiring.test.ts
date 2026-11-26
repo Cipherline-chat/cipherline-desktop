@@ -33,7 +33,7 @@ const pass = () => body(servePassSrc, 'export function serveKeyRequestsPass(', '
 const joinDecision = () => body(servePassSrc, 'export async function runMemberJoinDistribution(', "return 'distributed';");
 const memberJoined = () => body(src, 'const distributeKeysToNewMember = (server_id: string, newUserId: string) => {', '}, [serverMemberJoinedEvents]);');
 const connectSweep = () => body(src, '// Connect-time sweep over every server', '// RC-10 / Phase 6: refresh which epochs');
-const retryTimer = () => body(src, 'const FALLBACK_ROTATION_AFTER_MS', '}, [token, deviceId, requestMissingChannelKeys, attemptFallbackRotation]);');
+const retryTimer = () => body(src, '// Backstop for the recovery driver pullChannelKeys already runs:', '}, [token, deviceId, requestMissingChannelKeys, attemptFallbackRotation]);');
 const requestMissing = () => body(src, 'const requestMissingChannelKeys = useCallback', 'const refreshProtectedEpochs = useCallback');
 
 describe('keyless side: a pull triggered mid-pull is not dropped', () => {
@@ -142,7 +142,7 @@ describe('background: independent of what the UI is showing', () => {
         const fn = retryTimer();
         expect(fn).toContain('keyChannelServerRef.current.get(cid)');
         // …but the fallback ROTATION stays scoped to loaded servers (as before).
-        const fallback = fn.slice(fn.indexOf('for (const cid of due) {'));
+        const fallback = fn.slice(fn.indexOf('for (const cid of planFallbackRotations('));
         expect(fallback.slice(0, 200)).toContain('channelToServer.get(cid)');
         expect(fallback.slice(0, 200)).not.toContain('keyChannelServerRef');
     });

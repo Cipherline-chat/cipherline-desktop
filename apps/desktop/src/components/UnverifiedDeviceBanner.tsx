@@ -51,6 +51,9 @@ interface Props {
  * `senderTrust.ts`'s `actionFor`. Key material (call/channel keys) from the
  * device is refused for these until the user verifies it; `key_changed`
  * alone gets the milder amber treatment and no "refused" sentence.
+ * (Since 2026-11-25 a DM/group CALL key from an `unrecognized_verified` device
+ * the server publishes is adopted with an in-call warning instead —
+ * utils/callKeyTrust.ts — so that verdict's sentence says so.)
  */
 const SEVERE: ReadonlySet<SenderVerdict> = new Set(['unrecognized_verified', 'unattributed']);
 
@@ -71,7 +74,12 @@ export const UnverifiedDeviceBanner: React.FC<Props> = ({ verdict, displayName, 
             {severe && (
                 <>
                     {' '}
-                    <strong>Encrypted calling and channel keys from this device are being refused until you verify it.</strong>
+                    {/* Call keys from a verified contact's unverified device are
+                        adopted with an in-call warning since 2026-11-25
+                        (utils/callKeyTrust.ts); channel keys are still refused. */}
+                    <strong>{verdict === 'unrecognized_verified'
+                        ? 'Channel keys from this device are being refused until you verify it. Calls from it can connect, with a warning in the call.'
+                        : 'Encrypted calling and channel keys from this device are being refused until you verify it.'}</strong>
                 </>
             )}
             <span style={{ display: 'block', marginTop: 4, opacity: 0.7 }}>Click to open verification.</span>
