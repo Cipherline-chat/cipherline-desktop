@@ -5,6 +5,9 @@ import {
     MEDIA_WATCH_KEEPALIVE_MS, MEDIA_WATCH_POLL_MS, MEDIA_WATCH_UNSUPPORTED_MS, MediaWatcher, parseWatchOpts, readSignature,
 } from './media-watch';
 import { MediaSessionReader, type MediaReadResult, type NowPlaying, type ReadOpts } from './media-session';
+import { setWinHelperBinary } from './win-sys';
+
+beforeEach(() => setWinHelperBinary(() => 'C:\\r\\win-helper.exe'));
 
 const song = (o: Partial<NowPlaying> = {}): NowPlaying => ({
     kind: 'listening', source: 'spotify', title: 'Teardrop', artist: 'Massive Attack', album: 'Mezzanine',
@@ -140,7 +143,7 @@ describe('MediaWatcher: the main-process schedule', () => {
     });
 
     it('nothing readable on this machine: told once, then looked at again only rarely', async () => {
-        const { w, read, emit } = setup([{ supported: false, reason: 'no_powershell' }]);
+        const { w, read, emit } = setup([{ supported: false, reason: 'no_helper' }]);
         w.configure(ON);
         await vi.advanceTimersByTimeAsync(MEDIA_WATCH_POLL_MS * 5);
         expect(read).toHaveBeenCalledTimes(1);

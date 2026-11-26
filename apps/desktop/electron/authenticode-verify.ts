@@ -14,11 +14,19 @@
  * electron-updater deletes the file after a failed check, so each retry
  * re-downloads and the scanner re-scans a brand-new file.
  *
- * This is the same check with the same verdict rules — only the operational
- * envelope changes:
- *   • timeout 120 s instead of 20 s (plus a hard ceiling in case the shell's
- *     grandchild PowerShell outlives the killed cmd.exe and holds the pipes);
- *   • a definitive verdict on stdout is used even if PowerShell also wrote
+ * ── Why no PowerShell any more (2026-11) ─────────────────────────────────────
+ * The check used to start `powershell.exe -EncodedCommand <base64>`. A hidden,
+ * base64-encoded PowerShell child is the textbook obfuscated-script pattern
+ * (MITRE T1059.001 / T1027) that behavioural security engines and Defender's ASR
+ * rules block, and one tester's suite flagged the app for it. The check is now
+ * `win-helper.exe verify <file>`: our own signed Rust helper calls WinVerifyTrust
+ * (the API Get-AuthenticodeSignature uses underneath) and prints the same JSON
+ * shape, so evaluateSignatureJson and every verdict rule below are unchanged.
+ *
+ * The operational envelope is the same as before:
+ *   • timeout 120 s instead of 20 s (plus a hard ceiling in case a child
+ *     outlives the kill and holds the pipes);
+ *   • a definitive verdict on stdout is used even if the helper also wrote
  *     noise to stderr (the default throws the verdict away);
  *   • "the check could not run" REJECTS with ERR_UPDATER_SIGNATURE_CHECK_UNAVAILABLE
  *     — retryable — and is never confused with "the signature is wrong",
@@ -31,22 +39,31 @@
  *   • the signer must match one of app-update.yml's publisherNames: a full DN
  *     must match every RDN it names; a bare name must equal the signer's CN.
  *     (`parseDn` is electron-updater's own, from builder-util-runtime.)
- *   • if PowerShell cannot run AT ALL (even `ConvertTo-Json` fails), upstream
- *     skips the check with a warning — on the theory that the machine has no
- *     usable PowerShell. That fail-open is preserved as-is (parity, not a
- *     loosening), logged loudly and recorded as a diagnostic event.
+ *
+ * FAILS CLOSED. Upstream skipped the check when PowerShell could not run at all
+ * ("the machine has no usable PowerShell"). That escape hatch is gone with
+ * PowerShell: if the helper is missing, blocked or does not answer, the update is
+ * REJECTED as "check unavailable" (retryable), never accepted unchecked.
  *
  * No `electron` import and every side effect injected, so it is unit-testable
- * on any OS (src/utils/authenticodeVerify.test.ts).
+ * on any OS (electron/authenticode-verify.test.ts).
  */
 
 export const VERIFY_TIMEOUT_MS = 120_000;
-/** Ceiling for the "can PowerShell run at all" probe. */
-export const PROBE_TIMEOUT_MS = 30_000;
 /** Settle anyway this long after the timeout, if the pipes never close. */
 export const HARD_CEILING_SLACK_MS = 10_000;
 
 export const CHECK_UNAVAILABLE_CODE = 'ERR_UPDATER_SIGNATURE_CHECK_UNAVAILABLE';
+/**
+ * The checker itself (win-helper.exe) could not run or did not answer: missing, blocked (security software, policy), crashed or
+ * timed out. Distinct from CHECK_UNAVAILABLE_CODE (it ran but its output was unusable) and from a bad signature (a verdict).
+ * The update is NOT applied; updater-state.ts shows an actionable message and stops the silent retry loop (the user's Retry and
+ * the next scheduled check run it again).
+ */
+export const HELPER_UNAVAILABLE_CODE = 'ERR_UPDATER_SIGNATURE_HELPER_UNAVAILABLE';
+
+/** Privacy-safe reason words (no paths, no messages) for the diagnostics log. */
+export type HelperFailureReason = 'missing' | 'blocked' | 'timeout' | 'crash' | 'no_output';
 
 export type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
 export type ExecFileLike = (
@@ -68,76 +85,26 @@ export interface VerifierDeps {
     /** path.win32.normalize in production. */
     normalizePath: (p: string) => string;
     log: VerifierLog;
-    /** The environment PowerShell inherits (process.env in production). */
+    /** Absolute path of win-helper.exe (the signed Rust helper), or null when it is not there. */
+    helperPath: () => string | null;
+    /** The environment the helper inherits (process.env in production). */
     baseEnv?: Record<string, string | undefined>;
-    /** Called when the check is skipped because PowerShell is unusable (fail-open parity). */
-    onSkipped?: (why: string) => void;
     setTimer?: (fn: () => void, ms: number) => { unref?: () => void } | unknown;
     clearTimer?: (t: unknown) => void;
 }
 
-/** Environment variable that carries the file path into the script. */
-export const UPDATE_FILE_ENV = 'CIPHERLINE_UPDATE_FILE';
-
 /**
- * The signature script. It is a FIXED string: the downloaded file's path is
- * never spliced into it, it is read from $env:CIPHERLINE_UPDATE_FILE.
- *
- * Why not splice it (what this used to do): the file name comes from the
- * update feed (electron-updater names the download after the feed URL's last
- * path segment, percent-decoded), so it is not ours to trust. It was escaped
- * only for the ASCII apostrophe, but PowerShell also ends a single-quoted
- * literal at U+2018/U+2019/U+201A/U+201B, all valid in a Windows file name, so
- * a feed that named the installer `x<U+2019>; <command>; <U+2018>.exe` ran
- * <command> in PowerShell during the signature check, before any signature
- * was judged. The whole thing also went through cmd.exe (shell: true), which
- * expands %VAR% in the path. An environment value is never parsed, so no
- * file name can become code.
- *
- * Output is forced to pure ASCII (non-ASCII becomes a \uXXXX escape, which
- * JSON.parse undoes) so the result does not depend on the console code page;
- * this replaces the `chcp 65001` the cmd wrapper used to do.
+ * Direct spawn of the helper, NO shell: `win-helper.exe verify <file>`. The file name is plain argv data (the helper never
+ * parses it as anything but a path), so a hostile name from the update feed cannot become code.
  */
-export const SIGNATURE_SCRIPT =
-    "$ProgressPreference = 'SilentlyContinue'; " +
-    `$j = Get-AuthenticodeSignature -LiteralPath $env:${UPDATE_FILE_ENV} | ConvertTo-Json -Compress; ` +
-    "[regex]::Replace($j, '[^\\x00-\\x7F]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value })";
-
-/** The "can PowerShell run at all" probe (upstream's ConvertTo-Json test). */
-export const PROBE_SCRIPT = "'test' | ConvertTo-Json";
-
-/** -EncodedCommand takes base64 of UTF-16LE: no quoting layer to get wrong. */
-export function encodePowerShell(script: string): string {
-    return Buffer.from(script, 'utf16le').toString('base64');
-}
-
-/**
- * Direct spawn of Windows PowerShell, NO shell. Keeps upstream's PSModulePath
- * reset (it is removed from the child's environment, as `set "PSModulePath="`
- * did) and its flags. `filePath`, when given, travels in the environment.
- */
-export function powershellInvocation(
-    script: string,
-    filePath?: string,
+export function helperInvocation(
+    helper: string,
+    file: string,
     baseEnv: Record<string, string | undefined> = {},
 ): { exe: string; args: string[]; env: Record<string, string> } {
     const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(baseEnv)) {
-        if (v === undefined) continue;
-        // Windows env names are case-insensitive; drop PSModulePath whatever its case.
-        if (k.toUpperCase() === 'PSMODULEPATH') continue;
-        if (k.toUpperCase() === UPDATE_FILE_ENV) continue;
-        env[k] = v;
-    }
-    if (filePath !== undefined) env[UPDATE_FILE_ENV] = filePath;
-    const root = baseEnv.SystemRoot || baseEnv.SYSTEMROOT || baseEnv.windir || baseEnv.WINDIR;
-    // Absolute path when we can build one: no PATH search for the executable.
-    const exe = root ? `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe';
-    return {
-        exe,
-        args: ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-EncodedCommand', encodePowerShell(script)],
-        env,
-    };
+    for (const [k, v] of Object.entries(baseEnv)) if (v !== undefined) env[k] = v;
+    return { exe: helper, args: ['verify', file], env };
 }
 
 export type Verdict =
@@ -154,7 +121,7 @@ interface SignatureJson {
     SignerCertificate?: { Subject?: unknown; Issuer?: unknown; NotBefore?: unknown; NotAfter?: unknown; Thumbprint?: unknown } | null;
 }
 
-/** Pure: turn Get-AuthenticodeSignature's JSON into a verdict. */
+/** Pure: turn the signature JSON (Get-AuthenticodeSignature's shape, written by win-helper) into a verdict. */
 export function evaluateSignatureJson(
     stdout: string,
     publisherNames: readonly string[],
@@ -206,14 +173,36 @@ export function evaluateSignatureJson(
     return { kind: 'invalid', reason: summary() };
 }
 
+/** Why the helper gave no answer, from how its spawn ended. A fixed word, never the error text. */
+export function classifyHelperFailure(run: { error: Error | null; stdout: string }, helperPresent: boolean): HelperFailureReason | null {
+    if (!helperPresent) return 'missing';
+    const err = run.error as (Error & { code?: unknown; killed?: boolean; signal?: unknown }) | null;
+    if (err) {
+        if (err.killed || err.signal || /did not finish/.test(err.message)) return 'timeout';
+        if (err.code === 'ENOENT') return 'missing';
+        // Security software typically answers a launch with EACCES / EPERM / UNKNOWN (or a quarantine, then ENOENT).
+        if (typeof err.code === 'string') return 'blocked';
+        if (typeof err.code === 'number') return 'crash';
+        return /not installed/.test(err.message) ? 'missing' : 'crash';
+    }
+    return run.stdout.trim() ? null : 'no_output';
+}
+
+function helperUnavailable(reason: HelperFailureReason, took: number): Error {
+    const e = new Error(`Could not check the update's signature: win-helper.exe unavailable (${reason}) after ${took} ms`) as Error & { code: string; reason: HelperFailureReason };
+    e.code = HELPER_UNAVAILABLE_CODE;
+    e.reason = reason;
+    return e;
+}
+
 function unavailable(message: string): Error {
     const e = new Error(`Could not check the update's signature: ${message}`) as Error & { code: string };
     e.code = CHECK_UNAVAILABLE_CODE;
     return e;
 }
 
-/** Run one PowerShell command; never rejects, always settles (hard ceiling). */
-function runPowerShell(script: string, filePath: string | undefined, timeout: number, deps: VerifierDeps): Promise<{ error: Error | null; stdout: string; stderr: string }> {
+/** Run the helper once; never rejects, always settles (hard ceiling). */
+function runHelper(filePath: string, timeout: number, deps: VerifierDeps): Promise<{ error: Error | null; stdout: string; stderr: string }> {
     const setT = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
     const clearT = deps.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>));
     return new Promise(resolve => {
@@ -221,11 +210,13 @@ function runPowerShell(script: string, filePath: string | undefined, timeout: nu
         const ceiling = setT(() => {
             if (settled) return;
             settled = true;
-            resolve({ error: new Error(`PowerShell did not finish within ${Math.round((timeout + HARD_CEILING_SLACK_MS) / 1000)}s`), stdout: '', stderr: '' });
+            resolve({ error: new Error(`the signature checker did not finish within ${Math.round((timeout + HARD_CEILING_SLACK_MS) / 1000)}s`), stdout: '', stderr: '' });
         }, timeout + HARD_CEILING_SLACK_MS);
         (ceiling as { unref?: () => void } | null)?.unref?.();
         try {
-            const { exe, args, env } = powershellInvocation(script, filePath, deps.baseEnv);
+            const helper = deps.helperPath();
+            if (!helper) throw new Error('the signature checker (win-helper.exe) is not installed');
+            const { exe, args, env } = helperInvocation(helper, filePath, deps.baseEnv);
             deps.execFile(exe, args, { timeout, windowsHide: true, env }, (error, stdout, stderr) => {
                 if (settled) return;
                 settled = true;
@@ -251,9 +242,9 @@ export function createAuthenticodeVerifier(deps: VerifierDeps): (publisherNames:
     return async (publisherNames, file) => {
         const started = Date.now();
         deps.log.info(`Verifying update signature (timeout ${VERIFY_TIMEOUT_MS / 1000}s)`);
-        const run = await runPowerShell(SIGNATURE_SCRIPT, file, VERIFY_TIMEOUT_MS, deps);
+        const run = await runHelper(file, VERIFY_TIMEOUT_MS, deps);
         const took = Date.now() - started;
-        if (run.stderr.trim()) deps.log.warn(`Get-AuthenticodeSignature wrote to stderr: ${run.stderr.trim().slice(0, 500)}`);
+        if (run.stderr.trim()) deps.log.warn(`The signature checker wrote to stderr: ${run.stderr.trim().slice(0, 500)}`);
 
         // A definitive verdict on stdout wins, whatever else happened.
         const verdict = run.stdout.trim() ? evaluateSignatureJson(run.stdout.trim(), publisherNames, file, deps) : { kind: 'no-verdict' as const, why: 'no output' };
@@ -266,13 +257,12 @@ export function createAuthenticodeVerifier(deps: VerifierDeps): (publisherNames:
             return verdict.reason;
         }
 
-        // No verdict. Is PowerShell usable at all? (Upstream's fail-open rule.)
-        const probe = await runPowerShell(PROBE_SCRIPT, undefined, PROBE_TIMEOUT_MS, deps);
-        if (probe.error) {
-            const why = `PowerShell unusable (${probe.error.message.slice(0, 200)})`;
-            deps.log.warn(`Cannot execute ConvertTo-Json: ${why}. Skipping signature validation, as electron-updater does.`);
-            deps.onSkipped?.(why);
-            return null;
+        // No verdict: the check could not run. Rejected (retryable) - NEVER accepted unchecked. A checker that is missing, blocked,
+        // crashed or timed out is told apart (it gets an actionable message); output that merely was not usable stays generic.
+        const why = classifyHelperFailure(run, deps.helperPath() !== null);
+        if (why) {
+            deps.log.warn(`Update signature check could not run: win-helper.exe ${why}`);
+            throw helperUnavailable(why, took);
         }
         const detail = run.error
             ? `${run.error.message.slice(0, 300)}${(run.error as { killed?: boolean }).killed ? ' (timed out)' : ''}`

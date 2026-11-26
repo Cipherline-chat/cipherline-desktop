@@ -1,205 +1,217 @@
 /**
- * ThemePreviewBar — the bottom-left "Previewing <name>" bar while a theme is
- * shown on the whole app for a while (theme/engine.ts startThemePreview).
+ * ThemePreviewBar — the "Previewing <name>" safety bar while a theme is shown
+ * on the whole app but not kept yet (theme/engine.ts startThemePreview /
+ * startBuiltinThemePreview).
  *
- * Entry points: Preview on a theme card in chat (ThemeLinkEmbed), Preview in
- * the import dialog (CustomThemeShareDialog, also from a cipherline://theme
- * link), Preview on a custom theme tile (Settings → Appearance → Theme).
+ * Owner, 2026-11-26: "When previewing themes, have the little pop-out that
+ * says you're previewing, and [a way to] not take the theme — [with a] timer —
+ * in case the theme makes text or buttons unfindable." Custom colours are used
+ * exactly as picked (no contrast correction, theme/customTheme.ts), so a theme
+ * CAN be black on black. This bar is how you get out of one:
  *
- * Actions:
- *   Save          adds the theme to "Your themes" and KEEPS previewing;
- *   Save and use  makes it the device's theme the normal way
- *                 (activeThemeMirror.chooseCustomTheme: main's store + the
- *                 backup mirror) and closes the bar;
- *   ×  / Escape   stops previewing: the device's real theme comes back exactly
- *                 (built-in, custom or Sync with system).
- * Nothing about the preview itself is ever stored: a reload or a restart is
- * always back in the real theme. Escape goes through the shared Esc stack.
+ *   Keep     the previewed theme becomes the device's theme
+ *            (themePreviewActions.keepPreviewedTheme: main's store + mirror);
+ *   Revert   / Escape / the countdown (engine PREVIEW_REVERT_MS, 15 s) /
+ *            leaving Settings: the real theme comes back exactly.
+ * Picking another theme restarts the countdown. The timer lives in the engine,
+ * so the revert happens even if this bar failed to render.
  *
- * Mounted once by Dashboard (signed in: the library needs the account). The
- * Dashboard unmounting (sign-out) ends a preview.
+ * UN-THEMABLE BY CONSTRUCTION. The bar must stay readable and clickable
+ * whatever the previewed theme does, so none of the app's styling reaches it:
+ *   - it renders into a SHADOW ROOT on its own host element, appended to
+ *     <html> (outside <body> and the React root), so no app or theme
+ *     stylesheet selector can match anything inside it;
+ *   - the host's own box is locked with `!important` declarations (`all:
+ *     initial`, fixed, max z-index, isolation, opacity 1, no filter /
+ *     transform) both inline and in the shadow root's `:host` rule, which the
+ *     cascade ranks above ANY outer-document rule, even an !important one;
+ *     `all: initial` also stops inherited colour / font / size from leaking in;
+ *   - inside, every colour, font family and size is a hard-coded px / hex
+ *     value (BAR_COLORS below) and nothing reads a CSS variable, so theme
+ *     tokens (which do inherit through `all`) are never used;
+ *   - themes are DATA ONLY (theme/customTheme.ts, owner decision D7: never raw
+ *     user CSS), so a theme cannot inject a stylesheet in the first place.
+ *
+ * Keyboard / screen reader: focus moves to Keep when a preview starts, Tab /
+ * Shift+Tab cycle Keep and Revert, Enter activates, Escape reverts (shared Esc
+ * stack). The start, the 10 s and 5 s marks and the end are announced through
+ * an always-mounted aria-live region. No animation (reduced-motion safe, and
+ * nothing can leave it mid-fade).
+ *
+ * Mounted once by Dashboard (signed in: Keep may save to the account's
+ * library). The Dashboard unmounting (sign-out) reverts a preview.
  */
-import React, { useEffect, useRef, useState } from 'react';
-import { Eye, X } from 'lucide-react';
-import { ClButton } from '../cl';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useEscape } from '../../hooks/useEscape';
 import { claimKeyCombo } from '../../utils/keyClaims';
-import { useCustomThemes } from '../../theme/customThemeLibrary';
-import { stopThemePreview, useThemePreview } from '../../theme/engine';
-import { saveAndUsePreviewedTheme, savePreviewedTheme, savedEntryFor } from '../../theme/themePreviewActions';
-import '../../styles/theme-live-preview.css';
+import { PREVIEW_REVERT_MS, stopThemePreview, useThemePreview } from '../../theme/engine';
+import { keepPreviewedTheme } from '../../theme/themePreviewActions';
+import {
+    ANNOUNCE_AT, BAR_CSS, HOST_LOCK, PREVIEW_BAR_HOST_TAG, computeBarPlacement, countdownText, secondsLeft, startAnnouncement,
+    type BarPlacement,
+} from './themePreviewBarParts';
 
-/** What a screen reader hears when a preview starts. */
-const previewAnnouncement = (name: string): string => `Previewing theme ${name}. Press Escape to stop.`;
+function measurePlacement(): BarPlacement {
+    const gaugeEl = document.querySelector<HTMLElement>('.sd-gauge');
+    const g = gaugeEl?.getBoundingClientRect();
+    const obstacles = [...document.querySelectorAll<HTMLElement>('.cl-composer, [data-call-dock]')].map((el) => el.getBoundingClientRect());
+    return computeBarPlacement(window.innerWidth, window.innerHeight, g && g.width > 0 ? g : null, obstacles);
+}
 
-/**
- * Sets --tlp-left / --tlp-bottom on the bar so it never covers the message box,
- * the call dock or the Settings nav: sits 16px above the composer (or call dock)
- * when one is on screen, 24px from the bottom otherwise; with Settings open it
- * starts 16px right of the Settings nav. CSS holds the fallbacks (90px / 16px).
- */
-function trackBarClearance(ref: React.RefObject<HTMLDivElement | null>): () => void {
-    let raf = 0;
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => schedule()) : null;
-    const measure = () => {
-        raf = 0;
-        const bar = ref.current;
-        if (!bar) return;
-        const vh = window.innerHeight;
-        const gauge = document.querySelector<HTMLElement>('.sd-gauge');
-        let left = '';
-        let bottom = 24;
-        if (gauge) {
-            left = `${Math.round(gauge.getBoundingClientRect().right) + 16}px`;
-        } else {
-            for (const el of document.querySelectorAll<HTMLElement>('.cl-composer, [data-call-dock]')) {
-                const r = el.getBoundingClientRect();
-                if (r.width < 1 || r.height < 1 || r.bottom <= 0 || r.top >= vh) continue;
-                bottom = Math.max(bottom, Math.round(vh - r.top) + 16);
-                ro?.observe(el);
-            }
-        }
-        if (gauge) ro?.observe(gauge);
-        if (left) bar.style.setProperty('--tlp-left', left); else bar.style.removeProperty('--tlp-left');
-        bar.style.setProperty('--tlp-bottom', `${bottom}px`);
-    };
-    const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
-    const mo = new MutationObserver(schedule);
-    mo.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener('resize', schedule);
-    schedule();
-    return () => { mo.disconnect(); ro?.disconnect(); window.removeEventListener('resize', schedule); if (raf) cancelAnimationFrame(raf); };
+/** The shadow-root mount point, created on mount and removed on unmount. */
+function useShadowMount(): HTMLElement | null {
+    const [mount, setMount] = useState<HTMLElement | null>(null);
+    useLayoutEffect(() => {
+        if (typeof document === 'undefined') return undefined;
+        const host = document.createElement(PREVIEW_BAR_HOST_TAG);
+        for (const [k, v] of HOST_LOCK) host.style.setProperty(k, v, 'important');
+        host.setAttribute('data-theme-preview-host', '');
+        const root = host.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = BAR_CSS;
+        const el = document.createElement('div');
+        root.append(style, el);
+        document.documentElement.appendChild(host);
+        setMount(el);
+        return () => { host.remove(); setMount(null); };
+    }, []);
+    return mount;
 }
 
 export const ThemePreviewBar: React.FC = () => {
     const p = useThemePreview();
     const { userId, user } = useAuth();
     const uid = userId ?? user?.user_id ?? null;
-    const lib = useCustomThemes(uid);
-    const barRef = useRef<HTMLDivElement>(null);
+    const mount = useShadowMount();
+    const keepRef = useRef<HTMLButtonElement>(null);
+    const revertRef = useRef<HTMLButtonElement>(null);
     const returnFocus = useRef<HTMLElement | null>(null);
-    const [note, setNote] = useState<{ seq: number; text: string; err: boolean } | null>(null);
+    const keptSeq = useRef(0);
+    const [now, setNow] = useState(() => Date.now());
+    const [note, setNote] = useState<{ seq: number; text: string } | null>(null);
+    const [announce, setAnnounce] = useState('');
+    const [place, setPlace] = useState<BarPlacement>({ left: 90, bottom: 24, width: 300 });
+
+    const seq = p?.seq ?? 0;
+    const previewing = !!p;
+    // A `now` older than this preview's start (the interval has not ticked yet) reads as the full countdown.
+    const secs = p ? secondsLeft(p.revertAt, Math.max(now, p.revertAt - PREVIEW_REVERT_MS)) : 0;
+    const name = p?.name ?? '';
 
     // Sign-out / Dashboard gone: a preview must never outlive the bar that can stop it.
     useEffect(() => () => { stopThemePreview(); }, []);
 
-    // A preview started (or replaced): remember where focus was, then move it to the bar.
-    const seq = p?.seq ?? 0;
+    // The countdown display (the revert itself is the engine's timer).
     useEffect(() => {
-        if (!seq) return;
-        const bar = barRef.current;
-        const a = typeof document !== 'undefined' ? document.activeElement : null;
-        if (a instanceof HTMLElement && a !== document.body && !bar?.contains(a)) returnFocus.current = a;
-        try { bar?.focus({ preventScroll: true }); } catch { /* detached */ }
-    }, [seq]);
+        if (!previewing) return undefined;
+        const t = setInterval(() => setNow(Date.now()), 250);
+        return () => clearInterval(t);
+    }, [previewing, p?.revertAt]);
 
-    const giveFocusBack = () => {
+    // A preview started (or replaced): remember where focus was, move it to Keep, announce.
+    useEffect(() => {
+        if (!seq || !p) return;
+        const a = document.activeElement;
+        const inBar = a instanceof HTMLElement && a.tagName.toLowerCase() === PREVIEW_BAR_HOST_TAG;
+        if (a instanceof HTMLElement && a !== document.body && !inBar) returnFocus.current = a;
+        try { keepRef.current?.focus({ preventScroll: true }); } catch { /* detached */ }
+        setAnnounce(startAnnouncement(p.name, secondsLeft(p.revertAt, Date.now())));
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- once per preview start
+    }, [seq, !!mount]);
+
+    // The 10 s and 5 s marks.
+    useEffect(() => {
+        if (previewing && ANNOUNCE_AT.has(secs)) setAnnounce(`${secs} seconds left to keep ${name}.`);
+    }, [previewing, secs, name]);
+
+    // The preview ended (Keep, Revert, Escape, the timer, leaving Settings): say so, give focus back.
+    const wasPreviewing = useRef(false);
+    const lastSeq = useRef(0);
+    useEffect(() => {
+        if (previewing) { wasPreviewing.current = true; lastSeq.current = seq; return; }
+        if (!wasPreviewing.current) return;
+        wasPreviewing.current = false;
+        setAnnounce(keptSeq.current === lastSeq.current ? 'Theme kept.' : 'Preview ended. Your theme is back.');
         const back = returnFocus.current;
         returnFocus.current = null;
-        if (back && back.isConnected) { try { back.focus({ preventScroll: true }); } catch { /* gone */ } }
-    };
-    // Keep the bar clear of what it would cover (see theme-live-preview.css "Placement").
-    useEffect(() => (p ? trackBarClearance(barRef) : undefined), [!!p]);
-    const stop = () => { stopThemePreview(); giveFocusBack(); };
-    useEscape(() => { stop(); }, !!p);
+        const a = document.activeElement;
+        const lost = !a || a === document.body || (a instanceof HTMLElement && a.tagName.toLowerCase() === PREVIEW_BAR_HOST_TAG);
+        if (lost && back && back.isConnected) { try { back.focus({ preventScroll: true }); } catch { /* gone */ } }
+    }, [previewing, seq]);
+
+    // Placement: re-measured on resize and whenever the page changes under it.
+    useEffect(() => {
+        if (!previewing) return undefined;
+        let pending: ReturnType<typeof setTimeout> | null = null;
+        const run = () => { pending = null; setPlace((old) => { const n = measurePlacement(); return old.left === n.left && old.bottom === n.bottom && old.width === n.width ? old : n; }); };
+        // Coalesced to one measure per ~frame (a timer, not rAF: rAF pauses in a hidden window).
+        const schedule = () => { if (!pending) pending = setTimeout(run, 16); };
+        const mo = new MutationObserver(schedule);
+        mo.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('resize', schedule);
+        run();
+        return () => { mo.disconnect(); window.removeEventListener('resize', schedule); if (pending) clearTimeout(pending); };
+    }, [previewing]);
+
+    const revert = () => { stopThemePreview(); };
+    useEscape(() => { revert(); }, previewing);
     // The `close-panel` keybind (Escape by default) listens on window ahead of the
     // Esc stack and would ALSO close Settings / a panel on the same press. While
     // previewing, Escape belongs to the stack, so one press backs out one step.
-    const previewing = !!p;
     useEffect(() => (previewing ? claimKeyCombo('escape') : undefined), [previewing]);
 
-    const saved = savedEntryFor(p, lib.items);
-    const refusal = !lib.ready ? 'Your themes are still loading.' : lib.full ? 'You have 24 themes. Delete one to add another.' : null;
-    const shownNote = note && p && note.seq === p.seq ? note : null;
-
-    const save = () => {
-        if (!p || saved) return;
-        const r = savePreviewedTheme(uid);
-        setNote(r.ok
-            ? { seq: p.seq, text: `Saved to your themes as ${r.entry.name}.`, err: false }
-            : { seq: p.seq, text: refusal ?? 'Could not save this theme.', err: true });
-        // Save turns into a disabled "Saved": keep focus in the bar instead of dropping it to the page.
-        try { barRef.current?.focus({ preventScroll: true }); } catch { /* detached */ }
-    };
-    const saveAndUse = () => {
+    const keep = () => {
         if (!p) return;
         const at = p.seq;
-        void saveAndUsePreviewedTheme(uid).then((r) => {
-            if (!r.ok) setNote({ seq: at, text: refusal ?? 'Could not save this theme.', err: true });
+        keptSeq.current = at;
+        void keepPreviewedTheme(uid).then((r) => {
+            if (r.ok) return;
+            keptSeq.current = 0;
+            setNote({ seq: at, text: 'Could not keep it: your themes are still loading, or you already have 24.' });
         });
-        giveFocusBack();
     };
 
-    const name = p?.def.name ?? '';
-    return (
+    // Focus stays in the bar while it has it: Tab / Shift+Tab cycle Keep and Revert.
+    const onBarKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key !== 'Tab') return;
+        const order = [keepRef.current, revertRef.current].filter((b): b is HTMLButtonElement => !!b);
+        if (order.length === 0) return;
+        const at = order.findIndex((b) => b === (e.target as Node));
+        e.preventDefault();
+        const next = at < 0 ? 0 : (at + (e.shiftKey ? -1 : 1) + order.length) % order.length;
+        order[next].focus();
+    };
+
+    if (!mount) return null;
+    const shownNote = note && p && note.seq === p.seq ? note : null;
+    return createPortal(
         <>
-            {/* Always mounted, so the change is announced (a region that appears with its text is often skipped). */}
-            <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-                {p ? previewAnnouncement(name) : ''}
-                {shownNote && !shownNote.err ? ` ${shownNote.text}` : ''}
-            </span>
+            {/* Always mounted, so changes are announced (a region that appears with its text is often skipped). */}
+            <span className="sr" role="status" aria-live="polite" aria-atomic="true">{announce}</span>
             {p && (
                 <div
-                    ref={barRef}
-                    className="tlp"
-                    role="region"
-                    aria-label={`Theme preview: ${name}`}
-                    tabIndex={-1}
+                    className="bar"
+                    role="alertdialog"
+                    aria-modal="false"
+                    aria-labelledby="tpb-title"
+                    aria-describedby="tpb-count"
                     data-theme-preview-bar
+                    style={{ left: `${place.left}px`, bottom: `${place.bottom}px`, width: `${place.width}px` }}
+                    onKeyDown={onBarKeyDown}
                 >
-                    <div className="tlp-row">
-                        <span className="tlp-ic" aria-hidden="true"><Eye size={15} strokeWidth={2.4} /></span>
-                        <p className="tlp-text" title={`Previewing ${name}`}>
-                            Previewing <b>{name}</b>
-                        </p>
-                        <div className="tlp-actions">
-                            <ClButton
-                                variant="ghost"
-                                size="sm"
-                                onClick={save}
-                                disabled={!!saved || !!refusal}
-                                tooltip={saved ? `In your themes as ${saved.name}` : refusal ?? 'Add it to Your themes and keep previewing'}
-                                tooltipSide="bottom"
-                            >
-                                {saved ? 'Saved' : 'Save'}
-                            </ClButton>
-                            <ClButton
-                                size="sm"
-                                onClick={saveAndUse}
-                                disabled={!saved && !!refusal}
-                                tooltip={!saved && refusal ? refusal : undefined}
-                                tooltipSide="bottom"
-                            >
-                                {saved ? 'Use' : 'Save and use'}
-                            </ClButton>
-                            <ClButton variant="ghost" size="sm" icon ariaLabel="Stop previewing" tooltip="Stop previewing (Esc)" tooltipSide="bottom" onClick={stop}>
-                                <X size={15} strokeWidth={2.6} />
-                            </ClButton>
-                        </div>
+                    <span className="title" id="tpb-title" title={`Previewing ${name}`}>Previewing {name}</span>
+                    <span className="count" id="tpb-count">{countdownText(secs)}</span>
+                    {shownNote && <span className="note" role="alert">{shownNote.text}</span>}
+                    <div className="actions">
+                        <button ref={keepRef} type="button" className="keep" onClick={keep} data-preview-keep>Keep</button>
+                        <button ref={revertRef} type="button" className="revert" onClick={revert} data-preview-revert aria-keyshortcuts="Escape">Revert</button>
                     </div>
-                    {shownNote?.err && <p className="tlp-note" role="alert">{shownNote.text}</p>}
                 </div>
             )}
-        </>
-    );
-};
-
-/**
- * Settings → Appearance → Theme while a preview is up: what is on screen is
- * not the device's theme yet. Picking any theme tile ends the preview.
- */
-export const ThemePreviewNotice: React.FC = () => {
-    const p = useThemePreview();
-    if (!p) return null;
-    return (
-        <div className="tlp-notice" data-theme-preview-notice>
-            <span className="tlp-ic" aria-hidden="true"><Eye size={15} strokeWidth={2.4} /></span>
-            <p className="tlp-notice-text">
-                Previewing <b>{p.def.name}</b>. It is not saved and goes away when you stop previewing or restart. Picking a theme below ends the preview.
-            </p>
-            <ClButton variant="ghost" size="sm" onClick={() => stopThemePreview()}>Stop previewing</ClButton>
-        </div>
+        </>,
+        mount,
     );
 };
 

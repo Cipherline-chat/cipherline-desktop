@@ -17,6 +17,7 @@
  */
 import { createHmac, randomBytes } from 'node:crypto';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { HelperLifecycle } from './near-diag';
 
 export const NEAR_PROTOCOL_VERSION = 1;
 /** The helper's own cap on an incoming line is 64 KiB; refuse to send more than that too. */
@@ -52,6 +53,8 @@ export interface NearHelperClientOptions {
     handlers: NearHelperHandlers;
     onState: (snapshot: unknown) => void;
     onOwnOut: (msg: { to: string; content: unknown }) => void;
+    /** Diagnostics only (the report's transfer trail): the helper was spawned / became ready / exited (with its exit code) / could not start. */
+    onLifecycle?: (e: HelperLifecycle) => void;
     baseEnv?: NodeJS.ProcessEnv;
     /** Defaults to `process.platform`. `win32`: three pipes, the nonce as the first stdin line, a Windows environment allow-list. */
     platform?: NodeJS.Platform;
@@ -105,6 +108,7 @@ const TERMINAL = new Set(['idle', 'done', 'refused', 'expired', 'cancelled', 'fa
 
 export function createNearHelperClient(opts: NearHelperClientOptions): NearHelperClient {
     const log = opts.log ?? (() => undefined);
+    const lifecycle = (e: HelperLifecycle) => { try { opts.onLifecycle?.(e); } catch { /* diagnostics never break the helper */ } };
     const startTimeoutMs = opts.startTimeoutMs ?? 8000;
     const idleMs = opts.idleMs ?? 60_000;
     const doneIdleMs = opts.doneIdleMs ?? 15 * 60_000;
@@ -185,7 +189,7 @@ export function createNearHelperClient(opts: NearHelperClientOptions): NearHelpe
         try { m = JSON.parse(line) as Record<string, unknown>; } catch { return; }
         if (!m || typeof m !== 'object') return;
         switch (m.t) {
-            case 'ready': ready = true; break;
+            case 'ready': ready = true; lifecycle({ kind: 'ready' }); break;
             case 'result': {
                 const p = typeof m.id === 'number' ? pending.get(m.id) : undefined;
                 if (!p) break;
@@ -218,15 +222,17 @@ export function createNearHelperClient(opts: NearHelperClientOptions): NearHelpe
 
     const startOnce = (): Promise<void> => new Promise<void>((resolve, reject) => {
         const bin = opts.resolveBinary();
-        if (!bin) { reject(new NearHelperUnavailable('no helper binary in this build')); return; }
+        if (!bin) { lifecycle({ kind: 'unavailable', why: 'no_binary' }); reject(new NearHelperUnavailable('no helper binary in this build')); return; }
         nonce = randomHex();
         let c: Child;
         try {
             c = opts.spawn(bin, opts.extraArgs ?? [], { stdio: win ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe'], env: helperEnv(opts.baseEnv ?? process.env, platform), windowsHide: true, shell: false });
         } catch (e) {
+            lifecycle({ kind: 'unavailable', why: 'spawn_failed' });
             reject(new NearHelperUnavailable(`spawn failed: ${(e as Error)?.message ?? 'error'}`));
             return;
         }
+        lifecycle({ kind: 'spawned' });
         child = c;
         ready = false;
         seqBase = lastSeq;
@@ -237,7 +243,7 @@ export function createNearHelperClient(opts: NearHelperClientOptions): NearHelpe
             clearTimer(timer);
             if (err) { try { c.kill(); } catch { /* gone */ } reject(err); } else resolve();
         };
-        const timer = setTimer(() => settle(new NearHelperUnavailable('did not become ready in time')), startTimeoutMs);
+        const timer = setTimer(() => { lifecycle({ kind: 'unavailable', why: 'not_ready' }); settle(new NearHelperUnavailable('did not become ready in time')); }, startTimeoutMs);
 
         // stdout: one JSON object per line, bounded
         let buf = '';
@@ -260,8 +266,9 @@ export function createNearHelperClient(opts: NearHelperClientOptions): NearHelpe
         c.stderr?.setEncoding('utf8');
         c.stderr?.on('data', (d: string) => { errBuf = (errBuf + d).slice(-1024); });
         c.stderr?.on('error', () => undefined);
-        c.on('error', (e: Error) => settle(new NearHelperUnavailable(`spawn error: ${e.message}`)));
+        c.on('error', (e: Error) => { lifecycle({ kind: 'unavailable', why: 'spawn_failed' }); settle(new NearHelperUnavailable(`spawn error: ${e.message}`)); });
         c.on('exit', (code: number | null, signal: string | null) => {
+            lifecycle({ kind: 'exited', code, signal });
             const wasReady = ready;
             const current = child === c;
             if (current) { child = null; ready = false; if (idleTimer) { clearTimer(idleTimer); idleTimer = null; } }

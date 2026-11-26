@@ -30,7 +30,7 @@ interface Props {
     initial: CustomThemeDef;
     mode: 'create' | 'edit';
     onCancel: () => void;
-    /** Save (and apply). Return false when the library refused (not ready / full). */
+    /** Save, then preview it on the whole app (Keep on the preview bar uses it). Return false when the library refused (not ready / full). */
     onSave: (def: CustomThemeDef) => boolean;
     /** Edit mode: open the share dialog for the saved version. */
     onShare?: () => void;
@@ -174,7 +174,7 @@ export const CustomThemeEditor: React.FC<Props> = ({ initial, mode, onCancel, on
             </DialogBody>
             <DialogFooter hint={hint}>
                 <ClButton variant="ghost" onClick={onCancel}>Cancel</ClButton>
-                <ClButton onClick={save} disabled={!canSave}>{mode === 'create' ? 'Save and use' : 'Save'}</ClButton>
+                <ClButton onClick={save} disabled={!canSave}>Save and preview</ClButton>
             </DialogFooter>
         </ClModal>
     );

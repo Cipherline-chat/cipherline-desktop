@@ -15,6 +15,7 @@
  * already holds those hooks (Settings, the onboarding profile step).
  */
 import { saveAvatarKey } from './avatarKeyStore';
+import { avatarUploadType, avatarUploadExt } from './imageCrop';
 import { publishPublicAvatarInBackground } from './publicAvatar';
 
 /** Resize/re-encode an image File to a JPEG Blob, capping the longest edge. */
@@ -76,9 +77,9 @@ export interface AvatarUploadDeps {
 export async function uploadAvatarBlob(
     blob: Blob,
     deps: AvatarUploadDeps,
-    fileName = 'avatar.jpg',
-    /** 'image/gif' / 'image/webp' for an animated pick that skipped the crop. */
-    mimeType = 'image/jpeg',
+    fileName = `avatar.${avatarUploadExt(avatarUploadType(blob))}`,
+    /** The blob's own type: 'image/png' for a transparent crop, 'image/gif' / 'image/webp' for an animated pick. */
+    mimeType: string = avatarUploadType(blob),
 ): Promise<string> {
     const { attachmentId, keyB64, nonceB64 } =
         await deps.uploadEncryptedFile(blob, fileName, mimeType);

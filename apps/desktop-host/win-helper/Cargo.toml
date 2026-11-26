@@ -1,0 +1,53 @@
+[package]
+name = "cl-win-helper"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Cipherline Windows helper: answers the Electron app's small system questions (running programs, window state, Now Playing, update-signature check) by calling Windows APIs directly, so the app never starts PowerShell, cmd, tasklist, wmic or reg."
+
+# Its own workspace + lockfile, like near-helper: nothing else's dependency tree leaks in.
+[workspace]
+
+[[bin]]
+name = "cl-win-helper"
+path = "src/main.rs"
+
+[lib]
+name = "cl_win_helper"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-future = "0.3"
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Control",
+    "Storage_Streams",
+    "Wdk_System_SystemInformation",
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = true
+opt-level = "s"

@@ -108,7 +108,9 @@ export type { CallEventInput } from './callEventsSource';
 export interface RecentErrorInput { at: number; kind: RecentError['kind']; name?: string; message: string; stack?: string }
 
 /** Rows of the dead session kept in a report. */
-export const PREVIOUS_SESSION_MAX_ROWS = 60;
+export const PREVIOUS_SESSION_MAX_ROWS = 70;
+/** Newest local-transfer trail rows (`near:*`) always kept in `perf_log`, beyond the category's row cap. */
+export const NEAR_TRAIL_MAX_ROWS = 40;
 
 /** Endpoint rows kept in `net_timing` (the snapshot is sorted worst-first). */
 const NET_TIMING_MAX_ENDPOINTS = 40;
@@ -292,7 +294,11 @@ export function buildDiagnosticReport(input: BundleInput): BuiltReport {
     }
 
     const perfAll = [...(input.perfLog ?? [])].filter(r => Number.isFinite(r.at)).sort((a, b) => a.at - b.at);
-    const perfKept = perfAll.slice(-Math.min(spec.perfRows, DIAGNOSTIC_LIMITS.maxPerfRows));
+    // The newest rows of any kind, plus the newest local-transfer trail (`near:*`, see electron/near-diag.ts) that those did not cover:
+    // a category with 60 rows would otherwise show only the periodic metrics and window focus events a minute after a failed transfer.
+    const perfNewest = perfAll.slice(-Math.min(spec.perfRows, DIAGNOSTIC_LIMITS.maxPerfRows));
+    const perfHave = new Set(perfNewest);
+    const perfKept = [...perfAll.filter(r => r.activity.startsWith('near:') && !perfHave.has(r)).slice(-NEAR_TRAIL_MAX_ROWS), ...perfNewest];
     raw.perf_log = {
         total_rows: perfAll.length,
         rows: perfKept.map(r => ({ t_s: tS(r.at, now), source: r.source, ms: Math.round(r.ms), activity: r.activity })),

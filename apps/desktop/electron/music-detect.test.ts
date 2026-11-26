@@ -6,12 +6,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { isMusicApp, MUSIC_PROBE_MIN_GAP_MS, MusicPresenceProbe, windowsStatePlaysMusic, WINDOWS_STATE_SCRIPT, type MprisStatusBus } from './music-detect';
-import { WINDOWS_SCRIPT } from './media-session';
+import { isMusicApp, MUSIC_PROBE_MIN_GAP_MS, MusicPresenceProbe, windowsStatePlaysMusic, type MprisStatusBus } from './music-detect';
+import { setWinHelperBinary } from './win-sys';
 import { UNGUARDED_IPC_CHANNELS } from './ipc-guard';
 
 const src = (f: string) => fs.readFileSync(path.join(__dirname, f), 'utf8');
-const decoded = (b64: string) => Buffer.from(b64, 'base64').toString('utf16le');
 
 describe('isMusicApp: known music apps only', () => {
     it.each([
@@ -48,23 +47,9 @@ describe('windowsStatePlaysMusic', () => {
     });
 });
 
-describe('the Windows script reads playback state and nothing else', () => {
-    // Everything that could yield a title, artist, album, cover, position or window title.
-    const READS = /TryGetMediaPropertiesAsync|\.Title\b|\.Artist\b|AlbumTitle|AlbumArtist|Thumbnail|GetTimelineProperties|Get-Process|MainWindowTitle|EnumWindows|GetWindowText/;
-
-    it('none of those appear in the pre-consent script', () => {
-        expect(WINDOWS_STATE_SCRIPT).not.toMatch(READS);
-    });
-    it('positive control: the same pattern does catch the sharing reader, so the check above is not vacuous', () => {
-        expect(WINDOWS_SCRIPT).toMatch(READS);
-        for (const name of ['TryGetMediaPropertiesAsync', 'Thumbnail', 'GetTimelineProperties', 'Get-Process', 'EnumWindows']) expect(WINDOWS_SCRIPT).toContain(name);
-    });
-    it('it does ask for what it needs', () => {
-        for (const name of ['GetSessions', 'GetPlaybackInfo', 'PlaybackStatus', 'PlaybackType', 'SourceAppUserModelId']) expect(WINDOWS_STATE_SCRIPT).toContain(name);
-    });
-});
-
 describe('MusicPresenceProbe on Windows', () => {
+    const HELPER = 'C:\\Program Files\\Cipherline\\resources\\win-helper.exe';
+    beforeEach(() => setWinHelperBinary(() => HELPER));
     let now = 1_000_000;
     const clock = () => now;
     const SPOTIFY = JSON.stringify({ sessions: [{ app: 'Spotify.exe', status: 4, ptype: 1 }] });
@@ -76,14 +61,21 @@ describe('MusicPresenceProbe on Windows', () => {
         await expect(probe(execWith(out)).check()).resolves.toBe(true);
     });
 
-    it('runs the state script, hidden and with a timeout, never the sharing reader', async () => {
+    it('runs the helper in music-state mode, hidden and with a timeout, never the sharing reader and never a script host', async () => {
         const exec = execWith(SPOTIFY);
         await probe(exec).check();
         const [file, args, opts] = exec.mock.calls[0] as unknown as [string, string[], { windowsHide: boolean; timeout: number }];
-        expect(file).toBe('powershell.exe');
+        expect(file).toBe(HELPER);
+        expect(args).toEqual(['music-state']);
         expect(opts.windowsHide).toBe(true);
         expect(opts.timeout).toBeGreaterThan(0);
-        expect(decoded(args[args.indexOf('-EncodedCommand') + 1])).toBe(WINDOWS_STATE_SCRIPT);
+    });
+
+    it('no helper binary: no read, no child, answer no', async () => {
+        setWinHelperBinary(() => null);
+        const exec = execWith(SPOTIFY);
+        await expect(probe(exec).check()).resolves.toBe(false);
+        expect(exec).not.toHaveBeenCalled();
     });
 
     it('a burst of asks makes one read: at most one per MUSIC_PROBE_MIN_GAP_MS whatever a renderer does', async () => {
@@ -97,7 +89,7 @@ describe('MusicPresenceProbe on Windows', () => {
         expect(exec).toHaveBeenCalledTimes(2);
     });
 
-    it('any failure is no; a missing PowerShell stops further attempts', async () => {
+    it('any failure is no; a missing helper stops further attempts', async () => {
         await expect(probe(execWith('', new Error('boom'))).check()).resolves.toBe(false);
         const gone = execWith('', Object.assign(new Error('nope'), { code: 'ENOENT' }));
         const p = probe(gone);
@@ -109,7 +101,7 @@ describe('MusicPresenceProbe on Windows', () => {
 });
 
 describe('MusicPresenceProbe leaves nothing running', () => {
-    beforeEach(() => { vi.useFakeTimers(); });
+    beforeEach(() => { setWinHelperBinary(() => 'C:\\r\\win-helper.exe'); vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });
     it('no timer once it has answered, and no read without being asked', async () => {
         const exec = vi.fn((_f: string, _a: string[], _o: unknown, cb: (e: null, s: string) => void) => cb(null, '{"sessions":[]}'));

@@ -1,6 +1,7 @@
 /**
- * Live theme preview (engine.ts startThemePreview / stopThemePreview, the
- * bottom-left bar's Save / Save and use in themePreviewActions.ts).
+ * Live theme preview (engine.ts startThemePreview / startBuiltinThemePreview /
+ * stopThemePreview, the auto-revert countdown, the bar's Keep in
+ * themePreviewActions.ts, plus Save / Save and use).
  *
  * The contract: a preview shows a theme on the whole app and STORES NOTHING
  * (no theme:set / theme:set-custom, no active-theme mirror write, no library or
@@ -26,13 +27,14 @@ vi.mock('../utils/secureLocalStore', () => ({
 vi.mock('../services/ownSlotEnv', () => ({ createOwnSlotEnv: () => ({}) }));
 
 import {
-    PREVIEW_THEME_ID, THEME_STYLE_ID, __resetThemeForTests, bootTheme, getActiveCustomThemeId, getTheme, getThemePreference,
-    getThemePreview, realTheme, setCustomTheme, setThemePreference, startThemePreview, stopThemePreview, subscribeThemePreview,
+    PREVIEW_REVERT_MS, PREVIEW_THEME_ID, THEME_STYLE_ID, __resetThemeForTests, bootTheme, endSettingsThemePreview, getActiveCustomThemeId,
+    getTheme, getThemePreference, getThemePreview, realTheme, restartThemePreviewCountdown, setCustomTheme, setThemePreference,
+    startBuiltinThemePreview, startThemePreview, stopThemePreview, subscribeThemePreview,
     type ThemeHost,
 } from './engine';
 import { activeThemeMirrorKey, chooseBuiltinTheme, chooseCustomTheme } from './activeThemeMirror';
 import { CUSTOM_THEME_USER_EDIT_EVENT, readCustomThemes, reconcileActiveCustomTheme } from './customThemeLibrary';
-import { saveAndUsePreviewedTheme, savePreviewedTheme, savedEntryFor } from './themePreviewActions';
+import { keepPreviewedTheme, saveAndUsePreviewedTheme, savePreviewedTheme, savedEntryFor } from './themePreviewActions';
 import { CUSTOM_THEME_PRESETS } from './customPresets';
 import { deriveCustomTheme, normalizeCustomTheme, type CustomThemeBootPayload, type CustomThemeDef } from './customTheme';
 import { customThemeLibraryKey, serializeThemeLibrary } from '../utils/customThemeSync';
@@ -339,39 +341,220 @@ describe('Save vs Save and use', () => {
     });
 });
 
-describe('the bar (source checks)', () => {
-    const src = readFileSync(join(__dirname, '..', 'components', 'themeShare', 'ThemePreviewBar.tsx'), 'utf8');
-    it('Escape goes through the shared Esc stack, never a raw key listener', () => {
-        expect(src).toMatch(/useEscape\(\(\) => \{ stop\(\); \}, !!p\)/);
-        expect(src).not.toMatch(/addEventListener\(\s*['"]key/);
-        expect(src).not.toMatch(/onKeyDown/);
+
+describe('the countdown: a preview reverts by itself unless kept (owner 2026-11-26)', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('preview -> timeout: the real theme comes back after PREVIEW_REVERT_MS, nothing stored', async () => {
+        await chooseBuiltinTheme(UID, 'light');
+        main.calls.length = 0;
+        writes.length = 0;
+        startThemePreview(rose);
+        expect(getThemePreview()!.revertAt).toBe(Date.now() + PREVIEW_REVERT_MS);
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS - 1);
+        expect(getThemePreview()).not.toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(getThemePreview()).toBeNull();
+        expect(getTheme()).toBe(THEMES.light);
+        expect(main.persistCalls()).toEqual([]);
+        expect(writes).toEqual([]);
+        expect(main.calls.at(-1)).toBe('preview-end');
     });
-    it('claims Escape from the close-panel keybind while previewing, so one press is one step (Settings stays open)', () => {
-        expect(src).toContain("useEffect(() => (previewing ? claimKeyCombo('escape') : undefined), [previewing]);");
+
+    it('it is 15 seconds', () => {
+        expect(PREVIEW_REVERT_MS).toBe(15_000);
     });
-    it('announces the preview and says how to stop it; focus moves to the bar', () => {
-        expect(src).toContain('Previewing theme ${name}. Press Escape to stop.');
-        expect(src).toContain('aria-live="polite"');
-        expect(src).toMatch(/bar\?\.focus\(/);
-        expect(src).toContain('ariaLabel="Stop previewing"');
+
+    it('preview -> keep (built-in): stored the normal way, and the timer can no longer revert it', async () => {
+        await chooseBuiltinTheme(UID, 'dark');
+        startBuiltinThemePreview('midnight', { source: 'settings' });
+        expect(getTheme()).toBe(THEMES.midnight);
+        expect(getThemePreference()).toBe('dark');
+        expect(main.persistCalls()).toEqual(['set:dark']);
+        expect(await keepPreviewedTheme(UID)).toEqual({ ok: true });
+        expect(getThemePreview()).toBeNull();
+        expect(main.stored()).toEqual({ id: 'midnight', pref: 'midnight' });
+        expect(JSON.parse(kv.get(activeThemeMirrorKey(UID))!)).toEqual({ kind: 'builtin', id: 'midnight' });
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS * 2);
+        expect(getTheme()).toBe(THEMES.midnight);
     });
-    it('the preview cannot outlive the bar (sign-out)', () => {
-        expect(src).toContain('useEffect(() => () => { stopThemePreview(); }, []);');
+
+    it('preview -> keep (custom tile): uses the library entry, no duplicate', async () => {
+        seedLibrary([{ id: 'lib-1', def: ocean }]);
+        startThemePreview(ocean, { libraryId: 'lib-1', source: 'settings' });
+        expect(await keepPreviewedTheme(UID)).toEqual({ ok: true });
+        expect(getActiveCustomThemeId()).toBe('lib-1');
+        expect(readCustomThemes(UID)).toHaveLength(1);
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        expect(getActiveCustomThemeId()).toBe('lib-1');
     });
-    it('the entry points start a preview instead of a dialog-only mini preview', () => {
-        const read = (...p: string[]) => readFileSync(join(__dirname, '..', 'components', ...p), 'utf8');
-        expect(read('themeShare', 'ThemeLinkEmbed.tsx')).toContain('startThemePreview(def');
-        expect(read('settings', 'panes', 'CustomThemeShareDialog.tsx')).toContain('startThemePreview(parsed.def)');
-        expect(read('settings', 'panes', 'CustomThemes.tsx')).toContain('startThemePreview(stripId(t), { libraryId: t.id })');
-        expect(read('settings', 'panes', 'ThemePicker.tsx')).toContain('<ThemePreviewNotice />');
-        expect(read('Dashboard.tsx')).toContain('<ThemePreviewBar />');
+
+    it('preview -> keep (shared theme not saved yet): saved once, then used', async () => {
+        startThemePreview(rose);
+        expect(await keepPreviewedTheme(UID)).toEqual({ ok: true });
+        expect(readCustomThemes(UID).map((t) => t.name)).toEqual([rose.name]);
+        expect(getActiveCustomThemeId()).toBe(readCustomThemes(UID)[0].id);
     });
-    it('Save and use from a chat card / deep link goes the normal way (mirror too), never the bare engine setter', () => {
-        const read = (...p: string[]) => readFileSync(join(__dirname, '..', 'components', ...p), 'utf8');
+
+    it('a refused keep (no account) changes nothing and the countdown still reverts', async () => {
+        startThemePreview(rose);
+        expect(await keepPreviewedTheme(null)).toEqual({ ok: false });
+        expect(getThemePreview()).not.toBeNull();
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        expect(getThemePreview()).toBeNull();
+        expect(getTheme()).toBe(THEMES.dark);
+    });
+
+    it('preview -> revert (the bar\'s Revert / Escape = stopThemePreview): back at once, the timer is cleared', async () => {
+        await chooseBuiltinTheme(UID, 'hc-light');
+        startBuiltinThemePreview('midnight', { source: 'settings' });
+        stopThemePreview();
+        expect(getTheme()).toBe(THEMES['hc-light']);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('preview -> another preview resets the timer (and Revert still goes to the REAL theme)', async () => {
+        await chooseBuiltinTheme(UID, 'light');
+        startBuiltinThemePreview('midnight', { source: 'settings' });
+        vi.advanceTimersByTime(10_000);
+        startThemePreview(rose, { source: 'settings' });
+        expect(getThemePreview()!.revertAt).toBe(Date.now() + PREVIEW_REVERT_MS);
+        expect(vi.getTimerCount()).toBe(1);
+        vi.advanceTimersByTime(10_000);
+        // 20 s after the first pick: still up, because the second pick restarted it.
+        expect(getThemePreview()?.def).toBe(rose);
+        vi.advanceTimersByTime(5_000);
+        expect(getThemePreview()).toBeNull();
+        expect(getTheme()).toBe(THEMES.light);
+    });
+
+    it('restartThemePreviewCountdown gives a full countdown again', () => {
+        startThemePreview(rose);
+        vi.advanceTimersByTime(14_000);
+        restartThemePreviewCountdown();
+        vi.advanceTimersByTime(14_000);
+        expect(getThemePreview()).not.toBeNull();
+        vi.advanceTimersByTime(1_000);
+        expect(getThemePreview()).toBeNull();
+    });
+
+    it('navigate away from Settings -> a Settings preview reverts; a shared-theme preview does not', async () => {
+        await chooseBuiltinTheme(UID, 'dark');
+        startBuiltinThemePreview('light', { source: 'settings' });
+        endSettingsThemePreview();
+        expect(getThemePreview()).toBeNull();
+        expect(getTheme()).toBe(THEMES.dark);
+        startThemePreview(rose); // a chat card / theme link: source 'share'
+        endSettingsThemePreview();
+        expect(getThemePreview()).not.toBeNull();
+        // Kept before leaving: leaving changes nothing.
+        stopThemePreview();
+        startBuiltinThemePreview('midnight', { source: 'settings' });
+        await keepPreviewedTheme(UID);
+        endSettingsThemePreview();
+        expect(getTheme()).toBe(THEMES.midnight);
+    });
+
+    it('a built-in preview stores nothing (no theme:set, no mirror write)', async () => {
+        await chooseBuiltinTheme(UID, 'dark');
+        main.calls.length = 0;
+        writes.length = 0;
+        startBuiltinThemePreview('hc-dark', { source: 'settings' });
+        expect(getTheme()).toBe(THEMES['hc-dark']);
+        expect(dom.attrs['data-contrast']).toBe('high');
+        expect(getThemePreview()).toMatchObject({ builtin: 'hc-dark', def: null, name: 'High contrast dark', source: 'settings' });
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        expect(main.persistCalls()).toEqual([]);
+        expect(writes).toEqual([]);
+        expect(main.calls).toEqual([`preview:${PREVIEW_THEME_ID}`, 'preview-end']);
+        expect(dom.attrs['data-contrast']).toBeUndefined();
+    });
+
+    it('an unreadable custom theme (every colour #000000) is accepted exactly as picked, and still reverts by itself', () => {
+        const black = { ...rose, name: 'Void', colors: Object.fromEntries(Object.keys(rose.colors).map((k) => [k, '#000000'])) as CustomThemeDef['colors'] };
+        const r = normalizeCustomTheme(black);
+        expect(r.ok).toBe(true);
+        startThemePreview((r as { def: CustomThemeDef }).def, { source: 'settings' });
+        expect(getTheme().palette.text).toBe('#000000');
+        expect(getTheme().palette.abyss).toBe('#000000');
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        expect(getTheme()).toBe(THEMES.dark);
+    });
+});
+
+describe('editing the theme IN USE: nothing is written until Keep', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+    const edited = { ...ocean, colors: { ...ocean.colors, text: '#000000', bg: '#000000' } };
+
+    it('revert / timeout: library and device theme untouched, the opener gets onRevert (reopens the editor)', async () => {
+        seedLibrary([{ id: 'mine', def: ocean }]);
+        await chooseCustomTheme(UID, 'mine', ocean);
+        const real = getTheme();
+        main.calls.length = 0;
+        const onRevert = vi.fn();
+        startThemePreview(edited, { libraryId: 'mine', source: 'settings', pendingEdit: true, onRevert });
+        expect(getTheme().palette.abyss).toBe('#000000');
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        expect(onRevert).toHaveBeenCalledTimes(1);
+        expect(getTheme()).toBe(real);
+        expect(readCustomThemes(UID)[0].colors.bg).toBe(ocean.colors.bg);
+        expect(main.persistCalls()).toEqual([]);
+    });
+
+    it('keep: the edit is written to the library and becomes the device theme; onRevert never runs', async () => {
+        seedLibrary([{ id: 'mine', def: ocean }]);
+        await chooseCustomTheme(UID, 'mine', ocean);
+        const onRevert = vi.fn();
+        startThemePreview(edited, { libraryId: 'mine', source: 'settings', pendingEdit: true, onRevert });
+        expect(await keepPreviewedTheme(UID)).toEqual({ ok: true });
+        expect(readCustomThemes(UID)[0].colors.bg).toBe('#000000');
+        expect(getActiveCustomThemeId()).toBe('mine');
+        expect(getTheme().palette.abyss).toBe('#000000');
+        expect(main.stored().custom?.id).toBe('mine');
+        vi.advanceTimersByTime(PREVIEW_REVERT_MS);
+        endSettingsThemePreview();
+        expect(onRevert).not.toHaveBeenCalled();
+        expect(getTheme().palette.abyss).toBe('#000000');
+    });
+
+    it('replaced by another pick: the opener is not told (the user moved on)', () => {
+        const onRevert = vi.fn();
+        startThemePreview(edited, { libraryId: 'mine', source: 'settings', pendingEdit: true, onRevert });
+        startBuiltinThemePreview('light', { source: 'settings' });
+        stopThemePreview();
+        expect(onRevert).not.toHaveBeenCalled();
+    });
+});
+
+describe('every theme pick goes through the preview (source checks)', () => {
+    const read = (...p: string[]) => readFileSync(join(__dirname, '..', 'components', ...p), 'utf8');
+    it('built-in and custom tiles preview instead of applying', () => {
+        const picker = read('settings', 'panes', 'ThemePicker.tsx');
+        expect(picker).toContain("startBuiltinThemePreview(p, { source: 'settings' })");
+        expect(picker).not.toContain('chooseBuiltinTheme(');
+        const custom = read('settings', 'panes', 'CustomThemes.tsx');
+        expect(custom).toContain("startThemePreview(def, { libraryId: id, source: 'settings' })");
+        expect(custom).not.toMatch(/chooseCustomTheme\(|setCustomTheme\(/);
+    });
+    it('chat card / deep link "use" previews; only Keep (themePreviewActions) stores a theme', () => {
         for (const f of ['ThemeLinkEmbed.tsx', 'ThemeDeepLinkHost.tsx']) {
             const s = read('themeShare', f);
-            expect(s, f).toContain('chooseCustomTheme(uid');
-            expect(s, f).not.toMatch(/\bsetCustomTheme\(/);
+            expect(s, f).toContain('startThemePreview(');
+            expect(s, f).not.toMatch(/chooseCustomTheme\(|\bsetCustomTheme\(/);
         }
+        expect(read('settings', 'panes', 'CustomThemeShareDialog.tsx')).toContain('startThemePreview(parsed.def)');
+    });
+    it('leaving Settings reverts a Settings preview; the bar is mounted by Dashboard', () => {
+        expect(read('settings', 'SettingsScreen.tsx')).toContain('useEffect(() => () => endSettingsThemePreview(), []);');
+        expect(read('Dashboard.tsx')).toContain('<ThemePreviewBar />');
+    });
+    it('the bar: Escape through the shared Esc stack, claims Escape from close-panel, cannot outlive Dashboard', () => {
+        const src = read('themeShare', 'ThemePreviewBar.tsx');
+        expect(src).toMatch(/useEscape\(\(\) => \{ revert\(\); \}, previewing\)/);
+        expect(src).not.toMatch(/addEventListener\(\s*['"]key/);
+        expect(src).toContain("useEffect(() => (previewing ? claimKeyCombo('escape') : undefined), [previewing]);");
+        expect(src).toContain('useEffect(() => () => { stopThemePreview(); }, []);');
     });
 });

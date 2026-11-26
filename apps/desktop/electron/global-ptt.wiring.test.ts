@@ -46,6 +46,13 @@ describe('system-wide push-to-talk wiring', () => {
         expect(NATIVE).toContain('XIQueryPointer');
         expect(NATIVE).toContain('MapVirtualKeyExW');
         expect(NATIVE).toContain('getForegroundElevation');
+        // The foreground probe is cached per pid (and our own token read once): no OpenProcess/OpenProcessToken on someone else's
+        // process every 1.5 s tick, which behavioural engines read as token reconnaissance.
+        const fn = NATIVE.slice(NATIVE.indexOf('napi_value GetForegroundElevation'));
+        expect(fn).toContain('kForegroundCacheMs');
+        expect(fn.indexOf('pid == g_fgPid')).toBeGreaterThan(-1);
+        expect(fn.indexOf('pid == g_fgPid')).toBeLessThan(fn.indexOf('OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION'));
+        expect(fn).toContain('if (!g_selfRead)');
         expect(NATIVE).not.toMatch(/SendInput\s*\(|XTestFake|XIGrabDevice\s*\(|XGrabPointer\s*\(/);
     });
 

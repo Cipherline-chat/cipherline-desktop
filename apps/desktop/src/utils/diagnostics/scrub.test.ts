@@ -388,3 +388,21 @@ describe('scrubDeep', () => {
         expect(KEY_RE.test('1abc')).toBe(false);
     });
 });
+
+describe('local-network transfer facts (own-device trail): hardware addresses and the rest', () => {
+    it('a MAC address, colon or dash separated, any case, is <mac>; the fingerprint-shaped and clock-shaped lookalikes are left alone', () => {
+        expect(plain.text('adapter aa:bb:cc:dd:ee:ff up', 300)).toBe('adapter <mac> up');
+        expect(plain.text('AA-BB-CC-DD-EE-FF', 300)).toBe('<mac>');
+        expect(plain.text('mac=00:1A:2b:3C:4d:5E,', 300)).toBe('mac=<mac>,');
+        // a 32-byte fingerprint is a longer run of pairs, not a MAC: it is handled by the hex / blob rules, and a MAC rule must not eat part of it
+        expect(plain.text('fp 01:02:03:04:05:06:07', 300)).not.toContain('<mac>');
+        expect(plain.text('uptime 12:34:56', 300)).toBe('uptime 12:34:56');
+    });
+
+    it('an IPv4 or IPv6 address, a MAC and a planted adapter / network name in a transfer row never survive; the counts and words around them do', () => {
+        const row = 'near:lan same_subnet=0 dials=1 result=timeout via Intel(R) Wi-Fi 6 AX201 HomeNet 192.168.1.20:5555 fe80::1ff:fe23:4567:890a aa:bb:cc:dd:ee:ff';
+        const out = createScrubber({ sensitiveTerms: ['HomeNet'] }).text(row, 400);
+        expectNone(out, ['192.168.1.20', 'fe80::', 'aa:bb:cc:dd:ee:ff', 'HomeNet']);
+        expect(out).toContain('near:lan same_subnet=0 dials=1 result=timeout');
+    });
+});

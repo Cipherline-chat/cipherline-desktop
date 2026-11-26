@@ -48,6 +48,7 @@ pub fn platform(radio_state: &str) -> Platform {
         radio: Arc::new(CellRadio { state, cell: cell.clone() }),
         biometric: None,
         ifaces: Arc::new(StaticInterfaces(vec![LocalInterface { index: 1, name: "test0".into(), addr: "10.255.0.1".parse().unwrap(), prefix_len: 24, kind: cl_near::onlink::IfaceKind::Virtual }])),
+        census: Arc::new(cl_near_engine::netdiag::AdapterCensus::default),
         os: Os::Linux,
         lan_policy: cl_near::lan::LanPolicy::DangerousAllowLoopback,
         timing: Timing { hello: Duration::from_secs(3), peer_step: Duration::from_secs(5), lan: Duration::from_secs(6), lan_probe: Duration::from_secs(4), scan_retry: Duration::from_millis(300), poll: Duration::from_millis(100), transfer_giveup: Duration::from_secs(20), reopen_margin: Duration::from_secs(10), show_limit: Duration::from_secs(600), pause_cap: Duration::from_secs(900) },

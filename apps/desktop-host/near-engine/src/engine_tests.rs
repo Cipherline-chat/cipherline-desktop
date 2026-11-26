@@ -932,6 +932,9 @@ struct OwnHost {
     hist: Arc<Mutex<Vec<NearSnapshot>>>,
 }
 fn own_host(router: &Arc<Router>, tmp: &Path, name: &str, dev: &str) -> OwnHost {
+    own_host_cfg(router, tmp, name, dev, |_| {})
+}
+fn own_host_cfg(router: &Arc<Router>, tmp: &Path, name: &str, dev: &str, cfg: impl FnOnce(&mut NearEnv)) -> OwnHost {
     let dir = tmp.join(name);
     std::fs::create_dir_all(&dir).unwrap();
     let hist: Arc<Mutex<Vec<NearSnapshot>>> = Default::default();
@@ -939,6 +942,7 @@ fn own_host(router: &Arc<Router>, tmp: &Path, name: &str, dev: &str) -> OwnHost 
     let (mut env, _ident, gate, _skew) = test_env(&dir, name, SEED_A, no_radio(), Os::Windows, Arc::new(move |s| h2.lock().unwrap().push(s.clone())));
     env.own_send = Arc::new(RouterSend { from: dev.to_owned(), router: router.clone() });
     env.own_answer = Duration::from_secs(8);
+    cfg(&mut env);
     let eng = Arc::new(NearEngine::new(env));
     router.engines.lock().unwrap().insert(dev.to_owned(), eng.clone());
     OwnHost { eng, gate, hist }
@@ -1572,4 +1576,99 @@ fn losing_the_pin_after_a_successful_scan_reads_as_another_device_took_over() {
         }
     }
     assert_ne!(super::engine::takeover_or_for_test(cl_near::error::NearError::Transport("network (0): x".into())).0, "taken_over");
+}
+
+// ---- own-device failure CAUSES (the diagnostics round): different network, no usable adapter, nobody answered ---------------------
+
+fn wifi(addr: &str) -> Arc<dyn InterfaceProvider> {
+    Arc::new(StaticInterfaces(vec![LocalInterface { index: 4, name: "Wi-Fi".into(), addr: addr.parse().unwrap(), prefix_len: 24, kind: cl_near::onlink::IfaceKind::Wifi }]))
+}
+
+#[test]
+fn own_device_on_another_subnet_is_a_different_network_not_a_vague_not_found() {
+    let t = tmp();
+    let r = router();
+    // the holder listens on loopback (test policy); the asker is a strict device on 192.168.50.0/24, so the offered address is on-link for none of its interfaces
+    let holder = own_host(&r, t.path(), "holder", "dev-H");
+    let asker = own_host_cfg(&r, t.path(), "asker", "dev-N", |e| {
+        e.lan_policy = cl_near::lan::LanPolicy::Strict;
+        e.ifaces = wifi("192.168.50.7");
+    });
+    asker.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    wait_own(&holder, "the sheet", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    let a = wait_own(&asker, "the asker ends", |s| s.state.is_terminal());
+    assert_eq!(a.state, NearState::Refused);
+    let d = a.diag.expect("the asker explains itself");
+    assert_eq!((d.cause, d.lan_fail, d.same_subnet, d.lan_result), (Some("different_network"), Some("different_network"), Some(false), Some("off_link")));
+    assert_eq!((d.dial_attempts, d.lan_plan, d.lan_usable), (0, Some("dial"), Some(true)));
+    // the wire stays inside cl-near's closed set: the legacy refusal word, never the new local one
+    assert_eq!(a.refusal.unwrap().lan, "not_found");
+    // the holder (listener) only knows nobody connected
+    let h = wait_own(&holder, "the holder ends", |s| s.state.is_terminal());
+    assert_eq!(h.diag.unwrap().cause, Some("not_found"));
+}
+
+#[test]
+fn own_device_with_no_usable_adapter_says_so_on_both_sides_and_tells_the_peer_only_the_legacy_word() {
+    let t = tmp();
+    let r = router();
+    // a VPN-only PC: every adapter filtered out, nothing to listen or dial on
+    let holder = own_host_cfg(&r, t.path(), "holder", "dev-H", |e| {
+        e.ifaces = Arc::new(StaticInterfaces(vec![]));
+        e.census = Arc::new(|| super::netdiag::AdapterCensus { filtered: 2, filtered_vpn: 1, filtered_virtual: 1, ..Default::default() });
+    });
+    let asker = own_host(&r, t.path(), "asker", "dev-N");
+    asker.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    wait_own(&holder, "the sheet", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    let h = wait_own(&holder, "the holder ends", |s| s.state.is_terminal());
+    assert_eq!(h.state, NearState::Refused);
+    let d = h.diag.expect("diag");
+    assert_eq!((d.cause, d.lan_usable, d.lan_plan), (Some("no_usable_network"), Some(false), Some("none")));
+    let c = d.adapters.expect("census");
+    assert_eq!((c.eligible, c.filtered, c.filtered_vpn, c.filtered_virtual), (0, 2, 1, 1));
+    // the asker learns "skipped" over the wire (what an older phone already understands) and explains it from ITS side
+    let a = wait_own(&asker, "the asker ends", |s| s.state.is_terminal());
+    assert_eq!(a.state, NearState::Refused);
+    assert_eq!(a.refusal.unwrap().lan, "skipped");
+    assert_eq!(a.diag.unwrap().cause, Some("peer_no_usable_network"));
+}
+
+#[test]
+fn an_offer_nobody_answers_is_no_answer_with_the_wire_untouched() {
+    let t = tmp();
+    let r = router();
+    *r.drop_type.lock().unwrap() = Some("near_offer".into());
+    let _holder = own_host(&r, t.path(), "holder", "dev-H");
+    let asker = own_host_cfg(&r, t.path(), "asker", "dev-N", |e| e.own_answer = Duration::from_millis(600));
+    asker.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    let a = wait_own(&asker, "the asker gives up", |s| s.state.is_terminal());
+    assert_eq!(a.state, NearState::Expired);
+    assert_eq!(a.diag.unwrap().cause, Some("no_answer"));
+}
+
+#[test]
+fn a_finished_transfer_reports_ok_and_the_snapshot_diag_holds_only_counts_and_words() {
+    let t = tmp();
+    let r = router();
+    let holder = own_host(&r, t.path(), "holder", "dev-H");
+    let asker = own_host(&r, t.path(), "asker", "dev-N");
+    asker.eng.own_request("dev-H".into(), "dev-N".into()).unwrap();
+    wait_own(&holder, "the sheet", |s| s.role == Some("own_sender") && s.state == NearState::AwaitingApproval);
+    assert_eq!(holder.eng.approve(), ApproveOutcome::Approved("hello"));
+    wait_own(&holder, "ready", |s| s.state == NearState::Approved && s.proximity == Some("lan"));
+    wait_own(&asker, "approved", |s| s.state == NearState::Approved);
+    let src = t.path().join("h.container");
+    std::fs::write(&src, data(4096)).unwrap();
+    asker.eng.transfer_receive().unwrap();
+    holder.eng.transfer_send(src.display().to_string()).unwrap();
+    let h = wait_own(&holder, "sent", |s| s.state == NearState::Done);
+    wait_own(&asker, "received", |s| s.state == NearState::Done);
+    let d = h.diag.clone().unwrap();
+    assert_eq!((d.cause, d.lan_result, d.lan_fail), (Some("ok"), Some("ok"), None));
+    // nothing that identifies a person, a device or a network may ride in diag: scan the serialised form for the shapes that would
+    let j = serde_json::to_string(&h.diag).unwrap();
+    assert!(!j.contains("127.0.0.1") && !j.contains("10.255") && !j.contains("test0") && !j.contains("holder") && !j.contains("dev-H") && !j.contains("Dawson"), "{j}");
+    assert!(!regex::Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap().is_match(&j), "{j}");
 }

@@ -74,6 +74,17 @@ export function useMessagePagination<T>(allMessages: T[], resetKey: string | nul
         return true;
     }, [rows, startIdx, anchorAt]);
 
+    /**
+     * Stop the default window from following new messages: anchor it on its
+     * current first row. The reader scrolled up to read, so a new message at
+     * the end must not push the oldest row off the top of the window under
+     * them (each one used to drop a row above the reader and shift the feed).
+     * A no-op once the window is anchored (after a loadMore / ensureVisible).
+     */
+    const freeze = useCallback(() => {
+        if (!anchor) anchorAt(startIdx);
+    }, [anchor, anchorAt, startIdx]);
+
     const displayed = useMemo(
         () => (startIdx === 0 ? allMessages : allMessages.slice(startIdx)),
         [allMessages, startIdx],
@@ -82,7 +93,7 @@ export function useMessagePagination<T>(allMessages: T[], resetKey: string | nul
     /** How many rows are in the window — `total - hiddenAbove`. */
     const visibleCount = total - startIdx;
 
-    return { displayed, hasMore, loadMore, ensureVisible, visibleCount, hiddenAbove: startIdx };
+    return { displayed, hasMore, loadMore, ensureVisible, freeze, visibleCount, hiddenAbove: startIdx };
 }
 
 /**

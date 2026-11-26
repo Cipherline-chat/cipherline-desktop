@@ -46,6 +46,9 @@ import type { Scrubber } from './diagnostics-scrub';
 export const PREV_SESSION_FILE = 'diag-prev-session.json';
 /** Newest perf rows kept. */
 export const PREV_SESSION_MAX_ROWS = 50;
+/** Extra room for the newest local-transfer (`near:`) rows, kept even when newer rows of other kinds would push them out: a transfer that
+ *  failed before the app died is the thing the report is about, and the periodic metrics would otherwise evict it within minutes. */
+export const PREV_SESSION_NEAR_ROWS = 20;
 /** Periodic write interval. */
 export const PREV_SESSION_WRITE_MS = 12_000;
 /** A notable event may write early, but never closer than this to the last write. */
@@ -111,7 +114,7 @@ export function sanitizeState(raw: unknown): PrevSessionState {
 }
 
 /** Rows newest-last, shape-checked; a row that fails is DROPPED, never coerced. */
-export function sanitizeRows(raw: unknown, max = PREV_SESSION_MAX_ROWS): PrevSessionRow[] {
+export function sanitizeRows(raw: unknown, max = PREV_SESSION_MAX_ROWS + PREV_SESSION_NEAR_ROWS): PrevSessionRow[] {
     if (!Array.isArray(raw)) return [];
     const out: PrevSessionRow[] = [];
     for (const r of raw) {
@@ -149,7 +152,11 @@ export function buildFileText(
     const sorted = args.entries
         .filter(e => e && Number.isFinite(e.at) && e.at <= args.now + 1000 && typeof e.activity === 'string' && RAW_ACTIVITY_RE.test(e.activity))
         .sort((a, b) => a.at - b.at);
-    const candidate = sorted.slice(-PREV_SESSION_MAX_ROWS).map(e => ({
+    // the newest rows of any kind, plus the newest transfer trail (`near:*`) rows that those did not already cover
+    const newest = sorted.slice(-PREV_SESSION_MAX_ROWS);
+    const have = new Set(newest);
+    const trail = sorted.filter(e => e.activity.startsWith('near:') && !have.has(e)).slice(-PREV_SESSION_NEAR_ROWS);
+    const candidate = [...trail, ...newest].map(e => ({
         t_s: Math.min(0, (e.at - args.now) / 1000),
         source: e.source,
         ms: Math.max(0, Math.round(Number(e.ms) || 0)),

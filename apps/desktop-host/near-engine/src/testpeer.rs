@@ -685,6 +685,7 @@ impl super::gate::ApprovalGate for TestGate {
 #[allow(clippy::type_complexity)]
 pub fn test_env(dir: &std::path::Path, name: &str, seed: &'static str, radio: Arc<dyn super::radio::BleRadio>, os: super::engine::Os, emit: Arc<dyn Fn(&super::state::NearSnapshot) + Send + Sync>) -> (super::engine::NearEnv, Arc<TestIdent>, Arc<TestGate>, Arc<AtomicU64>) {
     use super::engine::{NearEnv, Timing};
+    use super::netdiag::AdapterCensus;
     let ident = Arc::new(TestIdent { seed, installed: Default::default() });
     let gate = Arc::new(TestGate { avail: super::gate::Availability::Available, next: std::sync::Mutex::new(super::gate::Verification::Verified), prompts: Default::default() });
     let skew = Arc::new(AtomicU64::new(0));
@@ -692,6 +693,7 @@ pub fn test_env(dir: &std::path::Path, name: &str, seed: &'static str, radio: Ar
         radio,
         gate: gate.clone(),
         ifaces: Arc::new(StaticInterfaces(vec![LocalInterface { index: 1, name: "test0".into(), addr: "10.255.0.1".parse().unwrap(), prefix_len: 24, kind: cl_near::onlink::IfaceKind::Virtual }])),
+        census: Arc::new(AdapterCensus::default),
         identity: ident.clone(),
         profile: dir.to_path_buf(),
         staging_dir: dir.join("staging"),

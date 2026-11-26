@@ -42,37 +42,42 @@ describe('highPerformanceGpuSwitches', () => {
 describe('ensureHighPerformancePreference', () => {
     const deps = (over: Partial<GpuPreferenceDeps> = {}) => ({
         platform: 'win32', enabled: true, topology: LAPTOP, exePath: EXE,
-        markerExists: vi.fn(() => false), writeMarker: vi.fn(), reg: vi.fn(async (a: string[]) => (a[0] === 'add' ? 0 : 1)), ...over,
+        markerExists: vi.fn(() => false), writeMarker: vi.fn(), preferenceExists: vi.fn(async () => false as boolean | null), setHighPerformance: vi.fn(async () => true), ...over,
     });
 
     it('no value yet: writes the high-performance preference for this executable, then the marker', async () => {
         const d = deps();
         await expect(ensureHighPerformancePreference(d)).resolves.toBe('set');
-        expect(d.reg).toHaveBeenCalledTimes(2);
-        expect(d.reg).toHaveBeenNthCalledWith(1, ['query', USER_GPU_PREFERENCES_KEY, '/v', EXE]);
-        expect(d.reg).toHaveBeenNthCalledWith(2, ['add', USER_GPU_PREFERENCES_KEY, '/v', EXE, '/t', 'REG_SZ', '/d', HIGH_PERFORMANCE_GPU_VALUE, '/f']);
+        expect(d.preferenceExists).toHaveBeenCalledWith(EXE);
+        expect(d.setHighPerformance).toHaveBeenCalledWith(EXE);
+        expect(USER_GPU_PREFERENCES_KEY).toBe('HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences');
         expect(HIGH_PERFORMANCE_GPU_VALUE).toBe('GpuPreference=2;');
         expect(d.writeMarker).toHaveBeenCalledTimes(1);
     });
 
     it('a choice already made in Windows Settings is never overwritten', async () => {
-        const d = deps({ reg: vi.fn(async () => 0) });
+        const d = deps({ preferenceExists: vi.fn(async () => true) });
         await expect(ensureHighPerformancePreference(d)).resolves.toBe('kept-existing');
-        expect(d.reg).toHaveBeenCalledTimes(1);
+        expect(d.setHighPerformance).not.toHaveBeenCalled();
         expect(d.writeMarker).toHaveBeenCalledTimes(1);
     });
 
     it('once only: with the marker there, the registry is not touched (a removed value stays removed)', async () => {
         const d = deps({ markerExists: vi.fn(() => true) });
         await expect(ensureHighPerformancePreference(d)).resolves.toBe('already-done');
-        expect(d.reg).not.toHaveBeenCalled();
+        expect(d.preferenceExists).not.toHaveBeenCalled();
+        expect(d.setHighPerformance).not.toHaveBeenCalled();
     });
 
     it('a failed write leaves no marker, so the next launch tries again; a throw never escapes', async () => {
-        const failed = deps({ reg: vi.fn(async (a: string[]) => (a[0] === 'add' ? 5 : 1)) });
+        const failed = deps({ setHighPerformance: vi.fn(async () => false) });
         await expect(ensureHighPerformancePreference(failed)).resolves.toBe('failed');
         expect(failed.writeMarker).not.toHaveBeenCalled();
-        const threw = deps({ reg: vi.fn(async () => { throw new Error('spawn failed'); }) });
+        // No helper (could not even ask): also a failure with no marker.
+        const blind = deps({ preferenceExists: vi.fn(async () => null) });
+        await expect(ensureHighPerformancePreference(blind)).resolves.toBe('failed');
+        expect(blind.writeMarker).not.toHaveBeenCalled();
+        const threw = deps({ preferenceExists: vi.fn(async () => { throw new Error('helper died'); }) });
         await expect(ensureHighPerformancePreference(threw)).resolves.toBe('failed');
     });
 
@@ -80,7 +85,7 @@ describe('ensureHighPerformancePreference', () => {
         for (const over of [{ enabled: false }, { platform: 'linux' }, { topology: SINGLE }, { topology: null }]) {
             const d = deps(over);
             await expect(ensureHighPerformancePreference(d)).resolves.toBe('skipped');
-            expect(d.reg).not.toHaveBeenCalled();
+            expect(d.preferenceExists).not.toHaveBeenCalled();
             expect(d.writeMarker).not.toHaveBeenCalled();
         }
     });
@@ -105,11 +110,13 @@ describe('wiring in main.ts', () => {
         expect(MAIN).toContain('highPerformanceGpuSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform, GPU_TOPOLOGY_AT_START)');
     });
 
-    it('the preference uses this launch\'s layout, reg.exe by full path, and no shell', () => {
+    it('the preference uses this launch\'s layout and the helper, never reg.exe or a shell', () => {
         expect(MAIN).toContain('ensureHighPerformancePreference({');
-        expect(MAIN).toMatch(/process\.env\.SystemRoot[^\n]*'System32', 'reg\.exe'/);
         const at = MAIN.indexOf('ensureHighPerformancePreference({');
-        expect(MAIN.slice(at, at + 900)).not.toMatch(/shell:\s*true/);
+        const block = MAIN.slice(at, at + 900);
+        expect(block).toContain('winSys().gpuPreferenceExists');
+        expect(block).toContain('winSys().setHighPerformanceGpu');
+        expect(block).not.toMatch(/reg\.exe|execFile|shell:\s*true/);
     });
 
     it('a report can show whether it worked: outcome and the GPU really in use', () => {

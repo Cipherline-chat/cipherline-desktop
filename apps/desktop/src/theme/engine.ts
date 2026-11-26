@@ -27,12 +27,12 @@
  */
 import { useSyncExternalStore } from 'react';
 import {
-    DARK_THEME, DEFAULT_THEME_PREFERENCE, PALETTE_TOKENS, isThemeId, isThemePreference, resolveTheme, themeCssText,
+    DARK_THEME, DEFAULT_THEME_PREFERENCE, PALETTE_TOKENS, THEME_PREFERENCE_LABELS, isThemeId, isThemePreference, resolveTheme, themeCssText,
     themeIdForPreference,
     type PaletteToken, type Theme, type ThemeId, type ThemePreference,
 } from './themes';
 import {
-    customBootPayload, defFromBootPayload, deriveCustomTheme, type CustomThemeBootPayload, type CustomThemeDef,
+    customBootPayload, customThemeFromTheme, defFromBootPayload, deriveCustomTheme, type CustomThemeBootPayload, type CustomThemeDef,
 } from './customTheme';
 
 export const THEME_STYLE_ID = 'cl-theme';
@@ -181,39 +181,72 @@ export async function setCustomTheme(id: string, def: CustomThemeDef, host: Them
 
 // ── Live preview ────────────────────────────────────────────────────────────
 //
-// "Preview" on a shared theme card, in the import dialog or on a custom theme
-// tile shows the theme on the WHOLE app for a while (components/themeShare/
-// ThemePreviewBar.tsx is the bottom-left "Previewing <name>" bar). A preview is
-// renderer memory ONLY: nothing goes to theme:set / theme:set-custom, the
-// active-theme mirror, the library or sync, so a reload or a restart always
-// comes back in the device's real theme. Main only repaints the window
-// background / Windows caption buttons (theme:preview, which stores nothing).
+// Every way of putting a theme on the app from Settings (a built-in tile, a
+// custom tile, Save in the editor, Save and use on an import) and Preview / Use
+// on a shared theme card shows the theme on the WHOLE app as a PREVIEW first
+// (components/themeShare/ThemePreviewBar.tsx is the "Previewing <name>" bar with
+// Keep / Revert and a countdown). A preview is renderer memory ONLY: nothing
+// goes to theme:set / theme:set-custom, the active-theme mirror, the library or
+// sync, so a reload or a restart always comes back in the device's real theme.
+// Main only repaints the window background / Windows caption buttons
+// (theme:preview, which stores nothing).
+//
+// It REVERTS BY ITSELF after PREVIEW_REVERT_MS unless the user presses Keep
+// (owner, 2026-11-26: custom colours are never contrast-corrected, so a theme
+// can make text or buttons unfindable; a picked theme must never strand
+// anyone). The timer lives HERE, not in the bar, so the revert happens even if
+// the bar could not render. Picking another theme restarts it.
 //
 // While a preview is up, every REAL theme change that is not a user's choice
 // (main's push when the OS flips on Sync with system, a synced edit of the
 // active custom theme, a backup restore) lands on `previewBase` instead of the
-// screen, so Stop restores exactly what the device would show now. A user's
-// choice (activeThemeMirror chooseBuiltinTheme / chooseCustomTheme: the picker,
-// Save and use) ends the preview first.
+// screen, so Revert restores exactly what the device would show now. A user's
+// choice (activeThemeMirror chooseBuiltinTheme / chooseCustomTheme: Keep on the
+// bar) ends the preview first.
+
+/** How long a preview stays up without Keep before the real theme comes back. */
+export const PREVIEW_REVERT_MS = 15_000;
+
+/** Where a preview was started: Settings (leaving Settings reverts it) or a shared theme (card / link / import). */
+export type ThemePreviewSource = 'settings' | 'share';
 
 export interface ThemePreviewState {
     /** The theme on screen. */
     theme: Theme;
-    /** The previewed theme's data (Save / Save and use store this). */
-    def: CustomThemeDef;
-    /** Its library id when it is one of "Your themes" (tile preview), else null. */
+    /** What the bar calls it ("Midnight", "Ocean"). */
+    name: string;
+    /** A custom theme's data (Keep saves / uses this), or null for a built-in. */
+    def: CustomThemeDef | null;
+    /** A built-in preference (or Sync with system) being previewed, else null. */
+    builtin: ThemePreference | null;
+    /** Its library id when it is one of "Your themes", else null. */
     libraryId: string | null;
+    /** An edit of a library theme that is NOT written yet: Keep writes it, Revert drops it (the opener gets onRevert). */
+    pendingEdit: boolean;
+    source: ThemePreviewSource;
     /** Bumped on every start (a new preview replacing one re-announces and re-focuses the bar). */
     seq: number;
+    /** Date.now() at which it reverts by itself. Moves on restartThemePreviewCountdown(). */
+    revertAt: number;
+}
+
+export interface ThemePreviewOptions {
+    libraryId?: string | null;
+    source?: ThemePreviewSource;
+    pendingEdit?: boolean;
+    /** Called once when THIS preview ends without Keep (Revert, Escape, the timer, leaving Settings). Not on replace. */
+    onRevert?: () => void;
 }
 
 /** The custom id an unsaved previewed theme carries (data-custom-theme). */
 export const PREVIEW_THEME_ID = 'preview';
 
 let preview: ThemePreviewState | null = null;
-/** The device's REAL theme while a preview is up (what Stop puts back). */
+/** The device's REAL theme while a preview is up (what Revert puts back). */
 let previewBase: Theme | null = null;
 let previewSeq = 0;
+let revertTimer: ReturnType<typeof setTimeout> | null = null;
+let onRevert: (() => void) | null = null;
 const previewListeners = new Set<() => void>();
 
 function notifyPreview(): void {
@@ -245,30 +278,85 @@ export function useThemePreview(): ThemePreviewState | null {
     return useSyncExternalStore(subscribeThemePreview, getThemePreview, getThemePreview);
 }
 
-/**
- * Show `def` on the whole app until stopThemePreview(). Starting while one is
- * up replaces it (Stop still goes back to the real theme). Persists nothing.
- */
-export function startThemePreview(def: CustomThemeDef, opts: { libraryId?: string | null } = {}, host: ThemeHost | undefined = hostFromWindow()): void {
-    const libraryId = opts.libraryId ?? null;
-    const id = libraryId ?? PREVIEW_THEME_ID;
-    const theme = deriveCustomTheme(def, id);
+function armRevertTimer(): number {
+    if (revertTimer) clearTimeout(revertTimer);
+    revertTimer = setTimeout(() => { revertTimer = null; stopThemePreview(); }, PREVIEW_REVERT_MS);
+    return Date.now() + PREVIEW_REVERT_MS;
+}
+
+function beginPreview(
+    theme: Theme,
+    fields: Pick<ThemePreviewState, 'name' | 'def' | 'builtin' | 'libraryId'>,
+    opts: ThemePreviewOptions,
+    paint: CustomThemeBootPayload,
+    host: ThemeHost | undefined,
+): void {
     if (!preview) previewBase = current;
-    preview = { theme, def, libraryId, seq: ++previewSeq };
+    // A replaced preview's opener is not told (the user moved on to another theme, nothing reverted).
+    onRevert = opts.onRevert ?? null;
+    preview = {
+        theme, ...fields,
+        pendingEdit: !!opts.pendingEdit,
+        source: opts.source ?? 'share',
+        seq: ++previewSeq,
+        revertAt: armRevertTimer(),
+    };
     applyTheme(theme);
     notifyPreview();
-    try { void host?.previewTheme?.(customBootPayload(id, def))?.catch?.(() => { /* old main */ }); } catch { /* old preload */ }
+    try { void host?.previewTheme?.(paint)?.catch?.(() => { /* old main */ }); } catch { /* old preload */ }
+}
+
+/**
+ * Show the custom theme `def` on the whole app until Keep, Revert or the timer.
+ * Starting while one is up replaces it (and restarts the countdown; Revert
+ * still goes back to the real theme). Persists nothing.
+ */
+export function startThemePreview(def: CustomThemeDef, opts: ThemePreviewOptions = {}, host: ThemeHost | undefined = hostFromWindow()): void {
+    const libraryId = opts.libraryId ?? null;
+    const id = libraryId ?? PREVIEW_THEME_ID;
+    beginPreview(deriveCustomTheme(def, id), { name: def.name, def, builtin: null, libraryId }, opts, customBootPayload(id, def), host);
+}
+
+/** Show a built-in theme (or what Sync with system resolves to now) as a preview. Persists nothing. */
+export function startBuiltinThemePreview(pref: ThemePreference, opts: Omit<ThemePreviewOptions, 'libraryId' | 'pendingEdit'> = {}, host: ThemeHost | undefined = hostFromWindow()): void {
+    if (!isThemePreference(pref)) return;
+    const theme = resolveThemePreference(pref);
+    const name = THEME_PREFERENCE_LABELS[pref];
+    // Main's preview paint takes a custom payload: the built-in's own colours.
+    const paint = customBootPayload(PREVIEW_THEME_ID, customThemeFromTheme(theme, name));
+    beginPreview(theme, { name, def: null, builtin: pref, libraryId: null }, opts, paint, host);
+}
+
+/** The user is still choosing (picked another theme, saved it to the library): full countdown again. */
+export function restartThemePreviewCountdown(): void {
+    if (!preview) return;
+    preview = { ...preview, revertAt: armRevertTimer() };
+    notifyPreview();
+}
+
+/** Keep is committing this preview: it ends as KEPT, so the opener's onRevert must not run. */
+export function markThemePreviewKept(): void {
+    onRevert = null;
 }
 
 /** End the preview and put the device's real theme back (the same Theme object: no re-derive, no flash). */
 export function stopThemePreview(host: ThemeHost | undefined = hostFromWindow()): void {
+    if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
     if (!preview) return;
     const back = previewBase ?? current;
+    const reverted = onRevert;
+    onRevert = null;
     preview = null;
     previewBase = null;
     applyTheme(back);
     notifyPreview();
     try { void host?.endThemePreview?.()?.catch?.(() => { /* old main */ }); } catch { /* old preload */ }
+    if (reverted) { try { reverted(); } catch { /* the opener is gone */ } }
+}
+
+/** Settings closed: a preview started there reverts (Keep already ended it if it was pressed). */
+export function endSettingsThemePreview(): void {
+    if (preview?.source === 'settings') stopThemePreview();
 }
 
 // ── Preference (Dark / Light / Sync with system) ────────────────────────────
@@ -406,6 +494,9 @@ export function __resetThemeForTests(): void {
     preview = null;
     previewBase = null;
     previewSeq = 0;
+    if (revertTimer) clearTimeout(revertTimer);
+    revertTimer = null;
+    onRevert = null;
     previewListeners.clear();
     listeners.clear();
     preference = DEFAULT_THEME_PREFERENCE;

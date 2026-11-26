@@ -11,6 +11,7 @@ import { resolveSettingsTarget, type SettingsTarget } from './paneAliases';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { useEscape } from '../../hooks/useEscape';
 import { setOccluded } from '../../utils/idleMotion';
+import { endSettingsThemePreview } from '../../theme/engine';
 import { AppearancePane } from './panes/AppearancePane';
 import { AccessibilityPane } from './panes/AccessibilityPane';
 import { ActivityStylePane } from './panes/ActivityStylePane';
@@ -277,6 +278,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         }, reduced ? 0 : 100);
     }, [pane, leaving]);
     useEffect(() => () => window.clearTimeout(switchTimer.current), []);
+    // Leaving Settings while a theme picked here is still a preview (Keep not
+    // pressed) puts the real theme back (theme/engine.ts endSettingsThemePreview).
+    useEffect(() => () => endSettingsThemePreview(), []);
     const goGuarded = useCallback((next: PaneId, setting?: string) => {
         if (next === pane) {
             if (setting && mainRef.current) revealSetting(mainRef.current, setting);

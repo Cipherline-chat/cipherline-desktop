@@ -22,7 +22,7 @@ vi.mock('../../utils/secureLocalStore', () => {
 import { TransferBanner } from './TransferBanner';
 import { MoveHistoryCard } from './MoveHistoryCard';
 import { NearTransferHost, RELOAD_AFTER_IMPORT_MS, StopTransferDialog, transferControls } from './NearTransferHost';
-import { OwnTransferHost, SLOW_ANSWER_MS, notifyHolderSheet } from './OwnTransferHost';
+import { OwnTransferHost, SLOW_ANSWER_MS, notifyHolderSheet, endingFor } from './OwnTransferHost';
 import { SignInHistoryPrompt } from './SignInHistoryPrompt';
 import { askedDeviceName, closeOwnTransferPicker, ownTransferPickerOpen, rememberAskedDevice, resetOwnTransferPickerForTest } from '../../utils/ownTransferPicker';
 import { getTransferRunner } from '../../utils/nearTransferRunner';
@@ -386,5 +386,58 @@ describe('own-device transfer screens (contract section 7)', () => {
             expect(document.querySelector('[data-testid="own-wait-slow"]')).not.toBeNull();
             expect(text()).toContain('An older version of Cipherline can’t send history this way');
         } finally { vi.useRealTimers(); }
+    });
+});
+
+describe('own-device endings: the local-network failure told apart (diag.cause)', () => {
+    const refused = (cause: string | undefined, role = 'own_receiver') => ({ role, state: 'refused', error: { code: 'no_proximity', message: 'refused' }, ...(cause ? { diag: { cause } } : {}) });
+    const DEV = 'Dawson’s Pixel';
+
+    it('different network: both devices, same Wi-Fi, no VPN', () => {
+        const e = endingFor(refused('different_network'), DEV)!;
+        expect(e.kind).toBe('diffnet');
+        expect(e.title).toBe('Dawson’s Pixel isn’t on the same network');
+        expect(e.body).toBe('Your computer and Dawson’s Pixel aren’t on the same network. Connect both to the same Wi‑Fi and turn off any VPN, then try again.');
+    });
+
+    it('no usable adapter on this PC: names the VPN as a possible hider, says what to connect', () => {
+        const e = endingFor(refused('no_usable_network', 'own_sender'), DEV)!;
+        expect(e.kind).toBe('nousable');
+        expect(e.title).toBe('No usable network on this computer');
+        expect(e.body).toContain('no Wi‑Fi or Ethernet connection Cipherline can use');
+        expect(e.body).toContain('a VPN or virtual adapter may be hiding it');
+        // never leaks the device name when the problem is this computer
+        expect(`${e.title} ${e.body}`).not.toContain('Pixel');
+    });
+
+    it('the OTHER device has no usable adapter: says so about that device', () => {
+        const e = endingFor(refused('peer_no_usable_network'), DEV)!;
+        expect(e.kind).toBe('peernonet');
+        expect(e.title).toBe('Dawson’s Pixel has no usable network');
+        expect(e.body).toContain('Connect it to the same Wi‑Fi as this computer');
+    });
+
+    it('nobody approved in time: the asker keeps its existing ending, the holder (whose sheet timed out) is now told too', () => {
+        expect(endingFor({ role: 'own_receiver', state: 'expired', error: { code: 'own_no_answer', message: 'the session ended' }, diag: { cause: 'no_answer' } }, DEV)!.kind).toBe('noanswer');
+        const holder = endingFor({ role: 'own_sender', state: 'expired', error: { code: 'own_no_decision', message: 'the session ended' }, diag: { cause: 'no_answer' } }, DEV)!;
+        expect(holder.kind).toBe('holdertimeout');
+        expect(holder.title).toBe('The request from Dawson’s Pixel timed out');
+        expect(holder.body).toBe('Nobody approved it on this computer in time, so nothing was sent. Keep Cipherline open here and ask again on Dawson’s Pixel.');
+        // a holder session that expired for another reason (the link relay) stays silent as before
+        expect(endingFor({ role: 'own_sender', state: 'expired', error: { code: 'session_expired', message: 'x' } }, DEV)).toBeNull();
+    });
+
+    it('an older helper (no diag), a legacy cause and a word this build has never seen all keep the generic "not on the same Wi-Fi" ending', () => {
+        for (const c of [undefined, 'not_found', 'firewall', 'denied', 'a_cause_from_the_future']) {
+            const e = endingFor(refused(c), DEV)!;
+            expect(e.kind, String(c)).toBe('nonet');
+            expect(e.title).toBe('Dawson’s Pixel isn’t on the same Wi‑Fi');
+        }
+    });
+
+    it('the causes only change a no_proximity refusal: a decline, a busy device and a plain failure read as before', () => {
+        expect(endingFor({ role: 'own_receiver', state: 'refused', error: { code: 'denied', message: 'x' }, diag: { cause: 'different_network' } }, DEV)!.kind).toBe('declined');
+        expect(endingFor({ role: 'own_receiver', state: 'refused', error: { code: 'busy', message: 'x' }, diag: { cause: 'no_usable_network' } }, DEV)!.kind).toBe('busy');
+        expect(endingFor({ role: 'own_receiver', state: 'failed', error: { code: 'peer_error', message: 'x' }, diag: { cause: 'failed' } }, DEV)!.kind).toBe('failed');
     });
 });

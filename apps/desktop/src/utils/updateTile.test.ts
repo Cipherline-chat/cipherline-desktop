@@ -81,3 +81,26 @@ describe('formatRetryIn', () => {
         expect(formatRetryIn(80_000)).toBe('1m 20s');
     });
 });
+
+describe('failed / verify: a blocked or missing signature checker vs a bad signature', () => {
+    it('the helper cause says what happened and what to do, and stays a retry action', () => {
+        const t = describeUpdateTile({ phase: 'failed', version: V, stage: 'verify', cause: 'helper' }, NOW);
+        expect(t).toMatchObject({ visible: true, action: 'retry', tone: 'error' });
+        expect(t.label).toBe("Update couldn't be verified: part of Cipherline (win-helper.exe) is blocked or missing, often by security software — click to try again");
+    });
+
+    it('a bad signature keeps the OLD message', () => {
+        expect(describeUpdateTile({ phase: 'failed', version: V, stage: 'verify' }, NOW).label).toBe("Update couldn't be verified — click to try again");
+    });
+});
+
+describe('the full-screen update prompt says the same thing (UpdateRequiredScreen)', () => {
+    it('carries the exact helper-blocked sentence, and still the old verify sentence for a bad signature', async () => {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const src = fs.readFileSync(path.join(__dirname, '..', 'components', 'UpdateRequiredScreen.tsx'), 'utf8');
+        expect(src).toContain('Cipherline couldn’t verify this update because part of the app (win-helper.exe) was blocked or is missing — often by security software. Allow Cipherline in your security software, or reinstall from cipherline.chat/download.');
+        expect(src).toContain('The downloaded update couldn’t be verified as Cipherline’s, so it wasn’t installed.');
+        expect(src).toMatch(/u\.cause === 'helper'[\s\S]{0,120}HELPER_BLOCKED_LINE/);
+    });
+});

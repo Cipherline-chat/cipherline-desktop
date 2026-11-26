@@ -42,3 +42,21 @@ describe('useMessagePagination windowStart — anchored by row, not by count', (
         expect(windowStart(rs, { id: 'gone', ts: 999_999 })).toBe(100 - MESSAGE_PAGE_SIZE);
     });
 });
+
+describe('useMessagePagination freeze — a scrolled-up reader\'s window stops following', () => {
+    it('control: the un-anchored default window slides, dropping its top row per new message', () => {
+        const before = rows(0, 59);
+        const first = before[windowStart(before, null)].id; // m40
+        const after = [...before, ...rows(60, 62)];
+        expect(after[windowStart(after, null)].id).not.toBe(first);
+        expect(after[windowStart(after, null)].id).toBe('m43');
+    });
+
+    it('frozen (anchored on the current first row): new messages append below, the top row stays', () => {
+        const before = rows(0, 59);
+        const start = windowStart(before, null);
+        const frozen = { id: before[start].id, ts: before[start].timestamp }; // what freeze() stores
+        const after = [...before, ...rows(60, 89)];
+        expect(after[windowStart(after, frozen)].id).toBe('m40');
+    });
+});

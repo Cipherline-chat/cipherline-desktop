@@ -422,3 +422,42 @@ describe('pickDownloadUrl', () => {
         }
     });
 });
+
+describe('the signature CHECKER (win-helper.exe) could not run: told apart from a bad signature', () => {
+    const helperErr = { code: 'ERR_UPDATER_SIGNATURE_HELPER_UNAVAILABLE', message: 'Could not check the update\'s signature: win-helper.exe unavailable (blocked) after 12 ms', reason: 'blocked' };
+
+    it('classifies as its own kind, not as a signature failure and not as a transient one', () => {
+        expect(classifyUpdateError(helperErr, 'win32')).toBe('helper');
+        expect(classifyUpdateError({ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'x' }, 'win32')).toBe('signature');
+    });
+
+    it('fails the update in-app with cause "helper", with NO automatic retry (no silent loop), and stays retryable by the user', () => {
+        const d = onUpdateError({ phase: 'downloading', version: '2.0.0', percent: 100 }, ctx({ kind: 'helper', failures: 1 }));
+        expect(d).toEqual({ state: { phase: 'failed', version: '2.0.0', stage: 'verify', cause: 'helper' }, retryInMs: null });
+    });
+
+    it('a bad signature keeps today\'s decision exactly (failed/verify with NO cause)', () => {
+        const d = onUpdateError({ phase: 'downloading', version: '2.0.0', percent: 100 }, ctx({ kind: 'signature' }));
+        expect(d).toEqual({ state: { phase: 'failed', version: '2.0.0', stage: 'verify' }, retryInMs: null });
+        expect((d.state as { cause?: unknown }).cause).toBeUndefined();
+    });
+
+    it('with nothing in flight (a periodic check) it never invents a failed update', () => {
+        expect(onUpdateError({ phase: 'idle' }, ctx({ kind: 'helper' })).state).toEqual({ phase: 'idle' });
+    });
+
+    it('the diagnostic line carries a distinct code, the reason word and "failed verify helper", within the log charset', () => {
+        const d = onUpdateError({ phase: 'downloading', version: '2', percent: 100 }, ctx({ kind: 'helper' }));
+        const line = updaterErrorDetail(helperErr, d, (x) => x);
+        expect(line.startsWith('code=ERR_UPDATER_SIGNATURE_HELPER_UNAVAILABLE reason=blocked next=failed verify helper')).toBe(true);
+        expect(DETAIL_RE.test(line)).toBe(true);
+        expect(line.length).toBeLessThanOrEqual(240);
+    });
+
+    it('only a known reason word is ever copied into the log line', () => {
+        const d = onUpdateError({ phase: 'downloading', version: '2', percent: 100 }, ctx({ kind: 'helper' }));
+        const line = updaterErrorDetail({ ...helperErr, reason: 'C:\\Users\\alice\\x.exe' }, d, (x) => x);
+        expect(line).not.toContain('reason=');
+        expect(line).not.toMatch(/alice/);
+    });
+});

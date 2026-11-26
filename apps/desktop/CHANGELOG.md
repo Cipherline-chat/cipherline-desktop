@@ -22,6 +22,43 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.6] - 2026-11-27
+
+### What's new
+
+- **Custom emojis and stickers stay put.** Once an emoji or sticker has been sent, old messages keep showing it, even if the server later deletes it. A brief network hiccup no longer turns them into "unavailable".
+- **Reading back no longer gets interrupted.** When you scroll up in a chat, new messages and joins don't pull you to the bottom anymore. A "new messages" bar at the top takes you to what you missed.
+- **Try themes safely.** Picking a theme previews it with a bar that always stays readable. Press Keep to use it, or it switches back on its own after 15 seconds.
+- **Transparent profile pictures.** Profile pictures and group photos with a transparent background keep it instead of getting a white box. Re-upload an existing picture to fix it.
+- **Clearer history transfer problems.** If moving history between your own devices fails, Cipherline now tells you why: different networks, no usable connection on this computer, or no answer in time.
+- **Friendlier with security software on Windows.** Cipherline no longer runs PowerShell in the background, which some security tools flagged as suspicious.
+
+### Changes
+
+#### Emojis and stickers
+- A failed emoji or sticker list load shows a loading spot and retries with back-off instead of marking everything "unavailable" for the session.
+- Deleting a server emoji or sticker removes it from the picker but keeps it for every message that already used it; this computer also remembers the ones it has shown.
+
+#### Chat
+- While you are scrolled up, new messages, member joins, edits, reactions and images loading no longer move what you are reading. The "N new messages since …, Jump" bar replaces the old "Jump to latest" button and jumps to the first message you missed.
+
+#### Themes
+- Every theme pick is a preview first, with an always-readable "Previewing" bar (Keep, Revert, Escape) that reverts after 15 seconds, when you leave Settings, or if the bar can't be shown.
+
+#### Profile pictures
+- Profile pictures and group photos with transparency are saved as PNG, and avatar frames no longer paint a background behind them.
+
+#### Devices and history
+- "Report a problem" now includes a privacy-safe record of each history transfer attempt (counts and status words only, no addresses or names), and the transfer ending names the reason.
+
+#### Windows
+- Game detection, Now Playing, the music prompt, the update signature check and the GPU preference now use one signed helper, `win-helper.exe`, instead of PowerShell, tasklist and reg.exe. If security software blocks that helper, updates are not installed and the app says why.
+- The separate portable `.exe` is no longer built; the signed installer is the only Windows download.
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
 ## [0.1.5] - 2026-11-26
 
 ### What's new

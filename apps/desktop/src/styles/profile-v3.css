@@ -405,3 +405,5 @@ button.pfi-head:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outl
   .ppo-avatar-btn, .pfp-avatar-btn, .pfa-bar > i, .pfp-tab::after, .psh-card canvas { transition: none; }
   .ppo-avatar-btn[data-open="true"]:hover, .pfp-avatar-btn[data-zoom="true"]:hover { transform: none; }
 }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.pfp-avatar-btn:has(img) { background: transparent; }

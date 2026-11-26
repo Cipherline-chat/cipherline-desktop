@@ -19,6 +19,7 @@ import { openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir } from 'os';
 import { parseVDF } from './vdf-parser';
+import { winSys } from './win-sys';
 
 const execFileAsync = promisify(execFile);
 
@@ -1194,17 +1195,6 @@ export function qualifyGameName(proc: string, name: string, running: ReadonlySet
 
 const CHILD_OPTS = { timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 } as const;
 
-/** Parse `tasklist /FO CSV /NH` output into lowercase names without `.exe`. */
-export function parseTasklistCsv(stdout: string): string[] {
-    return stdout.split('\n')
-        .map(line => {
-            const first = line.split(',')[0];
-            if (!first) return '';
-            return first.replace(/"/g, '').trim().toLowerCase().replace(/\.exe$/, '');
-        })
-        .filter(Boolean);
-}
-
 /** argv[0]'s basename from a /proc/<pid>/cmdline blob (NUL-separated). */
 export function procCmdlineName(cmdline: string): string {
     const argv0 = cmdline.split('\0')[0]?.trim() ?? '';
@@ -1245,8 +1235,8 @@ async function linuxProcessNames(): Promise<string[]> {
 async function getRunningProcessNames(): Promise<string[]> {
     try {
         if (process.platform === 'win32') {
-            const { stdout } = await execFileAsync('tasklist', ['/FO', 'CSV', '/NH'], CHILD_OPTS);
-            return parseTasklistCsv(stdout);
+            // Windows: the signed win-helper.exe lists the programs (Toolhelp snapshot). No child process per poll.
+            return await winSys().processNames();
         } else if (process.platform === 'darwin') {
             const { stdout } = await execFileAsync('ps', ['-eo', 'comm='], CHILD_OPTS);
             return stdout.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean);
@@ -1275,7 +1265,7 @@ const MC_RUNNING_PATTERNS = [
  * already in hand — so the expensive command-line inspection below runs only
  * when one exists. It used to run on EVERY poll in which no other game
  * matched (i.e. nearly every poll), which on Windows meant starting
- * PowerShell + a WMI query every 10 seconds, all day: roughly half a second
+ * a PowerShell + WMI command-line scan every 10 seconds, all day: roughly half a second
  * of CPU and ~60 MB of transient memory per poll, system-wide.
  */
 export function mayBeMinecraftJava(procs: readonly string[]): boolean {
@@ -1285,20 +1275,13 @@ export function mayBeMinecraftJava(procs: readonly string[]): boolean {
 
 async function isMinecraftJavaRunning(): Promise<boolean> {
     try {
-        let cmdlines: string;
         if (process.platform === 'win32') {
-            // P2-ELEC-14: wmic was removed from Windows 11 24H2+; use PowerShell
-            // Get-CimInstance which is the supported replacement on all Win11+ builds.
-            const { stdout } = await execFileAsync('powershell', [
-                '-NoProfile', '-NonInteractive', '-Command',
-                'Get-CimInstance Win32_Process | Where-Object Name -eq javaw.exe | Select-Object -ExpandProperty CommandLine',
-            ], { ...CHILD_OPTS, timeout: 10000 });
-            cmdlines = stdout;
-        } else {
-            const { stdout } = await execFileAsync('ps', ['-eo', 'args='], CHILD_OPTS);
-            cmdlines = stdout;
+            // Another process's command line is never read on Windows (that is what credential stealers do). Minecraft Java is
+            // recognised by its window instead: a java(w).exe that owns a visible window titled "Minecraft...".
+            return await winSys().minecraftWindowOpen();
         }
-        return MC_RUNNING_PATTERNS.some(pattern => cmdlines.includes(pattern));
+        const { stdout } = await execFileAsync('ps', ['-eo', 'args='], CHILD_OPTS);
+        return MC_RUNNING_PATTERNS.some(pattern => stdout.includes(pattern));
     } catch {
         return false;
     }
@@ -1325,38 +1308,29 @@ export interface DetectedGame {
  * UWP / Game Pass titles (Forza Horizon 5 is the canonical report) are NOT
  * closed when the user quits them — Windows freezes the process, and it sits
  * in the task list indefinitely, indistinguishable from a running game in
- * `tasklist` output. Task Manager shows these as "Suspended": every thread is
+ * the process list. Task Manager shows these as "Suspended": every thread is
  * in the Wait state with WaitReason Suspended. Reporting one as "playing" is
  * the "it says I'm playing Forza when I'm not" bug.
  *
- * Only invoked AFTER a name matched a game (at most one PS spawn per poll,
+ * Only invoked AFTER a name matched a game (at most one helper question per poll,
  * and zero when no game-like process exists) — never for the full process
  * list. Fails open (not suspended) on any error: a detection heuristic must
  * degrade to the old behavior, not start hiding genuinely running games.
  */
 async function isProcessSuspendedWin32(procName: string): Promise<boolean> {
-    // Names come from our own DB keys / tasklist basenames (lowercase, no
+    // Names come from our own DB keys / process-list basenames (lowercase, no
     // path); strip anything shell-hostile anyway before interpolating.
     const safe = procName.replace(/[^a-z0-9 ._-]/gi, '');
     if (!safe) return false;
     // Cached per name: while a game keeps running, every 10 s poll used to
-    // start PowerShell again just to re-confirm it. A verdict is reused for
+    // ask the helper again just to re-confirm it. A verdict is reused for
     // SUSPENDED_CHECK_TTL_MS; detection of "quit to suspended" is delayed by
     // at most that long, the same order as the poll itself when idle.
     const cached = suspendedVerdicts.get(safe);
     const now = Date.now();
     if (cached && now - cached.at < SUSPENDED_CHECK_TTL_MS) return cached.suspended;
     try {
-        const { stdout } = await execFileAsync('powershell', [
-            '-NoProfile', '-NonInteractive', '-Command',
-            `$ps = Get-Process -Name '${safe}' -ErrorAction SilentlyContinue;` +
-            ' if (-not $ps) { \'GONE\'; exit }' +
-            ' foreach ($p in $ps) { foreach ($t in $p.Threads) {' +
-            ' if (-not ($t.ThreadState -eq \'Wait\' -and $t.WaitReason -eq \'Suspended\')) { \'ACTIVE\'; exit }' +
-            ' } }' +
-            ' \'SUSPENDED\'',
-        ], CHILD_OPTS);
-        const suspended = stdout.trim() === 'SUSPENDED';
+        const suspended = await winSys().isSuspended(safe);
         suspendedVerdicts.set(safe, { at: now, suspended });
         if (suspendedVerdicts.size > 64) suspendedVerdicts.delete(suspendedVerdicts.keys().next().value as string);
         return suspended;
@@ -1378,7 +1352,7 @@ export const REQUIRES_VISIBLE_WINDOW = new Set(['robloxplayerbeta', 'robloxplaye
 
 /**
  * Windows: does any process with this name own a visible main window?
- * Fails OPEN (true) on any error or unexpected output so a PowerShell hiccup
+ * Fails OPEN (true) on any error or unexpected output so a helper hiccup
  * cannot hide a genuinely running game. Cached like the suspended check.
  */
 async function hasVisibleWindowWin32(procName: string): Promise<boolean> {
@@ -1388,12 +1362,7 @@ async function hasVisibleWindowWin32(procName: string): Promise<boolean> {
     const now = Date.now();
     if (cached && now - cached.at < WINDOW_CHECK_TTL_MS) return cached.hasWindow;
     try {
-        const { stdout } = await execFileAsync('powershell', [
-            '-NoProfile', '-NonInteractive', '-Command',
-            `$ps = Get-Process -Name '${safe}' -ErrorAction SilentlyContinue;` +
-            ' if (-not $ps -or ($ps | Where-Object { $_.MainWindowHandle -ne 0 })) { \'WINDOW\' } else { \'NOWINDOW\' }',
-        ], CHILD_OPTS);
-        const hasWindow = stdout.trim() !== 'NOWINDOW';
+        const hasWindow = await winSys().hasVisibleWindow(safe);
         windowVerdicts.set(safe, { at: now, hasWindow });
         if (windowVerdicts.size > 64) windowVerdicts.delete(windowVerdicts.keys().next().value as string);
         return hasWindow;

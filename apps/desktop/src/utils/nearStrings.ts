@@ -260,6 +260,16 @@ export const NEAR_STRINGS = {
     "f.busy.body": "It’s in the middle of another transfer or request, so it couldn’t take this one. Nothing was sent. Finish or close it on {device}, then try again.",
     "f.snd.notify.title": "{device} is asking for your history",
     "f.snd.notify.body": "Open Cipherline on this computer to send it or say not now.",
+    // ── 2026-11-26 (transfer diagnostics): the local-network failure told apart. The engine used to say one vague "not found" for all of these.
+    //    The WIRE still carries the legacy words (an older phone drops a cause it does not know), so only THIS device can name them. ──
+    "f.diffnet.title": "{device} isn’t on the same network",
+    "f.diffnet.body": "Your computer and {device} aren’t on the same network. Connect both to the same Wi‑Fi and turn off any VPN, then try again.",
+    "f.nousable.title": "No usable network on this computer",
+    "f.nousable.body": "This computer has no Wi‑Fi or Ethernet connection Cipherline can use (a VPN or virtual adapter may be hiding it). Connect to Wi‑Fi or Ethernet and turn off any VPN, then try again.",
+    "f.peernonet.title": "{device} has no usable network",
+    "f.peernonet.body": "{device} has no Wi‑Fi or Ethernet connection Cipherline can use. Connect it to the same Wi‑Fi as this computer and turn off any VPN there, then try again.",
+    "f.holdertimeout.title": "The request from {device} timed out",
+    "f.holdertimeout.body": "Nobody approved it on this computer in time, so nothing was sent. Keep Cipherline open here and ask again on {device}.",
     "f.unavail.title": "Can’t move history on this computer",
     "f.unavail.body": "This copy of Cipherline is missing the part that moves your history over your Wi‑Fi, so it can’t copy it from your other devices. Update Cipherline, or restore a backup instead.",
     // ── G. Passkeys, H. Recovery, H. Remove device (verbatim from strings.js) ──

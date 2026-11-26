@@ -130,3 +130,52 @@ export function createServerListCache<T>(idOf: (t: T) => string): ServerListCach
 }
 
 export const emojiListCache: ServerListCache<ServerEmoji> = createServerListCache<ServerEmoji>(e => e.emoji_id);
+
+/** Back-off between attempts to load a list that failed TRANSIENTLY (network
+ *  blip, 429, 5xx, an access token mid-rotation). The last delay repeats. */
+export const LIST_RETRY_DELAYS_MS = [2_000, 8_000, 20_000, 60_000, 120_000];
+const MAX_LIST_RETRIES = 12;
+
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const retryRunning = new Set<string>();
+
+/**
+ * Run `run` (one list fetch) and, if it THROWS while `needed()` still holds
+ * (the list is still missing), try again with back-off. A failed fetch is not
+ * an answer: it must leave the list "unknown" (placeholder), never turn every
+ * custom emoji / sticker in the feed into "unavailable" for the rest of the
+ * session. Authoritative outcomes (a list, 403, 404) resolve and stop.
+ * Single-flight per `key`. Resolves after the FIRST attempt.
+ */
+export async function fetchListWithRetry(
+    key: string,
+    run: () => Promise<void>,
+    needed: () => boolean,
+    delays: readonly number[] = LIST_RETRY_DELAYS_MS,
+): Promise<void> {
+    if (retryRunning.has(key) || retryTimers.has(key)) return;
+    let attempt = 0;
+    const go = async (): Promise<void> => {
+        retryTimers.delete(key);
+        retryRunning.add(key);
+        try {
+            await run();
+        } catch {
+            if (needed() && attempt < MAX_LIST_RETRIES) {
+                const d = delays[Math.min(attempt, delays.length - 1)];
+                attempt++;
+                retryTimers.set(key, setTimeout(() => { void go(); }, d));
+            }
+        } finally {
+            retryRunning.delete(key);
+        }
+    };
+    await go();
+}
+
+/** Drop every pending list retry (sign-out / account switch; tests). */
+export function cancelListRetries(): void {
+    for (const t of retryTimers.values()) clearTimeout(t);
+    retryTimers.clear();
+    retryRunning.clear();
+}

@@ -11,7 +11,7 @@
   THIS script is the gate that proves it worked, on the packaged output, before anything is uploaded.
 
   Checked:
-    * every *.exe in <ReleaseDir> (the NSIS installer and the portable exe), non-recursive
+    * every *.exe in <ReleaseDir> (the NSIS installer), non-recursive
     * every *.exe, *.dll and *.node anywhere under <ReleaseDir>\win-unpacked (the exact tree the installer carries,
       including resources\app.asar.unpacked where native addons live)
 
@@ -22,7 +22,7 @@
 
   Also fails (never passes vacuously) if win-unpacked is missing, no PE files were found, or the native addon
   audio_capture.node was not among them. Every name in -RequireFile must also be present under win-unpacked (and is
-  then held to -Publisher like our other files): the public stable release passes near-helper.exe, because a stable
+  then held to -Publisher like our other files): the public stable release passes near-helper.exe and win-helper.exe, because a stable
   build without the local history-transfer helper must never ship. The staging build packages the helper fail-safe
   (it may be absent) and passes nothing, so there its absence is not an error; when it IS present it must still be
   signed by us.
@@ -46,13 +46,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# `powershell -File x.ps1 -RequireFile a,b` hands a [string[]] parameter ONE string "a,b" (only in-session calls split it): split it here.
+$RequireFile = @($RequireFile | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+
 $unpacked = Join-Path $ReleaseDir 'win-unpacked'
 if (-not (Test-Path -LiteralPath $unpacked -PathType Container)) {
   Write-Error "win-unpacked not found under $ReleaseDir - cannot verify the shipped files."
   exit 1
 }
 
-# Installers / portable exe (release root only; win-unpacked is walked separately below).
+# Installers (release root only; win-unpacked is walked separately below).
 $installers = @(Get-ChildItem -LiteralPath $ReleaseDir -File -Filter *.exe)
 if ($installers.Count -eq 0) {
   Write-Error "No installer .exe found in $ReleaseDir"
@@ -86,7 +89,8 @@ foreach ($req in $RequireFile) {
 $mustBePublisher = @('Cipherline.exe', 'audio_capture.node')
 # near-helper.exe (the local history-transfer helper, built from apps/desktop-host and packaged by build.extraResources at
 # resources\near-helper.exe) is ours whenever it ships, and so is every -RequireFile name.
-$mustBePublisher += @('near-helper.exe') + @($RequireFile)
+# win-helper.exe (the Windows system helper, apps/desktop-host/win-helper, packaged at resources\win-helper.exe) likewise.
+$mustBePublisher += @('near-helper.exe', 'win-helper.exe') + @($RequireFile)
 
 $all = @($installers) + @($unpackedFiles)
 $bad = New-Object System.Collections.Generic.List[string]

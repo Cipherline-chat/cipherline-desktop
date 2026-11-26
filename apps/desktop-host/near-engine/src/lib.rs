@@ -22,6 +22,7 @@ pub mod api;
 pub mod dispatch;
 pub mod engine;
 pub mod fence;
+pub mod netdiag;
 #[cfg(any(test, feature = "near-testkit"))]
 pub mod fake_server;
 pub mod gate;
@@ -80,5 +81,18 @@ pub fn platform_interfaces() -> std::sync::Arc<dyn cl_near::onlink::InterfacePro
     #[cfg(not(windows))]
     {
         std::sync::Arc::new(cl_near::onlink::SystemInterfaces)
+    }
+}
+
+/// The adapter census for the diagnostic report ([`netdiag::AdapterCensus`]): counts only. Windows knows which adapters it filtered and
+/// why ([`winnet::WindowsInterfaces::census`]); elsewhere only the eligible ones are visible (the provider hides the rest).
+pub fn platform_census() -> std::sync::Arc<dyn Fn() -> netdiag::AdapterCensus + Send + Sync> {
+    #[cfg(windows)]
+    {
+        std::sync::Arc::new(winnet::WindowsInterfaces::census)
+    }
+    #[cfg(not(windows))]
+    {
+        std::sync::Arc::new(|| netdiag::census_from_provider(&cl_near::onlink::SystemInterfaces))
     }
 }

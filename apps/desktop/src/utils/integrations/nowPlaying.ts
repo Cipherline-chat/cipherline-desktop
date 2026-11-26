@@ -53,7 +53,7 @@ export type NowPlayingIssue =
     | { kind: 'helper_failed' }
     /** Something plays, but a switch keeps it out ("Include my browser" / "Also share what I'm watching"). */
     | { kind: 'excluded'; why: 'browser' | 'watching'; player: string | null };
-export type UnsupportedReason = 'platform' | 'no_powershell' | 'no_dbus' | 'old_app';
+export type UnsupportedReason = 'platform' | 'no_helper' | 'no_dbus' | 'old_app';
 
 export type NowPlayingRead =
     | { supported: false; reason: UnsupportedReason }
@@ -83,7 +83,7 @@ const str = (v: unknown, max: number): string | null => {
 const ms = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 24 * 3600_000 ? Math.round(v) : null);
 
 const MAC_APPS = ['Spotify', 'Music'] as const;
-const REASONS: readonly UnsupportedReason[] = ['platform', 'no_powershell', 'no_dbus'];
+const REASONS: readonly UnsupportedReason[] = ['platform', 'no_helper', 'no_dbus'];
 
 function readIssue(v: unknown): NowPlayingIssue | null {
     const o = v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
@@ -195,7 +195,7 @@ export function nowPlayingStatus(r: NowPlayingRead | null, sourceLabel: (p: NowP
     if (!r) return { kind: 'checking', text: 'Checking what is playing\u2026' };
     if (!r.supported) {
         const why = r.reason === 'old_app' ? 'update Cipherline to use this.'
-            : r.reason === 'no_powershell' ? 'Windows PowerShell is missing or blocked on this PC, and it is how Cipherline reads Windows\u2019 media controls.'
+            : r.reason === 'no_helper' ? 'Cipherline\u2019s Windows helper (win-helper.exe) is missing or blocked on this PC, and it is how Cipherline reads Windows\u2019 media controls.'
             : r.reason === 'no_dbus' ? 'no D-Bus session bus was found, so media players (MPRIS) cannot be read.'
             : 'this system has no media controls Cipherline can read.';
         return { kind: 'unsupported', text: `Not supported here: ${why}` };

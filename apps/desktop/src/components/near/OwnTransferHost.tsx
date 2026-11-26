@@ -34,9 +34,18 @@ export const SLOW_ANSWER_MS = 20_000;
  *    says to update it;  failed with "free space" (receiver): not enough disk;  cancelled `peer_cancelled`: the other side stopped;
  *  - failed before any byte moved (asker): could not start. */
 // eslint-disable-next-line react-refresh/only-export-components -- co-located pure helper (tested); splitting the file would only affect dev Fast Refresh
-export function endingFor(snap: { role?: string | null; state: string; error?: { code: string; message: string }; transfer?: unknown }, device: string): { kind: string; icon: React.ReactNode; tone: TileTone; title: string; body?: string } | null {
+export function endingFor(snap: { role?: string | null; state: string; error?: { code: string; message: string }; transfer?: unknown; diag?: { cause?: string } }, device: string): { kind: string; icon: React.ReactNode; tone: TileTone; title: string; body?: string } | null {
     const asker = snap.role === 'own_receiver';
     const code = snap.error?.code ?? '';
+    // The local-network failure told apart (the engine's `diag.cause`; an older helper sends none, and a word this build does not know falls through to the generic "not on the same Wi-Fi")
+    if (snap.state === 'refused' && code === 'no_proximity') {
+        const cause = snap.diag?.cause;
+        if (cause === 'different_network') return { kind: 'diffnet', icon: <WifiOff size={24} />, tone: 'warn', title: nt('f.diffnet.title', { device }), body: nt('f.diffnet.body', { device }) };
+        if (cause === 'no_usable_network') return { kind: 'nousable', icon: <WifiOff size={24} />, tone: 'warn', title: nt('f.nousable.title'), body: nt('f.nousable.body') };
+        if (cause === 'peer_no_usable_network') return { kind: 'peernonet', icon: <WifiOff size={24} />, tone: 'warn', title: nt('f.peernonet.title', { device }), body: nt('f.peernonet.body', { device }) };
+    }
+    // the holder's own sheet ran out with nobody pressing anything: say so instead of silently closing (the asker has its own ending)
+    if (snap.state === 'expired' && !asker && snap.role === 'own_sender' && code === 'own_no_decision') return { kind: 'holdertimeout', icon: <Clock size={24} />, tone: 'warn', title: nt('f.holdertimeout.title', { device }), body: nt('f.holdertimeout.body', { device }) };
     if (snap.state === 'refused' && code === 'no_proximity') return { kind: 'nonet', icon: <WifiOff size={24} />, tone: 'warn', title: nt('f.nonet.title', { device }), body: nt('f.nonet.body', { device }) };
     if (snap.state === 'refused' && code === 'denied' && asker) return { kind: 'declined', icon: <Ban size={24} />, tone: 'neutral', title: nt('f.declined.title', { device }), body: nt('f.declined', { device }) };
     // the other device's ENGINE declined because it was in another session (answer revision 2), not its person

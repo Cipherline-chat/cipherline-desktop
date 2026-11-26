@@ -16,11 +16,14 @@
 //
 //   Windows  System Media Transport Controls (WinRT
 //            GlobalSystemMediaTransportControlsSessionManager), through ONE
-//            long-lived, hidden Windows PowerShell 5.1 child that reads EVERY
-//            session only when asked (a line on stdin) and exits when stdin
-//            closes. Works for Spotify, Apple Music, TIDAL, Deezer, Amazon
-//            Music, foobar2000, browsers, ... — whatever registers a session.
-//            No native addon, nothing to rebuild.
+//            long-lived, hidden `win-helper.exe media` child (the signed Rust
+//            helper, apps/desktop-host/win-helper) that reads EVERY session
+//            only when asked (a line on stdin) and exits when stdin closes.
+//            Works for Spotify, Apple Music, TIDAL, Deezer, Amazon Music,
+//            foobar2000, browsers, ... — whatever registers a session. It used
+//            to be a hidden `powershell.exe -EncodedCommand` child; that
+//            pattern is what behavioural security engines call malware, so the
+//            app starts no PowerShell at all any more.
 //
 //            1.0.23 read only GetCurrentSession(): the ONE session Windows
 //            considers "current" (the media-key target). That is often not the
@@ -61,11 +64,8 @@
 //
 // Covers, per platform (each read once per track, then cached here):
 //   Windows  the session's Thumbnail stream (SMTC), read by the helper through
-//            reflection on the WinRT stream interfaces (PowerShell 5.1 sees the
-//            stream as a bare __ComObject: `.Size` is empty and
-//            AsStreamForRead($st) finds no overload, so until 2026-10-28 no cover
-//            was ever read on Windows). Each failure is reported per session
-//            (artErr) for Settings' "cover:" diagnosis.
+//            WinRT's DataReader. Each failure is reported per session (artErr)
+//            for Settings' "cover:" diagnosis.
 //   macOS    Spotify: `artwork url of current track` (an https URL on Spotify's
 //            image CDN, i.scdn.co, fetched here - the only host allowed).
 //            Music: `raw data of artwork 1 of current track`, written by the
@@ -82,6 +82,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { siteFromWindowTitles, type SiteKey } from './browser-site';
 import { swallowStreamErrors } from './stdio-guard';
+import { winHelperBinary } from './win-sys';
 
 export type ListenSource =
     | 'spotify' | 'apple_music' | 'youtube_music' | 'tidal' | 'deezer' | 'amazon_music' | 'soundcloud' | 'browser' | 'other';
@@ -150,7 +151,7 @@ export type MediaIssue =
      */
     | { kind: 'excluded'; why: 'browser' | 'watching'; player: string | null };
 
-export type UnsupportedReason = 'platform' | 'no_powershell' | 'no_dbus';
+export type UnsupportedReason = 'platform' | 'no_helper' | 'no_dbus';
 
 /** What the renderer asked for. Watching is its own opt-in (off by default); browsers are another. */
 export interface ReadOpts { includeBrowser: boolean; includeWatching: boolean }
@@ -849,193 +850,6 @@ const readSmallFile = (p: string): Buffer | null => {
     }
 };
 
-// ── Windows helper script ─────────────────────────────────────────────────
-//
-// Windows PowerShell 5.1 (powershell.exe, NOT pwsh: only 5.1 projects WinRT
-// types). Answers one line per line received on stdin; exits on EOF or 'q'.
-// 'a' = "send every cover again" (the reader lost its cache), anything else =
-// "send a cover only when that session's track changed" (it is the expensive
-// part). Verified on Windows 11 26200 / PowerShell 5.1.26100: the WinRT type
-// loads, the AsTask bridge, and the stdin/stdout framing below.
-
-export const WINDOWS_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation` + '`' + String.raw`1' })[0]
-function Await($op, [Type]$t) { $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); if (-not $task.Wait(3000)) { return $null }; return $task.Result }
-$MgrT = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
-$PropsT = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties, Windows.Media.Control, ContentType = WindowsRuntime]
-$StreamT = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
-# OpenReadAsync hands back a bare __ComObject: its Size property reads empty and
-# a direct WindowsRuntimeStreamExtensions.AsStreamForRead call finds no overload.
-# Both are reached through the WinRT interface types by reflection instead.
-$RasT = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
-$InT = [Windows.Storage.Streams.IInputStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
-$SizeP = $RasT.GetProperty('Size')
-$asRead = [System.IO.WindowsRuntimeStreamExtensions].GetMethod('AsStreamForRead', [Type[]]@($InT))
-$DisposeM = [System.IDisposable].GetMethod('Dispose')
-# A playing BROWSER session carries the titles of that browser's own windows (wins), so the reader can tell which
-# website it is from: Chromium and Firefox give Windows no URL, but the active tab's title (with the site in it) is the
-# window's title. Only the process names below are looked at; titles go to the reader over this pipe, nowhere else.
-function BrowserProcName([string]$app) {
-  $a = $app.ToLower()
-  if ($a -match '_crx_') { return $null }
-  if ($a -match 'msedge') { return 'msedge' }
-  if ($a -match 'chromium') { return 'chromium' }
-  if ($a -match 'chrome') { return 'chrome' }
-  if ($a -match 'firefox' -or $a -eq '308046b0af4a39cb') { return 'firefox' }
-  if ($a -match 'brave') { return 'brave' }
-  if ($a -match 'opera') { return 'opera' }
-  if ($a -match 'vivaldi') { return 'vivaldi' }
-  return $null
-}
-# EnumWindows sees every top-level window (a browser has one process but many windows; Process.MainWindowTitle shows
-# one). It is compiled by Add-Type AFTER an answer is sent (the first compile takes a moment), so it can never delay
-# or break a read; until then, and if the compile is blocked, MainWindowTitle is used.
-$ClWinSrc = @'
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class ClWin {
-  private delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc p, IntPtr l);
-  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] private static extern int GetWindowTextLength(IntPtr h);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  public static string[] Titles(uint[] pids) {
-    var found = new List<string>();
-    EnumWindows(delegate (IntPtr h, IntPtr l) {
-      if (found.Count >= 24 || !IsWindowVisible(h)) return true;
-      uint pid;
-      GetWindowThreadProcessId(h, out pid);
-      if (Array.IndexOf(pids, pid) < 0) return true;
-      int len = GetWindowTextLength(h);
-      if (len <= 0 || len > 1000) return true;
-      var sb = new StringBuilder(len + 1);
-      GetWindowText(h, sb, sb.Capacity);
-      if (sb.Length > 0) found.Add(sb.ToString());
-      return true;
-    }, IntPtr.Zero);
-    return found.ToArray();
-  }
-}
-'@
-$ClWinT = $null
-$winTried = $false
-function BrowserTitles([string]$proc, $winType) {
-  $titles = New-Object System.Collections.ArrayList
-  try {
-    $procs = @(Get-Process -Name $proc -ErrorAction SilentlyContinue)
-    if ($procs.Count -gt 0) {
-      if ($winType -ne $null) {
-        foreach ($t in $winType::Titles([uint32[]]@($procs | ForEach-Object { $_.Id }))) { if ($titles.Count -lt 24) { [void]$titles.Add([string]$t) } }
-      } else {
-        foreach ($p in $procs) { if ($p.MainWindowTitle -and $titles.Count -lt 24) { [void]$titles.Add([string]$p.MainWindowTitle) } }
-      }
-    }
-  } catch { }
-  return ,@($titles.ToArray())
-}
-$mgr = $null
-$sent = @{}
-$tries = @{}
-while ($true) {
-  $req = [Console]::In.ReadLine()
-  if ($req -eq $null -or $req -eq 'q') { break }
-  if ($req -eq 'a' -or $tries.Count -gt 64) { $sent = @{}; $tries = @{} }
-  $out = @{ ok = $true }
-  $needWin = $false
-  $wc = @{}
-  try {
-    if ($mgr -eq $null) { $mgr = Await ($MgrT::RequestAsync()) $MgrT }
-    if ($mgr -eq $null) { throw 'no manager' }
-    $cur = ''
-    try { $c = $mgr.GetCurrentSession(); if ($c -ne $null) { $cur = [string]$c.SourceAppUserModelId } } catch { }
-    $list = New-Object System.Collections.ArrayList
-    foreach ($s in $mgr.GetSessions()) {
-      if ($list.Count -ge 16) { break }
-      $e = @{ app = '' }
-      try {
-        $e.app = [string]$s.SourceAppUserModelId
-        $pi = $s.GetPlaybackInfo()
-        $e.status = [int]$pi.PlaybackStatus
-        try { if ($pi.PlaybackType -ne $null) { $e.ptype = [int]$pi.PlaybackType } } catch { }
-        if ($e.status -eq 4) {
-          $p = Await ($s.TryGetMediaPropertiesAsync()) $PropsT
-          if ($p -ne $null) {
-            $e.title = [string]$p.Title
-            $e.artist = [string]$p.Artist
-            $e.albumArtist = [string]$p.AlbumArtist
-            $e.album = [string]$p.AlbumTitle
-          }
-          try {
-            $tl = $s.GetTimelineProperties()
-            $e.dur = [int64]($tl.EndTime - $tl.StartTime).TotalMilliseconds
-            $e.pos = [int64]($tl.Position - $tl.StartTime).TotalMilliseconds
-            $e.upd = [int64]$tl.LastUpdatedTime.ToUnixTimeMilliseconds()
-          } catch { }
-          # A browser: the window titles of THAT browser (once per request per browser).
-          $bp = BrowserProcName $e.app
-          if ($bp -ne $null) {
-            $needWin = $true
-            if (-not $wc.ContainsKey($bp)) { $wc[$bp] = BrowserTitles $bp $ClWinT }
-            $e.wins = $wc[$bp]
-          }
-          $key = "$($e.app)|$($e.title)|$($e.artist)"
-          # artErr (only while this track's cover is not sent yet): none = the app gave no cover,
-          # open_timeout / read_failed / too_big / empty = it gave one that could not be read.
-          if ($p -ne $null -and $p.Thumbnail -eq $null -and $sent[$e.app] -ne $key) { $e.artErr = 'none' }
-          if ($p -ne $null -and $p.Thumbnail -ne $null -and $sent[$e.app] -ne $key) {
-            # Browsers fetch the page's artwork AFTER the title: an early read comes back empty or fails.
-            # Only a cover actually read marks the track done; otherwise retry on later polls, up to 6 tries.
-            $n = [int]$tries[$key]
-            if ($n -ge 6) { $sent[$e.app] = $key } else {
-              $tries[$key] = $n + 1
-              $st = $null; $ns = $null; $ms = $null
-              try {
-                $st = Await ($p.Thumbnail.OpenReadAsync()) $StreamT
-                if ($st -eq $null) { $e.artErr = 'open_timeout' } else {
-                  $size = [int64]$SizeP.GetValue($st)
-                  if ($size -gt 4194304) { $e.artErr = 'too_big'; $sent[$e.app] = $key } elseif ($size -le 0) { $e.artErr = 'empty' } else {
-                    $ns = $asRead.Invoke($null, @($st))
-                    $ms = New-Object System.IO.MemoryStream
-                    $ns.CopyTo($ms)
-                    if ($ms.Length -gt 0) { $e.art = [Convert]::ToBase64String($ms.ToArray()); $sent[$e.app] = $key } else { $e.artErr = 'empty' }
-                  }
-                }
-              } catch { $e.artErr = 'read_failed' } finally {
-                if ($ms -ne $null) { try { $ms.Dispose() } catch { } }
-                if ($ns -ne $null) { try { $ns.Dispose() } catch { } }
-                if ($st -ne $null) { try { [void]$DisposeM.Invoke($st, $null) } catch { } }
-              }
-            }
-          }
-        }
-      } catch { $e.err = 1 }
-      [void]$list.Add($e)
-    }
-    $out.cur = $cur
-    $out.sessions = $list.ToArray()
-  } catch { $mgr = $null; $out = @{ ok = $false } }
-  [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress -Depth 4))
-  [Console]::Out.Flush()
-  if ($needWin -and -not $winTried) {
-    $winTried = $true
-    try {
-      $ts = Add-Type -TypeDefinition $ClWinSrc -PassThru -ErrorAction Stop
-      $ClWinT = $ts | Where-Object { $_.Name -eq 'ClWin' } | Select-Object -First 1
-    } catch { $ClWinT = $null }
-  }
-}
-`;
-
-/** pwsh-safe encoding for `-EncodedCommand`: UTF-16LE base64. */
-export const encodePowerShell = (script: string): string => Buffer.from(script, 'utf16le').toString('base64');
-
 // ── macOS script ──────────────────────────────────────────────────────────
 
 export const macScript = (app: 'Spotify' | 'Music'): string => app === 'Spotify'
@@ -1325,7 +1139,7 @@ export class MediaSessionReader {
 
     private async readWindows(opts: ReadOpts): Promise<MediaReadResult> {
         const child = this.ensureChild();
-        if (!child) return { supported: false, reason: this.unsupported ?? 'no_powershell' };
+        if (!child) return { supported: false, reason: this.unsupported ?? 'no_helper' };
         this.armIdle();
         const line = await new Promise<string | null>((resolve) => {
             const t = setTimeout(() => {
@@ -1382,12 +1196,12 @@ export class MediaSessionReader {
         if (this.child) return this.child;
         let c: ChildProcessWithoutNullStreams;
         try {
-            // No -ExecutionPolicy: it governs script FILES only, never an -EncodedCommand.
-            c = this.spawnFn('powershell.exe', [
-                '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodePowerShell(WINDOWS_SCRIPT),
-            ], { windowsHide: true, stdio: 'pipe' });
+            // The signed Rust helper next to the app (never a script host). Absent / not built: unsupported, not retried.
+            const bin = winHelperBinary();
+            if (!bin) { this.unsupported = 'no_helper'; return null; }
+            c = this.spawnFn(bin, ['media'], { windowsHide: true, stdio: 'pipe' });
         } catch {
-            this.unsupported = 'no_powershell';
+            this.unsupported = 'no_helper';
             return null;
         }
         this.child = c;
@@ -1421,7 +1235,7 @@ export class MediaSessionReader {
         swallowStreamErrors(c.stdout, helperGone);
         swallowStreamErrors(c.stderr, helperGone);
         c.on('error', (e: NodeJS.ErrnoException) => {
-            if (e?.code === 'ENOENT') this.unsupported = 'no_powershell';
+            if (e?.code === 'ENOENT') this.unsupported = 'no_helper';
             if (this.child === c) this.child = null;
             for (const w of this.waiters.splice(0)) w(null);
         });

@@ -45,7 +45,8 @@ pub fn resolve_kind(kinds: Option<&std::collections::HashMap<u32, IfaceKind>>, i
 #[cfg(windows)]
 mod imp {
     use super::{classify, resolve_kind};
-    use cl_near::onlink::{IfaceKind, InterfaceProvider, LocalInterface, SystemInterfaces};
+    use crate::netdiag::{census_from, is_vpn_name, AdapterCensus, RawAdapter, Verdict};
+    use cl_near::onlink::{kind_from_name, IfaceKind, InterfaceProvider, LocalInterface, SystemInterfaces};
     use std::collections::HashMap;
     use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses, GetIfEntry2, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2};
     use windows::Win32::Networking::WinSock::AF_UNSPEC;
@@ -97,6 +98,32 @@ mod imp {
     /// `SystemInterfaces` refined with what Windows says about each adapter. FAILS CLOSED: a failed enumeration, an interface with no
     /// index, or one Windows does not list is dropped (no address is offered or accepted on it); the name deny-list is never a fallback.
     pub struct WindowsInterfaces;
+
+    impl WindowsInterfaces {
+        /// The same judgement as [`InterfaceProvider::interfaces`], but counting the adapters it leaves out and why (virtual / VPN-looking /
+        /// could not be classified) for the diagnostic report. Counts only: names and indexes are read to classify and dropped.
+        pub fn census() -> AdapterCensus {
+            let list = match if_addrs::get_if_addrs() {
+                Ok(l) => l,
+                // the enumeration itself failed: say so rather than report a clean "no adapters"
+                Err(_) => return AdapterCensus { filtered: 1, filtered_unresolved: 1, ..Default::default() },
+            };
+            let kinds = adapter_kinds();
+            census_from(list.into_iter().filter(|i| !i.is_loopback()).map(|i| {
+                let index = i.index.unwrap_or(0);
+                let verdict = if kind_from_name(&i.name) == IfaceKind::Virtual {
+                    Verdict::Virtual
+                } else {
+                    match resolve_kind(kinds.as_ref(), index) {
+                        None => Verdict::Unresolved,
+                        Some(k) if k.allowed() => Verdict::Eligible(k),
+                        Some(_) => Verdict::Virtual,
+                    }
+                };
+                RawAdapter { key: (index, if index == 0 { i.name.clone() } else { String::new() }), name_is_vpn: is_vpn_name(&i.name), verdict }
+            }))
+        }
+    }
 
     impl InterfaceProvider for WindowsInterfaces {
         fn interfaces(&self) -> Vec<LocalInterface> {

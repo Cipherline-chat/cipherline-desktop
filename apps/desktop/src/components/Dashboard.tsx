@@ -15442,7 +15442,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         <ThemeDeepLinkHost />
         {/* cipherline://ref/CODE (friend's QR / referral link) while signed in: open their profile to add them. */}
         <RefLinkDeepLinkHost token={token} onOpenProfile={(uid) => openProfileAt(uid)} />
-        {/* A live theme preview (theme/engine.ts startThemePreview): bottom-left "Previewing <name>" bar. */}
+        {/* A live theme preview (theme/engine.ts startThemePreview): the un-themable "Previewing <name>" Keep / Revert bar with its auto-revert countdown. */}
         <ThemePreviewBar />
         <div ref={containerRef} data-layout="drift" className="w-screen h-screen flex flex-col bg-cl-abyss text-white overflow-hidden font-sans relative">
             {/* Screen Lock — full-viewport gate (see useScreenLock.ts). Highest

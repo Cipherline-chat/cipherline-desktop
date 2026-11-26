@@ -53,6 +53,10 @@ objc2-local-authentication = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 
+[build-dependencies]
+# Windows VersionInfo resource (CompanyName / FileDescription / OriginalFilename), see build.rs. MIT.
+embed-resource = "3"
+
 [dev-dependencies]
 tempfile = "3"
 

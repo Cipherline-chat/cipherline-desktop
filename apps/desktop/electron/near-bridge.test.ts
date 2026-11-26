@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createNearBridge, isAllowedApiBase, jwtSubject, NEAR_ACTIONS, NEAR_UNAVAILABLE, type NearBridgeDeps } from './near-bridge';
 import { attestGate } from './near-helper-client';
+import { createNearTrail } from './near-diag';
 
 const NONCE = 'cd'.repeat(32);
 // the API signs `{ user_id, sid }` (auth.service.ts), NOT a `sub` claim: the test token has the real shape
@@ -373,5 +374,75 @@ describe('K_xfer leaves main as bytes (security finding I2)', () => {
         await expect(bad.b.invoke('nearTransferKey', [])).rejects.toThrow('no transfer key');
         const none = mk({}, { nearTransferKey: () => null });
         await expect(none.b.invoke('nearTransferKey', [])).rejects.toThrow('no transfer key');
+    });
+});
+
+describe('near bridge: the transfer trail for "Report a problem"', () => {
+    function traced(httpImpl?: NearBridgeDeps['http'], responders: Record<string, Responder> = {}) {
+        const rows: string[] = [];
+        const trail = createNearTrail({ event: (name, _ms, detail) => { rows.push(detail ? `${name} ${detail}` : name); } });
+        let release!: () => void;
+        const open = new Promise<void>((r) => { release = r; });
+        const m = mk({ trail, ...(httpImpl ? { http: httpImpl } : {}) }, { nearOwnDeliver: () => 'offer', nearApprove: () => open.then(() => ({ result: 'approved', gate: 'password' })), nearTransferRequest: () => ({ seq: 1 }), ...responders });
+        return { ...m, rows, release };
+    }
+
+    it('writes the holder\'s attempt: the helper, the offer, the prompt, a wrong then a right password, and the verdict, with no secret in any row', async () => {
+        let status = 401;
+        const http = vi.fn(async (method: string) => (method === 'GET' ? { status: 200, body: { step_up_method: 'password' } } : { status, body: {} }));
+        const m = traced(http as never);
+        await m.b.invoke('nearOwnDeliver', [{ ...OWN, auth: AUTH, apiBase: BASE }]);
+        const done = m.b.invoke('nearApprove', []);
+        await tick();
+        m.h.say({ t: 'req', rid: 11, what: 'gate_confirm', title: 't', detail: 'd' });
+        await tick(); await tick(); await tick();
+        const p = m.sent.filter((s) => s.channel === 'near:gate-prompt').map((s) => s.payload as { ticket: string })[0];
+        expect(await m.b.gateSubmit(p.ticket, 'hunter2-wrong')).toBe('rejected');
+        status = 200;
+        expect(await m.b.gateSubmit(p.ticket, 'hunter2-right')).toBe('ok');
+        m.release();
+        await done;
+        expect(m.rows).toEqual([
+            'near:helper_spawned',
+            'near:helper_ready',
+            'near:offer_received result=offer',
+            'near:prompt_shown method=password',
+            'near:password_result result=wrong',
+            'near:password_result result=ok',
+            'near:prompt_closed verdict=approved why=submit',
+            'near:approve result=approved',
+        ]);
+        const all = m.rows.join('\n');
+        for (const secret of ['hunter2', 'user-1', 'dev-A', 'dev-B', 'api.cipherline', AUTH.accessToken]) expect(all).not.toContain(secret);
+    });
+
+    it('records a request, the control messages that left, the engine\'s outcome with its cause, and the helper\'s exit code', async () => {
+        const m = traced();
+        await m.b.invoke('nearTransferRequest', [{ deviceId: 'dev-B', ownDeviceId: 'dev-A' }]);
+        m.h.say({ t: 'own_out', to: 'dev-B', content: { type: 'near_offer', v: 1, to: 'dev-B' } });
+        m.h.say({ t: 'own_out', to: 'dev-B', content: { type: 'near_msg', v: 1, to: 'dev-B' } }); // sealed relay chatter is not trail
+        m.h.say({ t: 'state', snapshot: { seq: 1, role: 'own_receiver', state: 'refused', error: { code: 'no_proximity', message: 'refused' }, diag: { dialAttempts: 0, sameSubnet: false, lanResult: 'off_link', lanFail: 'different_network', cause: 'different_network' } } });
+        await tick();
+        m.h.child.emit('exit', 1, null);
+        await tick();
+        expect(m.rows).toEqual([
+            'near:request',
+            'near:helper_spawned',
+            'near:helper_ready',
+            'near:offer_sent',
+            'near:state role=receiver state=refused',
+            'near:lan same_subnet=0 dials=0 result=off_link fail=different_network',
+            'near:outcome role=receiver state=refused cause=different_network code=no_proximity',
+            'near:helper_exited exit=1',
+        ]);
+    });
+
+    it('a request the helper rejects is recorded as failed, and the trail never changes what the bridge returns or throws', async () => {
+        const m = traced(undefined, { nearTransferRequest: () => { throw new Error('boom'); } });
+        await expect(m.b.invoke('nearTransferRequest', [{ deviceId: 'dev-B', ownDeviceId: 'dev-A' }])).rejects.toThrow('boom');
+        expect(m.rows).toContain('near:request_failed');
+        // and a bridge whose sink throws still works
+        const quiet = mk({ trail: createNearTrail({ event: () => { throw new Error('sink'); } }) }, { nearTransferRequest: () => ({ seq: 1 }) });
+        await expect(quiet.b.invoke('nearTransferRequest', [{ deviceId: 'dev-B', ownDeviceId: 'dev-A' }])).resolves.toEqual({ seq: 1 });
     });
 });

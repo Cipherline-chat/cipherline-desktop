@@ -37,7 +37,7 @@
  *      case-insensitive, whole-word. Runs AFTER paths so a name inside a path
  *      cannot split the path and strand a file name; kept path/URL segments
  *      are checked against the same terms.
- *   8. LiveKit SIDs → <sid>; UUIDs → <id>; IPv4/IPv6 (± port) → <ip>; bare
+ *   8. LiveKit SIDs → <sid>; UUIDs → <id>; MAC addresses → <mac>; IPv4/IPv6 (± port) → <ip>; bare
  *      domains on common TLDs outside the allowlist → <domain>;
  *      `+`-prefixed international phone numbers → <phone>; @mentions →
  *      `@<user>`.
@@ -164,7 +164,9 @@ const RE_LIVEKIT_SID_INSIDE = /(?:PA|TR|RM|PS|SS|EG|IN|DP|AG|SIP|ST|EP)_[A-Za-z0
 const RE_UUID = /\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b/gi;
 const RE_UUID_INSIDE = /[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i;
 const RE_IPV4 = /(?<![\w.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![\w.]*\d)(?::\d{1,5})?/g;
-const RE_IPV6_FULL = /(?<![\w:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?:%[\w.]{1,16})?(?![\w:])/gi;
+/** A MAC address: six hex pairs joined by `:` or `-` (the local-network transfer trail must never carry one; see electron/near-diag.ts). */
+const RE_MAC = /(?<![\w:-])[0-9a-f]{2}(?:([:-])[0-9a-f]{2}){5}(?![\w:-])/gi;
+const RE_IPV6_FULL =/(?<![\w:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?:%[\w.]{1,16})?(?![\w:])/gi;
 const RE_IPV6_COMPRESSED = /(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?::(?:(?:[0-9a-f]{1,4}:){0,5}(?:\d{1,3}\.){3}\d{1,3}|[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?(?:%[\w.]{1,16})?(?![\w:]|\.\d)/gi;
 const RE_DOMAIN = new RegExp(`(?<![\\w.@/-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:${DOMAIN_TLDS})(?![\\w-]|\\.[\\w])(?::\\d{1,5})?`, 'gi');
 const RE_HEX = /(?<![\w])(?:0x)?[0-9a-f]{20,}(?![\w])/gi;
@@ -449,6 +451,8 @@ export function createScrubber(opts: ScrubOptions = {}): Scrubber {
         // 8. Identifiers and addresses.
         s = replaceUnprotected(s, RE_LIVEKIT_SID, () => protect('<sid>'));
         s = replaceUnprotected(s, RE_UUID, () => protect('<id>'));
+        // a hardware address (six hex pairs) must come first: the IPv6 rules need eight groups or a `::`, so a MAC would otherwise survive
+        s = replaceUnprotected(s, RE_MAC, () => protect('<mac>'));
         s = replaceUnprotected(s, RE_IPV6_FULL, () => protect('<ip>'));
         s = replaceUnprotected(s, RE_IPV6_COMPRESSED, m => (/^::?\d?$/.test(m) ? m : protect('<ip>')));
         s = replaceUnprotected(s, RE_IPV4, () => protect('<ip>'));

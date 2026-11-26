@@ -7,7 +7,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAttachments } from '../hooks/useAttachments';
 import { useAvatarBroadcast } from '../hooks/useAvatarBroadcast';
 import { saveAvatarKey } from '../utils/avatarKeyStore';
-import { AVATAR_OUTPUT } from '../utils/imageCrop';
+import { AVATAR_OUTPUT, imageUploadType, imageUploadExt } from '../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../utils/imageUploadValidation';
 import { Users, Camera, X } from 'lucide-react';
 import { useModalExit } from '../hooks/useModalExit';
@@ -191,7 +191,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         if (avatarBlob && conversationId) {
             try {
                 const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
-                    avatarBlob, 'group_avatar.jpg', 'image/jpeg', conversationId,
+                    avatarBlob, `group_avatar.${imageUploadExt(imageUploadType(avatarBlob))}`, imageUploadType(avatarBlob), conversationId,
                     // signal, serverId unused; purpose is the load-bearing one —
                     // without it the server refuses to store the icon's key.
                     undefined, undefined, 'group_icon',
@@ -407,6 +407,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
             outputWidth={AVATAR_OUTPUT.width}
             outputHeight={AVATAR_OUTPUT.height}
             shape="circle"
+            keepTransparency
             title="Position the group photo"
             onCancel={() => setCropFile(null)}
             onConfirm={handleCropped}

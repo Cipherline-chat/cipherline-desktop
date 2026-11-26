@@ -260,6 +260,7 @@ dependencies = [
  "ed25519-dalek",
  "ghash",
  "hmac",
+ "if-addrs",
  "md-5",
  "native-tls",
  "rand_core",

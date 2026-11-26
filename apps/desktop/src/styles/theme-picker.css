@@ -13,6 +13,8 @@
 .tp-opt:active { transform: scale(.985); }
 .tp-opt:focus-visible { outline: 3px solid var(--cl-lume-text); outline-offset: 2px; }
 .tp-opt--on, .tp-opt--on:hover { border-color: var(--cl-lume-ui); box-shadow: 0 0 0 1.5px var(--cl-lume-ui); }
+/* The tile shown on the whole app by a live preview (not kept yet: ThemePreviewBar). */
+.tp-opt--preview, .tp-opt--preview:hover { border-color: var(--cl-lume-ui); border-style: dashed; }
 .tp-pic { position: relative; display: block; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; margin-bottom: 6px; }
 .tp-label { font-weight: 800; font-size: 13.5px; padding: 0 4px; }
 .tp-desc { font-size: 12px; line-height: 1.35; color: var(--cl-muted); padding: 0 4px; }

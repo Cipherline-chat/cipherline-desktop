@@ -52,8 +52,10 @@ export interface GpuPreferenceDeps {
     exePath: string;
     markerExists(): boolean;
     writeMarker(): void;
-    /** Runs reg.exe with these exact arguments (never through a shell). Resolves to its exit code. */
-    reg(args: string[]): Promise<number>;
+    /** Is there already a value for this executable under USER_GPU_PREFERENCES_KEY? null = could not tell (no helper). */
+    preferenceExists(exe: string): Promise<boolean | null>;
+    /** Writes HIGH_PERFORMANCE_GPU_VALUE for this executable under that key (the signed win-helper.exe; no reg.exe). */
+    setHighPerformance(exe: string): Promise<boolean>;
 }
 
 /**
@@ -64,13 +66,13 @@ export async function ensureHighPerformancePreference(deps: GpuPreferenceDeps): 
     if (deps.platform !== 'win32' || !deps.enabled || !isHybridGpu(deps.topology)) return 'skipped';
     try {
         if (deps.markerExists()) return 'already-done';
-        // reg query exits 0 only when this executable already has a value.
-        if ((await deps.reg(['query', USER_GPU_PREFERENCES_KEY, '/v', deps.exePath])) === 0) {
+        const exists = await deps.preferenceExists(deps.exePath);
+        if (exists === null) return 'failed';
+        if (exists) {
             deps.writeMarker();
             return 'kept-existing';
         }
-        const code = await deps.reg(['add', USER_GPU_PREFERENCES_KEY, '/v', deps.exePath, '/t', 'REG_SZ', '/d', HIGH_PERFORMANCE_GPU_VALUE, '/f']);
-        if (code !== 0) return 'failed';
+        if (!(await deps.setHighPerformance(deps.exePath))) return 'failed';
         deps.writeMarker();
         return 'set';
     } catch {

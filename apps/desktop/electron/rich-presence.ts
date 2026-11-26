@@ -16,6 +16,7 @@
  *     names the same as the RPC title.
  */
 import { execFile } from 'child_process';
+import { winSys } from './win-sys';
 import { openSync, readSync, closeSync } from 'fs';
 import { basename } from 'path';
 import { rpcTitle, gameNameKey, type RpcPresence } from './rpc-activity';
@@ -164,9 +165,8 @@ export async function processNameForPid(pid: number | null, platform: NodeJS.Pla
     let name: string | null = null;
     if (platform === 'linux') name = linuxPidName(pid);
     else if (platform === 'win32') {
-        const out = await execOut('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']);
-        const first = out.split('\n')[0]?.split(',')[0]?.replace(/"/g, '').trim().toLowerCase() ?? '';
-        name = first && !first.startsWith('info:') ? first.replace(/\.exe$/, '') : null;
+        // The signed win-helper.exe looks the pid up in a process snapshot: no tasklist.exe.
+        name = await winSys().pidName(pid);
     } else if (platform === 'darwin') {
         const out = (await execOut('ps', ['-p', String(pid), '-o', 'comm='])).trim();
         name = out ? basename(out).toLowerCase() : null;

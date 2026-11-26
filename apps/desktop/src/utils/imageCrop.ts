@@ -219,6 +219,18 @@ export function imageUploadExt(mime: 'image/webp' | 'image/png' | 'image/jpeg'):
     return mime === 'image/webp' ? 'webp' : mime === 'image/png' ? 'png' : 'jpg';
 }
 
+/** The MIME an AVATAR blob uploads under: its own for every type an avatar can
+ *  be (JPEG, a transparent PNG crop, animated WebP / GIF), else JPEG. Unlike
+ *  {@link imageUploadType} this keeps GIF, which a profile picture may be. */
+export function avatarUploadType(blob: Blob): 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' {
+    return blob.type === 'image/png' || blob.type === 'image/webp' || blob.type === 'image/gif' ? blob.type : 'image/jpeg';
+}
+
+/** File extension for {@link avatarUploadType}. */
+export function avatarUploadExt(mime: string): 'png' | 'webp' | 'gif' | 'jpg' {
+    return mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : mime === 'image/gif' ? 'gif' : 'jpg';
+}
+
 /** Options for {@link renderCroppedBlob}. */
 export interface RenderCropOptions {
     /** Keep a transparent background (PNG output) instead of flattening onto

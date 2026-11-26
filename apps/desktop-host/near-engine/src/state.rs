@@ -1,6 +1,7 @@
 //! The observable state machine, serialised exactly as `apps/desktop/src/types/near.ts` declares it.
 //! State names are DEFINED HERE (the phone lane's near-sync handoff did not exist yet): see the work-log
 //! entry for the list to reconcile.
+use super::netdiag::AdapterCensus;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -205,6 +206,44 @@ pub struct NearSnapshot {
     pub transfer: Option<NearTransfer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<NearError>,
+    /// Counts / words for the diagnostic report (see [`NearDiag`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diag: Option<NearDiag>,
+}
+
+/// What a failed (or finished) own-device transfer can tell a diagnostic report, as counts, booleans and closed words ONLY: never an
+/// address, a MAC, an SSID, an adapter or device name, a user id or content (see `netdiag.rs`). Absent until the session learns something.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NearDiag {
+    /// This device's adapters: how many were eligible, which types, and why the others were filtered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapters: Option<AdapterCensus>,
+    /// This device could listen / dial on the local network at all (its `caps`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lan_usable: Option<bool>,
+    /// The other device said it could listen / dial.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_lan: Option<bool>,
+    /// `listen` | `dial` | `none`: this device's part in the local-network leg.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lan_plan: Option<&'static str>,
+    /// The other device's offered address was on-link for one of this device's interfaces (dialer), or no off-link source knocked (listener).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_subnet: Option<bool>,
+    /// How many addresses were dialled.
+    pub dial_attempts: u32,
+    /// `ok` | `off_link` | `bad_offer` | `timeout` | `refused` | `blocked` | `auth` | `tls` | `io` | `listen_timeout` | `listen_blocked` | `no_offer`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lan_result: Option<&'static str>,
+    /// Why the local-network leg did not hold: `different_network` | `no_usable_network` | `peer_no_usable_network` | `no_answer` | `not_found`
+    /// | `denied` | `firewall`. The wire keeps cl-near's older closed set (`netdiag::wire_lan_cause`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lan_fail: Option<&'static str>,
+    /// How the session ended, set with the terminal state: `ok` | `declined` | `busy` | `cancelled` | `peer_cancelled` | `different_network` |
+    /// `no_usable_network` | `peer_no_usable_network` | `no_answer` | `not_found` | `denied` | `firewall` | `expired` | `refused` | `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -215,7 +254,7 @@ pub struct NearError {
 
 impl NearSnapshot {
     pub fn idle() -> Self {
-        Self { seq: 0, role: None, state: NearState::Idle, link_id: None, code: None, peer: None, proximity: None, attempt: None, peer_status: None, ble: None, refusal: None, transfer_offerable: None, history_allowed: None, partial: None, envelope_b64: None, transfer: None, error: None }
+        Self { seq: 0, role: None, state: NearState::Idle, link_id: None, code: None, peer: None, proximity: None, attempt: None, peer_status: None, ble: None, refusal: None, transfer_offerable: None, history_allowed: None, partial: None, envelope_b64: None, transfer: None, error: None, diag: None }
     }
 }
 

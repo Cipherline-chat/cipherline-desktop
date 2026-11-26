@@ -2,7 +2,7 @@ import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
 import { prefetchServerEmojis } from '../utils/serverEmojiLoader';
-import { emojiListCache, upsertEmoji } from '../utils/emojiListCache';
+import { emojiListCache, upsertEmoji, fetchListWithRetry } from '../utils/emojiListCache';
 
 /** Mirrors the API's ServerEmojiDto (apps/api/src/servers/server-emojis.service.ts). */
 export interface ServerEmoji {
@@ -40,6 +40,41 @@ export interface ServerEmoji {
  */
 const EMPTY: ServerEmoji[] = [];
 
+/**
+ * Fetch one server's emoji list into the cache. THROWS on a transient failure
+ * and leaves the server unsettled: only an authoritative answer settles a list
+ * (a list, or 403 = not a member). Marking a network error / 429 / 5xx as
+ * "settled" used to make every custom emoji of that server render as
+ * "no longer available" until the app restarted - the list never came back.
+ */
+export async function refreshServerEmojis(serverId: string, token: string): Promise<void> {
+    try {
+        // A list fetched before one of OUR mutations finished is older than
+        // that mutation's result; applying it would flip a rename or a
+        // delete back until the next refetch. Detect it and ask again.
+        let list: ServerEmoji[] = [];
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const epoch = emojiListCache.epoch(serverId);
+            const res = await axios.get<ServerEmoji[]>(apiUrl`/servers/${serverId}/emojis`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            list = Array.isArray(res.data) ? res.data : [];
+            if (emojiListCache.epoch(serverId) === epoch) break;
+        }
+        emojiListCache.set(serverId, list);
+        prefetchServerEmojis(serverId, list, token);
+    } catch (err: unknown) {
+        // 403 = no longer a member: forget the cached list (authoritative).
+        if (axios.isAxiosError(err) && err.response?.status === 403) {
+            emojiListCache.delete(serverId);
+            emojiListCache.markSettled(serverId);
+            return;
+        }
+        // Anything else keeps whatever we already show; callers retry.
+        throw err;
+    }
+}
+
 export function useServerEmojis(serverId: string | null, token: string | null) {
     // The list for THIS server straight from the session store — so a server
     // switch shows that server's cached list (or nothing) at once, never the
@@ -51,34 +86,16 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
     );
     const loading = useSyncExternalStore(
         emojiListCache.subscribe,
-        () => !!serverId && !!token && !emojiListCache.has(serverId) && !emojiListCache.isSettled(serverId),
+        () => !!serverId && !emojiListCache.has(serverId) && !emojiListCache.isSettled(serverId),
     );
 
     const refresh = useCallback(async () => {
         if (!token) { emojiListCache.clear(); return; }
         if (!serverId) return;
-        try {
-            // A list fetched before one of OUR mutations finished is older than
-            // that mutation's result; applying it would flip a rename or a
-            // delete back until the next refetch. Detect it and ask again.
-            let list: ServerEmoji[] = [];
-            for (let attempt = 0; attempt < 3; attempt++) {
-                const epoch = emojiListCache.epoch(serverId);
-                const res = await axios.get<ServerEmoji[]>(apiUrl`/servers/${serverId}/emojis`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                list = res.data ?? [];
-                if (emojiListCache.epoch(serverId) === epoch) break;
-            }
-            emojiListCache.set(serverId, list);
-            prefetchServerEmojis(serverId, list, token);
-        } catch (err: unknown) {
-            // 403 = no longer a member: forget the cached list. A network blip
-            // keeps whatever we already show. Callers surface errors around
-            // their own mutating calls, not around this background fetch.
-            if (axios.isAxiosError(err) && err.response?.status === 403) emojiListCache.delete(serverId);
-            emojiListCache.markSettled(serverId);
-        }
+        // A failed fetch is NOT an answer (see refreshServerEmojis): with no
+        // list yet it is retried with back-off, and meanwhile the emojis stay
+        // "loading" rather than reading as deleted.
+        await fetchListWithRetry(`emoji:${serverId}`, () => refreshServerEmojis(serverId, token), () => !emojiListCache.has(serverId));
     }, [serverId, token]);
 
     useEffect(() => { void refresh(); }, [refresh]);

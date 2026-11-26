@@ -27,6 +27,8 @@ function deps(over: Partial<GameArtDeps> = {}): GameArtDeps & { execCalls: Array
     return {
         platform: 'win32',
         exec: async (file, args, env) => { execCalls.push({ file, args, env }); return 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive\\BeamNG.drive.exe\r\n'; },
+        // Windows asks the helper (no child process of ours); recorded as a call so "asked once" tests still count lookups.
+        winExePath: async (name) => { execCalls.push({ file: 'win-helper', args: [name], env: {} }); return 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive\\BeamNG.drive.exe'; },
         exists: async () => false,
         fileIcon: async (p) => { iconCalls.push(p); return img(32, 32); },
         steamAppId: () => null,
@@ -87,18 +89,16 @@ describe('what main will accept from a process list and from PowerShell', () => 
 });
 
 describe('findExecutablePath', () => {
-    it('Windows: the process name travels in the environment, never in the script', async () => {
+    it('Windows: asks the helper for the process name, and starts no PowerShell', async () => {
         const d = deps();
         const p = await findExecutablePath("it's a game", d);
         expect(p).toBe('C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive\\BeamNG.drive.exe');
-        const [call] = d.execCalls;
-        expect(call.file).toBe('powershell');
-        expect(call.env).toEqual({ CL_PROC: "it's a game" });
-        const script = call.args[call.args.length - 1];
-        expect(script).not.toContain("it's a game");
-        expect(script).toContain('$env:CL_PROC');
-        // No double quotes in the script: it survives Windows argv quoting.
-        expect(script).not.toContain('"');
+        expect(d.execCalls).toEqual([{ file: 'win-helper', args: ["it's a game"], env: {} }]);
+    });
+
+    it('Windows: a path the helper returns is still checked (absolute .exe, no control characters)', async () => {
+        expect(await findExecutablePath('x', deps({ winExePath: async () => 'relative\\x.exe' }))).toBeNull();
+        expect(await findExecutablePath('x', deps({ winExePath: async () => null }))).toBeNull();
     });
 
     it('refuses an unsafe name without running anything', async () => {
@@ -113,7 +113,7 @@ describe('findExecutablePath', () => {
     });
 
     it('a failing lookup is null, not a throw; Linux has none', async () => {
-        expect(await findExecutablePath('x', deps({ exec: async () => { throw new Error('denied'); } }))).toBeNull();
+        expect(await findExecutablePath('x', deps({ winExePath: async () => { throw new Error('denied'); } }))).toBeNull();
         expect(await findExecutablePath('x', deps({ platform: 'linux' }))).toBeNull();
     });
 });
@@ -167,7 +167,7 @@ describe('resolveGameArt', () => {
     });
 
     it('a game from another launcher: store from its folder, no Steam id', async () => {
-        const d = deps({ exec: async () => 'C:\\Riot Games\\VALORANT\\live\\ShooterGame\\Binaries\\Win64\\VALORANT-Win64-Shipping.exe\r\n' });
+        const d = deps({ winExePath: async () => 'C:\\Riot Games\\VALORANT\\live\\ShooterGame\\Binaries\\Win64\\VALORANT-Win64-Shipping.exe' });
         const r = await resolveGameArt({ name: 'VALORANT', processName: 'valorant-win64-shipping' }, d);
         expect(r.store).toBe('riot');
         expect(r.appId).toBeNull();
@@ -192,7 +192,7 @@ describe('resolveGameArt', () => {
     });
 
     it('every failure leaves a plain answer', async () => {
-        const d = deps({ exec: async () => { throw new Error('x'); }, fileIcon: async () => { throw new Error('y'); } });
+        const d = deps({ winExePath: async () => { throw new Error('x'); }, fileIcon: async () => { throw new Error('y'); } });
         const r = await resolveGameArt({ name: 'Anything', processName: 'anything' }, d);
         expect(r).toEqual({ name: 'Anything', icon: null, store: null, appId: null });
     });

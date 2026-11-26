@@ -22,7 +22,7 @@
 // renderer withdraws on sign-out / sharing off, and on quit the timer stops.
 //
 // Cost: one read per poll. On Windows that is one line to the long-lived
-// PowerShell helper (never a new process per poll); macOS pgrep + osascript;
+// win-helper.exe media child (never a new process per poll); macOS pgrep + osascript;
 // Linux two D-Bus calls. The reader caches for 3 s, so Settings' own probe
 // shares the work.
 //
@@ -41,7 +41,7 @@ export const MEDIA_WATCH_POLL_MS = 12_000;
 export const MEDIA_WATCH_KEEPALIVE_MS = 50_000;
 /** A position this far from where it should be is a seek: sent at once. */
 export const MEDIA_WATCH_SEEK_MS = 20_000;
-/** Nothing can be read on this machine (no PowerShell / no D-Bus): look again rarely. */
+/** Nothing can be read on this machine (no win-helper / no D-Bus): look again rarely. */
 export const MEDIA_WATCH_UNSUPPORTED_MS = 5 * 60_000;
 /** A read was still running when a new one was due (settings changed): try again this soon. */
 const BUSY_RETRY_MS = 250;

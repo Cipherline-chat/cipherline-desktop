@@ -2462,3 +2462,5 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
    with the message text. */
 .cl-chrome-text { user-select: none; -webkit-user-select: none; }
 .cl-chrome-text::before { content: attr(data-chrome-text); }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.cl-newgroup-avatar-picker:has(img) { background: transparent; }

@@ -103,3 +103,5 @@
 .ob .pf-more { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .ob .pf-more svg { flex: none; margin-top: 2px; color: var(--lume); }
 .ob .pf-more b { color: var(--text); font-weight: 800; }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.ob .pf-thumb:has(> img) { background: transparent; }

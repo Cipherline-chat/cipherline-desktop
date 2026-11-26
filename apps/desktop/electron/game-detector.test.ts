@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Count every child process the detector starts. The point of the rework is
-// that a normal poll starts none (Linux) or exactly one tasklist (Windows) —
-// never a shell, and never PowerShell unless a Java process exists.
+// that a normal poll starts none (Linux, Windows) —
+// never a shell. On Windows the process list comes from win-helper.exe, so a poll starts no child at all.
 const spawned: Array<{ file: string; args: readonly string[] }> = [];
 vi.mock('child_process', () => ({
     execFile: (file: string, args: readonly string[], _opts: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
@@ -15,6 +15,8 @@ vi.mock('child_process', () => ({
     },
 }));
 
+import { normalizeProcessName } from './win-sys';
+
 const gd = await import('./game-detector');
 
 beforeEach(() => {
@@ -23,9 +25,8 @@ beforeEach(() => {
 });
 
 describe('process-list parsing', () => {
-    it('parses tasklist CSV into bare lowercase names', () => {
-        const out = '"System Idle Process","0","Services","0","8 K"\r\n"Cipherline.exe","1234","Console","1","200,000 K"\r\n"javaw.exe","99","Console","1","1 K"\r\n';
-        expect(gd.parseTasklistCsv(out)).toEqual(['system idle process', 'cipherline', 'javaw']);
+    it('normalises process names to bare lowercase (no .exe)', () => {
+        expect(['System Idle Process', 'Cipherline.exe', 'javaw.EXE'].map(normalizeProcessName)).toEqual(['system idle process', 'cipherline', 'javaw']);
     });
 
     it('takes argv[0]\'s basename from a /proc cmdline blob', () => {

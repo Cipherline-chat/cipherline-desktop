@@ -4,14 +4,14 @@
  * Drives the real detector against a fake Windows process list.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setWinSys } from './win-sys';
+import { csvWinSys } from './test-win-sys';
 
 let tasklist = '';
 const tl = (...names: string[]) => names.map(n => `"${n}.exe","1234","Console","1","10,000 K"`).join('\r\n');
 
 vi.mock('child_process', () => ({
     execFile: (file: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
-        if (file === 'tasklist') return cb(null, { stdout: tasklist, stderr: '' });
-        if (file === 'powershell') return cb(null, { stdout: 'ACTIVE\r\n', stderr: '' });
         cb(null, { stdout: '', stderr: '' });
     },
 }));
@@ -30,6 +30,7 @@ const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 let gd: typeof import('./game-detector');
 
 beforeEach(async () => {
+    setWinSys(csvWinSys(() => tasklist));
     Object.defineProperty(process, 'platform', { value: 'win32' });
     gd = await import('./game-detector');
     gd.__resetGameDetectorForTests();

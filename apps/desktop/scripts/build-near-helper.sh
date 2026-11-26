@@ -67,6 +67,8 @@ build_mac() {
 
 build_windows() {
   command -v cargo >/dev/null 2>&1 || return 127
+  # The Windows VersionInfo resource (build.rs: CompanyName / FileDescription / OriginalFilename / versions) takes the app's version.
+  export CL_HELPER_VERSION="$(cd "$DESKTOP" && node -p "require('./package.json').version" 2>/dev/null || echo 0.0.0)"
   ( cd "$HOST_DIR/near-helper" && cargo build --release --locked --target x86_64-pc-windows-msvc ) \
     && cp "$HOST_DIR/near-helper/target/x86_64-pc-windows-msvc/release/$CARGO_BIN" "$DEST"
 }

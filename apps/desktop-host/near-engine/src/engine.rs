@@ -20,6 +20,7 @@
 use super::api::{ApiError, Auth, HttpRelay, LinkApi, RelayToken};
 use super::gate::{run_gate, ApprovalGate, Availability, Verification};
 use super::parts::{assemble, FilePartsSource, PART_BYTES};
+use super::netdiag::{self, AdapterCensus};
 use super::radio::{probe_adapter, scan_for_proof, AdapterState, BleRadio, ScanCaps, ScanOutcome};
 use super::state::*;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64URL};
@@ -88,6 +89,8 @@ pub struct NearEnv {
     pub radio: Arc<dyn BleRadio>,
     pub gate: Arc<dyn ApprovalGate>,
     pub ifaces: Arc<dyn InterfaceProvider>,
+    /// Counts of this device's adapters and why some were filtered, for the diagnostic report (`netdiag::AdapterCensus`): counts only.
+    pub census: Arc<dyn Fn() -> AdapterCensus + Send + Sync>,
     pub identity: Arc<dyn Identity>,
     /// `<profile>`: transfer parts and progress live under `near-recv/`.
     pub profile: PathBuf,
@@ -288,6 +291,29 @@ fn abort_for(stop: &Stop) -> Option<Message> {
     }
 }
 
+/// How a stopped session is described to the diagnostic report and the "what went wrong" screen (`NearDiag::cause`). The old engine said
+/// `not_found` for every local-network failure; this keeps the cause the session actually learned: no shared subnet, no usable adapter,
+/// nobody answering. Pure, so the table is tested without a network.
+fn final_cause(stop: &Stop, d: &NearDiag) -> &'static str {
+    match stop {
+        Stop::Cancelled => "cancelled",
+        Stop::Declined => "declined",
+        Stop::PeerCancelled => "peer_cancelled",
+        // the request or the sheet ran out of time with nobody pressing anything
+        Stop::Expired(c) if c == "own_no_answer" || c == "own_no_decision" => netdiag::LAN_FAIL_NO_ANSWER,
+        Stop::Expired(_) => "expired",
+        Stop::Refused(_, c) if c == "denied" => "declined",
+        Stop::Refused(_, c) if c == "busy" => "busy",
+        Stop::Refused(r, c) if c == "no_proximity" => d.lan_fail.unwrap_or(match r.lan {
+            "denied" => "denied",
+            "firewall" => "firewall",
+            _ => netdiag::LAN_FAIL_NOT_FOUND,
+        }),
+        Stop::Refused(..) => "refused",
+        Stop::Failed(..) => "failed",
+    }
+}
+
 // ---- pure helpers (one place for each rule) ----------------------------------------------------
 
 /// THE one place that decides "is this peer a phone". Today cl-near infers it from the Bluetooth-advertise
@@ -412,6 +438,8 @@ impl Pipe for RelayPeer<HttpRelay> {
 
 struct Shared {
     m: Mutex<Machine>,
+    /// What this session has learned for the diagnostic report (counts and closed words only); copied into every snapshot once it holds anything.
+    diag: Mutex<NearDiag>,
     sess: Mutex<Option<Sess>>,
     result: Mutex<Option<Received>>,
     /// The user asked to pause (or the transfer is paused): checked at the start of every attempt.
@@ -469,11 +497,29 @@ impl Ctx {
         if to.is_terminal() {
             super::parts::persist_pause(&self.env.profile, None);
         }
+        // every snapshot carries what the report has learned so far; a finished transfer says `ok`
+        let diag = {
+            let mut d = self.sh.diag.lock().unwrap();
+            if to == NearState::Done {
+                d.cause = Some("ok");
+            }
+            (*d != NearDiag::default()).then(|| d.clone())
+        };
         let mut m = self.sh.m.lock().unwrap();
-        match m.go(to, edit) {
+        match m.go(to, |s| {
+            edit(s);
+            if diag.is_some() {
+                s.diag = diag;
+            }
+        }) {
             Ok(s) => (self.env.emit)(&s),
             Err(e) => crate::nlog!("near: {e}"),
         }
+    }
+    /// Record something the diagnostic report should know and publish it (a same-state snapshot).
+    fn diag(&self, f: impl FnOnce(&mut NearDiag)) {
+        f(&mut self.sh.diag.lock().unwrap());
+        self.go(self.state(), |_| {});
     }
     fn state(&self) -> NearState {
         self.sh.m.lock().unwrap().snapshot().state
@@ -493,6 +539,11 @@ impl Ctx {
         *self.sh.shown.lock().unwrap() = None;
         *self.sh.undecided.lock().unwrap() = None;
         *self.sh.holder_for.lock().unwrap() = None;
+        {
+            let mut d = self.sh.diag.lock().unwrap();
+            let cause = final_cause(&stop, &d);
+            d.cause = Some(cause);
+        }
         match stop {
             Stop::Cancelled | Stop::Declined => self.go(NearState::Cancelled, |_| {}),
             Stop::PeerCancelled => self.go(NearState::Cancelled, |s| s.error = Some(NearError_ { code: "peer_cancelled".into(), message: "the other device cancelled".into() }.into())),
@@ -719,20 +770,46 @@ impl Ctx {
             Ok(l) => l,
             Err(e) if io_blocked(&e) => {
                 self.note_lan_blocked();
+                let fail = self.lan_fail_cause();
+                self.diag(|d| {
+                    d.lan_result = Some("listen_blocked");
+                    d.lan_fail = Some(fail);
+                });
                 return Err(Stop::Failed("lan_blocked".into(), e.to_string()));
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                // no address to listen on (every adapter was filtered out after caps were read, or it went away)
+                if matches!(e, NearError::OffLink(_)) {
+                    self.diag(|d| d.lan_fail = Some(netdiag::LAN_FAIL_NO_USABLE_NETWORK));
+                }
+                return Err(e.into());
+            }
         };
         peer.send(&Message::lan_offer(&l.offer())).await?;
         let l = Arc::new(l);
         let got = self.cx(l.accept(wait)).await?;
-        let mut link = LanLink { how: LanHow::Listener(l), keys: clone_keys(keys), link_id: link_id.to_owned(), held: None };
+        let mut link = LanLink { how: LanHow::Listener(l.clone()), keys: clone_keys(keys), link_id: link_id.to_owned(), held: None };
         match got {
             Ok(c) => {
                 link.held = Some(c);
+                self.diag(|d| {
+                    d.lan_result = Some("ok");
+                    d.same_subnet = Some(true);
+                });
                 Ok((link, true))
             }
-            Err(_) => Ok((link, false)),
+            Err(_) => {
+                // a peer that knocked from outside every local subnet is a different network; silence is just "nobody came"
+                let off_link = netdiag::failures_mean_different_network(&l.failures());
+                self.diag(|d| {
+                    d.lan_result = Some("listen_timeout");
+                    if off_link {
+                        d.same_subnet = Some(false);
+                        d.lan_fail = Some(netdiag::LAN_FAIL_DIFFERENT_NETWORK);
+                    }
+                });
+                Ok((link, false))
+            }
         }
     }
 
@@ -742,9 +819,21 @@ impl Ctx {
     async fn lan_as_dialer<P: Pipe>(&self, peer: &mut P, stash: &mut VecDeque<Message>, keys: &SessionKeys, link_id: &str, wait: Duration, own: &NearRefusal, probe: bool) -> Result<(Option<LanLink>, &'static str), Stop> {
         let offer = match self.expect(peer, stash, wait, own, |m| matches!(m, Message::LanOffer { .. })).await {
             Ok(m) => m.lan_offer_typed()?,
-            Err(Stop::Failed(c, _)) if c == "near_error" => return Ok((None, self.lan_fail_cause())),
+            Err(Stop::Failed(c, m)) if c == "near_error" => {
+                // the other device never sent its address: a timed-out wait is "nobody answered"
+                let no_answer = m.contains("timed out");
+                self.diag(|d| {
+                    d.lan_result = Some("no_offer");
+                    if no_answer {
+                        d.lan_fail = Some(netdiag::LAN_FAIL_NO_ANSWER);
+                    }
+                });
+                return Ok((None, self.lan_fail_cause()));
+            }
             Err(e) => return Err(e),
         };
+        // how many addresses the offer gives us a way to dial (counts only; the addresses are never kept)
+        let n_targets = cl_near::onlink::dial_targets(&offer.addrs, offer.port, &self.env.ifaces.interfaces()).len() as u32;
         let (env, k, l) = (self.env.clone(), clone_keys(keys), link_id.to_owned());
         let o2 = offer.clone();
         let t = self.env.lan_timeouts;
@@ -752,6 +841,11 @@ impl Ctx {
         let report = |ok: bool, reason: Option<&str>| if probe { Message::lan_probe_result(ok, reason) } else { Message::lan_result(ok, reason) };
         match got {
             Ok(c) => {
+                self.diag(|d| {
+                    d.same_subnet = Some(true);
+                    d.dial_attempts = n_targets.max(1);
+                    d.lan_result = Some("ok");
+                });
                 let _ = peer.send(&report(true, None)).await;
                 Ok((Some(LanLink { how: LanHow::Dialer(offer), keys: clone_keys(keys), link_id: link_id.to_owned(), held: Some(c) }), "ok"))
             }
@@ -762,7 +856,14 @@ impl Ctx {
                 // F9 (b): what goes to the peer about the local network is always `not_found` (no dial-failure causes on the wire: a hostile
                 // peer must not learn which of its offers pointed at what). The sheet's own cause (`denied` / `firewall`) stays local.
                 let cause = self.lan_fail_cause();
-                let _ = peer.send(&report(false, Some("not_found"))).await;
+                let class = netdiag::classify_dial_error(&e);
+                self.diag(|d| {
+                    d.dial_attempts = if class.different_network { 0 } else { n_targets };
+                    d.same_subnet = Some(!class.different_network);
+                    d.lan_result = Some(class.code);
+                    d.lan_fail = Some(if class.different_network { netdiag::LAN_FAIL_DIFFERENT_NETWORK } else { cause });
+                });
+                let _ = peer.send(&report(false, Some(netdiag::wire_lan_cause(netdiag::LAN_FAIL_NOT_FOUND)))).await;
                 Ok((None, cause))
             }
         }
@@ -846,6 +947,12 @@ impl Ctx {
             AdapterState::NoAdapter // own-device transfer: no Bluetooth proof (contract 7)
         };
         let mine = self.my_caps(ble_allowed && adapter.usable());
+        // the adapter census (counts only) for the diagnostic report: how many adapters were usable and why the rest were filtered
+        let census = self.blocking({ let c = self.env.census.clone(); move || c() }).await?;
+        self.diag(|d| {
+            d.adapters = Some(census);
+            d.lan_usable = Some(mine.lan_listen || mine.lan_dial);
+        });
         self.go(NearState::Negotiating, |s| s.ble = Some(NearBle { status: "idle", reason: None }));
         let theirs_msg = if me == Side::A {
             peer.send(&Message::caps_full(&mine, who)).await?;
@@ -867,6 +974,23 @@ impl Ctx {
         self.set_peer_sealed(&peer_who);
         let (a_caps, n_caps) = if me == Side::A { (mine, theirs) } else { (theirs, mine) };
         let pl = plan(&a_caps, &n_caps, false);
+        {
+            let (my_c, their_c) = if me == Side::A { (&a_caps, &n_caps) } else { (&n_caps, &a_caps) };
+            let (mine_ok, theirs_ok) = (my_c.lan_listen || my_c.lan_dial, their_c.lan_listen || their_c.lan_dial);
+            let part = match pl.lan {
+                None => "none",
+                Some(l) if l.listener == me => "listen",
+                Some(_) => "dial",
+            };
+            self.diag(|d| {
+                d.peer_lan = Some(theirs_ok);
+                d.lan_plan = Some(part);
+                // no local-network path at all: say whose adapters are the reason (this device's first)
+                if pl.lan.is_none() {
+                    d.lan_fail = Some(if !mine_ok { netdiag::LAN_FAIL_NO_USABLE_NETWORK } else if !theirs_ok { netdiag::LAN_FAIL_PEER_NO_USABLE_NETWORK } else { netdiag::LAN_FAIL_NOT_FOUND });
+                }
+            });
+        }
         let ble_peer_advertises = pl.ble.is_some_and(|b| b.advertiser != me);
         if !ble_peer_advertises && theirs.ble_adv && !adapter.usable() {
             refusal.ble = ble_cause(&adapter); // the peer could have been heard but our radio is unusable
@@ -1978,7 +2102,8 @@ impl Ctx {
     async fn own_sender_run(&self, pipe: &mut super::own::OwnPipe, who: &Who, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Result<(), Stop> {
         let res = self.proximity(pipe, Side::A, who, false).await?;
         let Some(verified) = res.verified else {
-            let _ = Pipe::send(pipe, &Message::abort_no_proximity(res.refusal.ble, res.refusal.lan)).await;
+            // the wire keeps cl-near's closed cause set whatever this side learned (an older phone drops a word it does not know)
+            let _ = Pipe::send(pipe, &Message::abort_no_proximity(res.refusal.ble, netdiag::wire_lan_cause(res.refusal.lan))).await;
             return Err(Stop::Refused(res.refusal, "no_proximity".into()));
         };
         let Some(mut lan) = res.lan else { return Err(Stop::Refused(res.refusal, "no_proximity".into())) };
@@ -2021,7 +2146,7 @@ impl NearEngine {
         if stale > 0 {
             crate::nlog!("near: discarded {stale} stale transfer file(s) left by an earlier run");
         }
-        let sh = Arc::new(Shared { m: Mutex::new(Machine::new()), sess: Mutex::new(None), result: Mutex::new(None), paused: AtomicBool::new(false), tok: Mutex::new(None), resume: tokio::sync::Notify::new(), recv_dir: Mutex::new(None), xfer_key: Mutex::new(None), xfer_released: AtomicBool::new(false), local_net: Mutex::new(LocalNetwork::Unknown), own: Mutex::new(None), shown: Mutex::new(None), cooldown: Mutex::new(Default::default()), undecided: Mutex::new(None), holder_for: Mutex::new(None), seen_offers: Mutex::new(VecDeque::new()) });
+        let sh = Arc::new(Shared { m: Mutex::new(Machine::new()), diag: Mutex::new(NearDiag::default()), sess: Mutex::new(None), result: Mutex::new(None), paused: AtomicBool::new(false), tok: Mutex::new(None), resume: tokio::sync::Notify::new(), recv_dir: Mutex::new(None), xfer_key: Mutex::new(None), xfer_released: AtomicBool::new(false), local_net: Mutex::new(LocalNetwork::Unknown), own: Mutex::new(None), shown: Mutex::new(None), cooldown: Mutex::new(Default::default()), undecided: Mutex::new(None), holder_for: Mutex::new(None), seen_offers: Mutex::new(VecDeque::new()) });
         Self { env, rt, sh }
     }
 
@@ -2063,6 +2188,7 @@ impl NearEngine {
         self.sh.paused.store(false, Ordering::SeqCst);
         *self.sh.tok.lock().unwrap() = None;
         *self.sh.holder_for.lock().unwrap() = None;
+        *self.sh.diag.lock().unwrap() = NearDiag::default();
         self.wipe_xfer_key();
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
@@ -2380,5 +2506,39 @@ mod blocked_tests {
         assert!(!io_blocked(&NearError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))));
         assert!(!io_blocked(&NearError::Timeout("connect")));
         assert!(!io_blocked(&NearError::OffLink("x".into())));
+    }
+}
+
+#[cfg(test)]
+mod cause_tests {
+    use super::*;
+
+    fn refusal(lan: &'static str) -> NearRefusal {
+        NearRefusal { ble: "skipped", lan }
+    }
+
+    #[test]
+    fn final_cause_keeps_what_the_session_learned_instead_of_one_vague_not_found() {
+        let none = NearDiag::default();
+        let dn = NearDiag { lan_fail: Some(netdiag::LAN_FAIL_DIFFERENT_NETWORK), ..Default::default() };
+        let nu = NearDiag { lan_fail: Some(netdiag::LAN_FAIL_NO_USABLE_NETWORK), ..Default::default() };
+        let refused = |lan| Stop::Refused(refusal(lan), "no_proximity".into());
+        assert_eq!(final_cause(&refused("not_found"), &dn), "different_network");
+        assert_eq!(final_cause(&refused("skipped"), &nu), "no_usable_network");
+        // nothing learned: the legacy word, or the OS-level one
+        assert_eq!(final_cause(&refused("not_found"), &none), "not_found");
+        assert_eq!(final_cause(&refused("firewall"), &none), "firewall");
+        assert_eq!(final_cause(&refused("denied"), &none), "denied");
+        // timeouts: the offer or the sheet ran out with nobody pressing anything
+        assert_eq!(final_cause(&Stop::Expired("own_no_answer".into()), &none), "no_answer");
+        assert_eq!(final_cause(&Stop::Expired("own_no_decision".into()), &none), "no_answer");
+        assert_eq!(final_cause(&Stop::Expired("session_expired".into()), &none), "expired");
+        // the rest of the existing endings keep their own words
+        assert_eq!(final_cause(&Stop::Refused(refusal("skipped"), "denied".into()), &none), "declined");
+        assert_eq!(final_cause(&Stop::Refused(refusal("skipped"), "busy".into()), &none), "busy");
+        assert_eq!(final_cause(&Stop::Declined, &none), "declined");
+        assert_eq!(final_cause(&Stop::Cancelled, &none), "cancelled");
+        assert_eq!(final_cause(&Stop::PeerCancelled, &none), "peer_cancelled");
+        assert_eq!(final_cause(&Stop::Failed("x".into(), "y".into()), &none), "failed");
     }
 }

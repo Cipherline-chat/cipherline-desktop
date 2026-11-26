@@ -22,7 +22,7 @@ declare global {
         | { phase: 'available'; version: string }
         | { phase: 'downloading'; version: string; percent: number }
         | { phase: 'retrying'; version: string; attempt: number; maxAttempts: number; retryAt: number }
-        | { phase: 'failed'; version: string; stage: 'download' | 'verify' | 'install'; cause?: 'cancelled' }
+        | { phase: 'failed'; version: string; stage: 'download' | 'verify' | 'install'; cause?: 'cancelled' | 'helper' }
         | { phase: 'ready'; version: string }
         | { phase: 'manual'; version: string; downloadUrl: string; pkg?: 'deb'; cause?: 'install' };
 

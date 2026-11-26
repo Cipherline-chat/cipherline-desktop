@@ -4,8 +4,9 @@
  * Cipherline". Main validates only the shape (electron/deep-link.ts
  * parseThemeDeepLink: prefix, base64url, length); the code is decoded here
  * with the import dialog's own rules, and NOTHING is saved or applied until
- * the user presses Save / Save and use (Preview shows it on the whole app for
- * a while, storing nothing: theme/engine.ts startThemePreview).
+ * the user presses Save / Save and use (Preview, and Save and use after saving,
+ * show it on the whole app with the Keep / Revert bar, storing nothing until
+ * Keep: theme/engine.ts startThemePreview).
  *
  * Mounted by Dashboard (signed in, so the theme library is available). A link
  * that arrived before sign-in is parked in main and pulled on mount.
@@ -14,7 +15,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { decodeShareCode, type CustomThemeDef } from '../../theme/customTheme';
 import { useCustomThemes } from '../../theme/customThemeLibrary';
-import { chooseCustomTheme } from '../../theme/activeThemeMirror';
+import { startThemePreview } from '../../theme/engine';
 import { isThemeCodeShape } from '../../theme/themeLink';
 import { CustomThemeImportDialog } from '../settings/panes/CustomThemeShareDialog';
 
@@ -44,7 +45,8 @@ export const ThemeDeepLinkHost: React.FC = () => {
             onImport={(def: CustomThemeDef, use: boolean) => {
                 const entry = lib.create(def);
                 if (!entry) return false;
-                if (use) { const { id, ...d } = entry; void chooseCustomTheme(uid, id, d); }
+                // "Save and use" previews the saved theme; Keep on the preview bar makes it stick.
+                if (use) { const { id, ...d } = entry; startThemePreview(d, { libraryId: id }); }
                 setCode(null);
                 return true;
             }}

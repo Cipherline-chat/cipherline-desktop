@@ -42,6 +42,8 @@ unicode-normalization = "0.1"
 # TLS via SChannel (the Windows certificate store); no C toolchain needed.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
+# The adapter census (netdiag.rs) lists every adapter to say WHY some were filtered; cl-near already depends on the same version.
+if-addrs = "0.13"
 windows-core = "0.62"
 windows-future = "0.3"
 windows = { version = "0.62", features = [

@@ -77,7 +77,9 @@ export type UpdateState =
     | { phase: 'retrying'; version: string; attempt: number; maxAttempts: number; retryAt: number }
     /** Retries exhausted, a signature rejection, or a failed install. In-app, with Retry. */
     /** `cause: 'cancelled'`: the .deb install's password prompt was dismissed (a choice, not a fault). */
-    | { phase: 'failed'; version: string; stage: UpdateFailureStage; cause?: 'cancelled' }
+    /** `cause: 'helper'` (Windows, stage `verify`): the signature checker (win-helper.exe) is missing / blocked / crashed, so the update was
+     *  NOT verified and was NOT applied. Not a bad signature: the UI says what to do. Retry (and the next check) runs it again. */
+    | { phase: 'failed'; version: string; stage: UpdateFailureStage; cause?: 'cancelled' | 'helper' }
     | { phase: 'ready'; version: string }
     /** Linux only — see the module doc. `pkg: 'deb'`: the link is the .deb (a .deb install);
      *  `cause: 'install'`: it is offered because installing the downloaded update failed. */
@@ -140,12 +142,14 @@ export function onUpdateNotAvailable(current: UpdateState): UpdateState {
     return current;
 }
 
-/** What kind of failure an `error` event is. `signature` and `manifest` stop the retries. */
-export type UpdateErrorKind = 'signature' | 'manifest' | 'transient';
+/** What kind of failure an `error` event is. `signature`, `manifest` and `helper` stop the automatic retries. */
+export type UpdateErrorKind = 'signature' | 'manifest' | 'helper' | 'transient';
 
 export interface UpdaterErrorLike {
     code?: unknown;
     message?: unknown;
+    /** Set by authenticode-verify.ts on ERR_UPDATER_SIGNATURE_HELPER_UNAVAILABLE: missing|blocked|timeout|crash|no_output. */
+    reason?: unknown;
 }
 
 /**
@@ -161,6 +165,8 @@ export interface UpdaterErrorLike {
 export function classifyUpdateError(err: UpdaterErrorLike | null | undefined, platform: NodeJS.Platform): UpdateErrorKind {
     const code = typeof err?.code === 'string' ? err.code : '';
     if (code === 'ERR_UPDATER_INVALID_SIGNATURE') return 'signature';
+    // The signature CHECKER could not run (win-helper.exe missing / blocked / crashed / timed out): no verdict about the file.
+    if (code === 'ERR_UPDATER_SIGNATURE_HELPER_UNAVAILABLE') return 'helper';
     // The update MANIFEST was rejected (signed-update-provider.ts): its .sig is
     // missing while required, malformed, or does not verify. Raised by the
     // CHECK, before anything is downloaded.
@@ -216,6 +222,11 @@ export function onUpdateError(current: UpdateState, ctx: UpdateErrorContext): Up
     const version = current.version;
     if (ctx.kind === 'signature') {
         return { state: { phase: 'failed', version, stage: 'verify' }, retryInMs: null };
+    }
+    if (ctx.kind === 'helper') {
+        // Not applied, and NOT a silent retry loop: a blocked helper fails the same way every time within the minute, so say
+        // what to do instead. Retry (the user's, or the next scheduled check) tries again.
+        return { state: { phase: 'failed', version, stage: 'verify', cause: 'helper' }, retryInMs: null };
     }
     const failures = Math.max(1, Math.floor(ctx.failures));
     if (failures <= RETRY_DELAYS_MS.length) {
@@ -442,10 +453,14 @@ export function updaterErrorDetail(
     const s = decision.state;
     const next =
         s.phase === 'retrying' ? `retry ${s.attempt}/${s.maxAttempts} in ${Math.round((decision.retryInMs ?? 0) / 1000)}s`
-        : s.phase === 'failed' ? `failed ${s.stage}`
+        : s.phase === 'failed' ? `failed ${s.stage}${s.cause === 'helper' ? ' helper' : ''}`
         : s.phase;
     const rawMsg = typeof err?.message === 'string' ? err.message : '';
-    const head = `code=${code} next=${next}`;
+    // A fixed word saying why the signature checker could not run (missing / blocked / timeout / crash / no_output), so a report shows how
+    // many users hit it and why. Only a known word is ever copied.
+    const reason = typeof (err as { reason?: unknown } | null | undefined)?.reason === 'string' && /^(missing|blocked|timeout|crash|no_output)$/.test((err as { reason: string }).reason)
+        ? ` reason=${(err as { reason: string }).reason}` : '';
+    const head = `code=${code}${reason} next=${next}`;
     const room = 240 - head.length - 5;
     const msg = room > 0 ? toDiagnosticDetail(scrub(rawMsg), room) : '';
     return msg ? `${head} msg=${msg}` : head;

@@ -10,7 +10,7 @@ import { GroupBackdrop } from './GroupBackdrop';
 import { memberCountLabel } from './GroupContextHeader';
 import { saveAvatarKey } from '../utils/avatarKeyStore';
 import { useModalExit } from '../hooks/useModalExit';
-import { AVATAR_OUTPUT } from '../utils/imageCrop';
+import { AVATAR_OUTPUT, imageUploadType, imageUploadExt } from '../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../utils/imageUploadValidation';
 import { useToast } from '../contexts/ToastContext';
 import { ClButton, ClInput, ClModal, ClImageCropper } from './cl';
@@ -152,7 +152,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
 
             if (avatarFile) {
                 const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
-                    avatarFile, 'group_avatar.jpg', 'image/jpeg', conversationId,
+                    avatarFile, `group_avatar.${imageUploadExt(imageUploadType(avatarFile))}`, imageUploadType(avatarFile), conversationId,
                     // signal, serverId unused; purpose is the load-bearing one —
                     // without it the server refuses to store the icon's key.
                     undefined, undefined, 'group_icon',
@@ -331,6 +331,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             outputWidth={AVATAR_OUTPUT.width}
             outputHeight={AVATAR_OUTPUT.height}
             shape="circle"
+            keepTransparency
             title="Position the group photo"
             onCancel={() => setCropFile(null)}
             onConfirm={handleCropped}

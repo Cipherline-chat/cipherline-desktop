@@ -549,3 +549,5 @@ button.ps-chip:disabled { opacity: .45; cursor: not-allowed; }
 /* The #number inside its 24 h change cooldown (UsernameTagField): read-only, quiet. */
 .ps-namefield-num[data-state="cooldown"] { cursor: not-allowed; }
 .ps-namefield-num[data-state="cooldown"] .ps-namefield-digits { color: var(--cl-muted, var(--cl-muted)); cursor: inherit; }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.ps-head-av:has(img) { background: transparent; }

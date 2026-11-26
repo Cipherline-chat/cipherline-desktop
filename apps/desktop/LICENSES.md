@@ -348,6 +348,15 @@ Full license text: https://creativecommons.org/publicdomain/zero/1.0/
 
 ---
 
+## Rust crates linked into the Windows system helper (`win-helper`)
+
+`apps/desktop-host/win-helper` (its own `Cargo.lock`) is a small Windows-only helper process the app starts instead of PowerShell /
+tasklist / reg.exe (running games, Now Playing, update-signature check, GPU preference). Its dependencies: **windows**,
+**windows-core**, **windows-future** and their `windows-*` siblings (MIT OR Apache-2.0, Copyright (c) Microsoft Corporation),
+**serde_json**, **serde_core** (MIT OR Apache-2.0, Copyright (c) the serde authors), **base64**, **itoa**, **zmij**, **proc-macro2**,
+**quote**, **syn**, **unicode-ident** (MIT OR Apache-2.0), **memchr** (Unlicense OR MIT). Build-time only (not linked): **embed-resource** (MIT) writes the Windows VersionInfo
+resource; it is also a build dependency of `near-helper`.
+
 ## Rust crates linked into the local-transfer helper (`near-helper`)
 
 The Linux, macOS and Windows builds can ship a small Rust helper process (`apps/desktop-host/near-helper`, built from its own

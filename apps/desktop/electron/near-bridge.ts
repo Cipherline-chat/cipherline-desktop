@@ -24,6 +24,7 @@ import {
     createNearHelperClient, NearHelperUnavailable,
     type NearHelperClient, type NearHelperConfig, type SpawnFn, type GateVerdict,
 } from './near-helper-client';
+import type { NearTrail } from './near-diag';
 
 export const NEAR_UNAVAILABLE = { available: false, bluetooth: 'unsupported', lan: false, biometric: 'unavailable', gate: 'native_confirm' } as const;
 
@@ -98,6 +99,8 @@ export interface NearBridgeDeps {
     http(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown): Promise<HttpResult>;
     send(channel: 'near:state' | 'near:own-out' | 'near:gate-prompt', payload: unknown): void;
     log?: (line: string) => void;
+    /** The transfer trail for "Report a problem" (near-diag.ts): counts and words only, never an address, a name or content. */
+    trail?: NearTrail;
     randomHex?: (bytes: number) => string;
     gateTimeoutMs?: number;
     /** Defaults to `process.platform`; passed through to the helper client (Windows: nonce on stdin, three pipes). */
@@ -135,11 +138,13 @@ export function createNearBridge(deps: NearBridgeDeps): NearBridge {
     let approving = 0;
     let gate: GatePending | null = null;
 
-    const finishGate = (v: GateVerdict) => {
+    const trail = deps.trail;
+    const finishGate = (v: GateVerdict, why: 'submit' | 'timeout' | 'cancel' | 'session_end' = 'cancel') => {
         const g = gate;
         if (!g) return;
         gate = null;
         clearTimer(g.timer);
+        trail?.record('prompt_closed', { verdict: v, why });
         g.finish(v);
         deps.send('near:gate-prompt', { ticket: g.ticket, method: g.method, closed: true });
     };
@@ -159,22 +164,30 @@ export function createNearBridge(deps: NearBridgeDeps): NearBridge {
         config: deps.config,
         log,
         platform: deps.platform,
+        onLifecycle: (e) => trail?.onHelper(e),
         onState: (s) => {
             const st = isObj(s) && typeof s.state === 'string' ? s.state : '';
+            trail?.onState(s);
             deps.send('near:state', s);
-            if (ENDED.has(st)) { session = null; finishGate('declined'); }
+            if (ENDED.has(st)) { session = null; finishGate('declined', 'session_end'); }
         },
-        onOwnOut: (m) => deps.send('near:own-out', m),
+        onOwnOut: (m) => {
+            const t = isObj(m.content) ? m.content.type : undefined;
+            if (t === 'near_offer') trail?.record('offer_sent');
+            else if (t === 'near_answer') trail?.record('answer_sent');
+            deps.send('near:own-out', m);
+        },
         handlers: {
             gateConfirm: async () => {
                 if (!session || approving === 0 || gate) return 'declined';
                 const s = session;
                 const method = await stepUpMethod(s);
-                if (!method || !session || session !== s || approving === 0) return 'declined';
+                if (!method || !session || session !== s || approving === 0) { trail?.record('prompt_unavailable'); return 'declined'; }
                 return new Promise<GateVerdict>((resolve) => {
                     const ticket = rnd(16);
-                    const timer = setTimer(() => finishGate('declined'), gateTimeoutMs);
+                    const timer = setTimer(() => finishGate('declined', 'timeout'), gateTimeoutMs);
                     gate = { ticket, method, attempts: 0, finish: resolve, timer };
+                    trail?.record('prompt_shown', { method });
                     deps.send('near:gate-prompt', { ticket, method });
                 });
             },
@@ -263,6 +276,10 @@ export function createNearBridge(deps: NearBridgeDeps): NearBridge {
             }
             if (act === 'nearOwnDeliver') {
                 const r = await helper.call(act, forwarded);
+                // the transfer trail: that an offer / an answer arrived and what the helper did with it (the type and the verdict only)
+                const ct = isObj(args[0]) && isObj(args[0].content) ? args[0].content.type : undefined;
+                if (ct === 'near_offer') trail?.record('offer_received', { result: typeof r === 'string' ? (r === 'offer' || r === 'replaced' || r === 'busy' || r === 'ignored' ? r : 'other') : 'other' });
+                else if (ct === 'near_answer') trail?.record('answer_received', { result: r === 'routed' ? 'routed' : 'ignored' });
                 // A re-ask REPLACES an undecided sheet ("the PC said no" fix, 2026-11-25): the replaced session's end ("cancelled") reaches
                 // main DURING this call and clears `session` (see onState). Re-attach it when the helper says this offer opened a sheet, so
                 // the new sheet's Send still reaches the password prompt (found live: it failed at once). Only for a sheet that started: an
@@ -272,10 +289,23 @@ export function createNearBridge(deps: NearBridgeDeps): NearBridge {
             }
             if (act === 'nearApprove') {
                 approving += 1;
-                try { return await helper.call('nearApprove', [], 240_000); } finally { approving -= 1; }
+                try {
+                    const r = await helper.call('nearApprove', [], 240_000);
+                    const res = isObj(r) ? r.result : undefined;
+                    trail?.record('approve', { result: res === 'approved' || res === 'cancelled' || res === 'failed' ? res : 'other' });
+                    return r;
+                } catch (e) {
+                    trail?.record('approve', { result: 'failed' });
+                    throw e;
+                } finally { approving -= 1; }
+            }
+            if (act === 'nearTransferRequest') {
+                trail?.record('request');
+                try { return await helper.call(act, forwarded); } catch (e) { trail?.record('request_failed'); throw e; }
             }
             if (act === 'nearCancel' || act === 'nearRefuse') {
-                finishGate('declined');
+                trail?.record(act === 'nearRefuse' ? 'refuse' : 'cancel');
+                finishGate('declined', 'cancel');
             }
             if (act === 'nearTransferKey') return transferKeyBytes(await helper.call(act, forwarded));
             return helper.call(act, forwarded);
@@ -286,29 +316,31 @@ export function createNearBridge(deps: NearBridgeDeps): NearBridge {
             if (!g || typeof ticket !== 'string' || ticket !== g.ticket) return 'expired';
             if (typeof value !== 'string' || value.trim().length === 0 || value.length > 256) return 'rejected';
             const s = session;
-            if (!s || approving === 0) { finishGate('declined'); return 'expired'; }
+            if (!s || approving === 0) { finishGate('declined', 'session_end'); return 'expired'; }
             const body = g.method === 'totp' ? { code: value.trim() } : { password: value };
             let r: HttpResult;
             try {
                 r = await deps.http('POST', `${s.apiBase}/v1/auth/2fa/verify-step-up`, { Authorization: `Bearer ${s.auth.accessToken}` }, body);
-            } catch { return 'unavailable'; }
+            } catch { trail?.record('password_result', { result: 'other' }); return 'unavailable'; }
             if (gate !== g) return 'expired'; // answered, cancelled or timed out while the request was out
-            if (r.status >= 200 && r.status < 300) { finishGate('approved'); return 'ok'; }
+            if (r.status >= 200 && r.status < 300) { trail?.record('password_result', { result: 'ok' }); finishGate('approved', 'submit'); return 'ok'; }
             if (r.status === 400 || r.status === 401) {
                 g.attempts += 1;
-                if (g.attempts >= MAX_GATE_ATTEMPTS) { finishGate('declined'); return 'locked'; }
+                if (g.attempts >= MAX_GATE_ATTEMPTS) { trail?.record('password_result', { result: 'locked' }); finishGate('declined', 'submit'); return 'locked'; }
+                trail?.record('password_result', { result: 'wrong' });
                 return 'rejected';
             }
+            trail?.record('password_result', { result: 'other' });
             if (r.status === 429) return 'rate_limited';
             return 'unavailable';
         },
 
         gateCancel(ticket) {
-            if (gate && typeof ticket === 'string' && ticket === gate.ticket) finishGate('declined');
+            if (gate && typeof ticket === 'string' && ticket === gate.ticket) finishGate('declined', 'cancel');
         },
 
         shutdown() {
-            finishGate('declined');
+            finishGate('declined', 'session_end');
             session = null;
             helper.stop();
         },

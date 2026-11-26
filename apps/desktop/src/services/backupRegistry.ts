@@ -299,6 +299,10 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_emoji_library_{uid}',        match: 'exact',  include: false, why: 'vault.emojiLibrary' },
     { pattern: 'cipherline_emoji_index_{uid}',          match: 'exact',  include: false, why: 'vault.emojiIndex (size/mime/name of each stored image; last-used time is deliberately left out so viewing never churns a backup)' },
     { pattern: 'cipherline_emoji_key_{uid}_',           match: 'prefix', include: false, why: 'vault.emojiKeys' },
+    // Server emoji / sticker refs the device has displayed (utils/serverAssetRefs.ts): a cache of what the
+    // server answers by id (it keeps deleted emojis, retired), so a restored device just asks again. The
+    // images themselves are in the avatar blob cache (kind 'emoji'), also rebuildable.
+    { pattern: 'cipherline_server_asset_refs_{uid}',    match: 'exact',  include: false, why: 'Rebuildable cache of server emoji/sticker refs (id -> blob + key); the server keeps retired assets and serves them by id' },
     { pattern: 'cipherline_emoji_sync_view_{uid}',      match: 'exact',  include: false, why: 'Emoji-sync bookkeeping (what this DEVICE knows about the personal_emojis slot - device-specific, must not restore)' },
     // My stickers (2026-11-22): the library rides in the vault next to My Emojis
     // (vault.stickerLibrary); its images are entries of the SAME blob store, so

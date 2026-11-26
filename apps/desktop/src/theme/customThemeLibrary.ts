@@ -112,6 +112,18 @@ export function createCustomTheme(userId: string | null | undefined, def: Custom
     return writeLibrary(userId, [...cur, entry], { kind: 'create', id: entry.id }) ? entry : null;
 }
 
+/** USER action: replace a library theme's data (re-validated). False when refused (cold store, gone, invalid). */
+export function updateCustomTheme(userId: string | null | undefined, id: string, def: CustomThemeDef): boolean {
+    if (!userId) return false;
+    const r = normalizeCustomTheme(def);
+    if (!r.ok) return false;
+    const cur = readCustomThemes(userId);
+    if (!cur.some((t) => t.id === id)) return false;
+    const ok = writeLibrary(userId, cur.map((t) => (t.id === id ? { id, ...r.def } : t)), { kind: 'edit', id });
+    if (ok) reconcileActiveCustomTheme(userId);
+    return ok;
+}
+
 export interface CustomThemeLibrary {
     items: StoredCustomTheme[];
     /** False until the account's records are readable (actions are refused meanwhile). */
@@ -148,16 +160,7 @@ export function useCustomThemes(userId: string | null | undefined): CustomThemeL
 
     const create = useCallback((def: CustomThemeDef): StoredCustomTheme | null => createCustomTheme(userId, def), [userId]);
 
-    const update = useCallback((id: string, def: CustomThemeDef): boolean => {
-        if (!userId) return false;
-        const r = normalizeCustomTheme(def);
-        if (!r.ok) return false;
-        const cur = readCustomThemes(userId);
-        if (!cur.some((t) => t.id === id)) return false;
-        const ok = writeLibrary(userId, cur.map((t) => (t.id === id ? { id, ...r.def } : t)), { kind: 'edit', id });
-        if (ok) reconcileActiveCustomTheme(userId);
-        return ok;
-    }, [userId]);
+    const update = useCallback((id: string, def: CustomThemeDef): boolean => updateCustomTheme(userId, id, def), [userId]);
 
     const duplicate = useCallback((id: string): StoredCustomTheme | null => {
         const src = readCustomThemes(userId).find((t) => t.id === id);

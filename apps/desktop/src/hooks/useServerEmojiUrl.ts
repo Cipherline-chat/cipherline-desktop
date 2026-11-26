@@ -10,7 +10,7 @@ import {
 import { createUrlBatcher } from '../utils/emojiUrlBatcher';
 
 /** A failed load (network blip, expired URL) gets a few more goes. */
-const RETRY_DELAYS_MS = [2_000, 8_000, 20_000];
+const RETRY_DELAYS_MS = [2_000, 8_000, 20_000, 60_000, 180_000];
 
 /**
  * One custom emoji → object URL, through serverEmojiLoader's batched,

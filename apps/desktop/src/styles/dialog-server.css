@@ -132,3 +132,5 @@
 
 /* Server dialogs: a footer hint wraps to a second line instead of being cut off with an ellipsis (owner 2026-10-30). */
 .mcard.dlg-card--srv .dlg-foot-hint{white-space:normal;line-height:1.3;text-overflow:clip}
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.dlg-fr-av:has(img) { background: transparent; }

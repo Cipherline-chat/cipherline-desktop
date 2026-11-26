@@ -1,0 +1,66 @@
+/* NewMessagesBar (components/NewMessagesBar.tsx): the strip across the top of
+   the message feed while the reader is scrolled up. "3 new messages since
+   3:42 PM … Jump ↓" (lume tone), or "You're viewing older messages … Jump to
+   present ↓" (quiet tone). A glass strip like the channel list's unread pill
+   (styles/offscreen-unread.css), stretched to the feed's width the way
+   Discord's new-messages bar is. Tokens only: every theme (Light, Midnight,
+   both high-contrast themes) recolours it through the theme data. */
+.cl-newmsg-bar {
+  position: absolute; top: 8px; left: 16px; right: 20px; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 32px; padding: 6px 12px 6px 14px; border-radius: 10px;
+  font: 700 12.5px/1.25 var(--cl-font-body, 'Nunito', sans-serif); letter-spacing: .005em;
+  text-align: left; cursor: pointer; user-select: none;
+  -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
+  border: 1px solid var(--cl-newmsg-edge);
+  background: var(--cl-newmsg-bg);
+  color: var(--cl-newmsg-fg);
+  box-shadow: 0 4px 14px rgb(var(--cl-shade-rgb) / .35);
+  animation: cl-newmsg-in .2s cubic-bezier(.2, .7, .3, 1) both;
+  transition: background-color .12s ease, border-color .12s ease;
+}
+.cl-newmsg-bar:hover { background: var(--cl-newmsg-bg-hover); }
+.cl-newmsg-bar:focus-visible { outline: 2px solid var(--cl-lume-text); outline-offset: 2px; }
+
+.cl-newmsg-bar--new {
+  --cl-newmsg-bg: color-mix(in srgb, var(--cl-deep) 84%, var(--cl-lume) 16%);
+  --cl-newmsg-bg-hover: color-mix(in srgb, var(--cl-deep) 76%, var(--cl-lume) 24%);
+  --cl-newmsg-edge: rgb(var(--cl-lume-rgb) / .5);
+  --cl-newmsg-fg: var(--cl-text);
+  --cl-newmsg-action: var(--cl-lume-text);
+}
+.cl-newmsg-bar--older {
+  --cl-newmsg-bg: color-mix(in srgb, var(--cl-surface) 90%, transparent);
+  --cl-newmsg-bg-hover: color-mix(in srgb, var(--cl-raise) 92%, transparent);
+  --cl-newmsg-edge: var(--cl-border);
+  --cl-newmsg-fg: var(--cl-muted);
+  --cl-newmsg-action: var(--cl-text);
+}
+
+/* The label truncates in a narrow chat column (1000x720 with both side panels
+   leaves ~400 px); the action never wraps or shrinks. */
+.cl-newmsg-bar__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-newmsg-bar__action {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  font-weight: 800; white-space: nowrap; color: var(--cl-newmsg-action);
+}
+.cl-newmsg-bar__icon { width: 14px; height: 14px; }
+
+/* Entrance: slides down from the top edge. Mounts only when needed (never
+   portaled or reparented). */
+@keyframes cl-newmsg-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* "You jumped here": a lume wash that fades out on the first new message. */
+@keyframes cl-newmsg-landed {
+  0%   { background-color: rgb(var(--cl-lume-rgb) / .22); }
+  100% { background-color: transparent; }
+}
+.cl-newmsg-landed { animation: cl-newmsg-landed 1.4s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-newmsg-bar { animation: none; transition: none; }
+  .cl-newmsg-landed { animation: none; }
+}

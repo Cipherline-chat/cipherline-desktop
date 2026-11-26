@@ -39,6 +39,9 @@ const FAILED_LABEL: Record<'download' | 'verify' | 'install', string> = {
     install: "Update couldn't be installed — click to try again",
 };
 
+/** The signature checker (win-helper.exe) is missing or blocked: the update was not verified, so it was not applied. */
+export const HELPER_BLOCKED_LABEL = "Update couldn't be verified: part of Cipherline (win-helper.exe) is blocked or missing, often by security software — click to try again";
+
 const CANCELLED_LABEL = 'Update not installed — the password prompt was cancelled. Click to try again';
 
 /** What the Linux download link says. A .deb is named as one, and says WHY it is offered. */
@@ -74,6 +77,7 @@ export function describeUpdateTile(state: UpdateStateShape, now: number): Update
         case 'failed':
             // A .deb install whose password prompt the user dismissed: a choice, not a fault.
             if (state.cause === 'cancelled') return { visible: true, action: 'retry', label: CANCELLED_LABEL, tone: 'warn', percent: null };
+            if (state.cause === 'helper') return { visible: true, action: 'retry', label: HELPER_BLOCKED_LABEL, tone: 'error', percent: null };
             return { visible: true, action: 'retry', label: FAILED_LABEL[state.stage] ?? FAILED_LABEL.download, tone: 'error', percent: null };
         case 'ready':
             return { visible: true, action: 'install', label: 'Update ready — click to restart and install', tone: 'ready', percent: null };

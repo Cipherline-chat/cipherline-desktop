@@ -41,8 +41,10 @@ export interface ImageLike {
 
 export interface GameArtDeps {
     platform: NodeJS.Platform;
-    /** Run a program with extra environment; resolves stdout. Never a shell. */
+    /** Run a program with extra environment; resolves stdout. Never a shell. macOS only (`ps`): Windows asks `winExePath`. */
     exec(file: string, args: string[], env: Record<string, string>): Promise<string>;
+    /** Windows: the full path of the running process with this name (the signed win-helper.exe; no PowerShell). */
+    winExePath(processName: string): Promise<string | null>;
     exists(path: string): Promise<boolean>;
     /** `app.getFileIcon(path, { size: 'large' })`. */
     fileIcon(path: string): Promise<ImageLike>;
@@ -98,20 +100,11 @@ export function macAppRoot(commPath: string): string {
     return i > 0 ? commPath.slice(0, i + 4) : commPath;
 }
 
-// The process name travels in the environment, never in the script text, so no
-// quoting rule can be broken out of. WQL needs a single quote doubled. The
-// script itself has no double quotes, so it survives Windows' argv quoting.
-const PS_FIND_EXE =
-    '$q = [char]39; $n = $env:CL_PROC.Replace($q, $q + $q) + \'.exe\'; ' +
-    "$p = Get-CimInstance Win32_Process -Filter ('Name = ' + $q + $n + $q) | Where-Object { $_.ExecutablePath } | Select-Object -First 1; " +
-    'if ($p) { $p.ExecutablePath }';
-
 export async function findExecutablePath(processName: string, deps: GameArtDeps): Promise<string | null> {
     if (!isSafeProcessName(processName)) return null;
     try {
         if (deps.platform === 'win32') {
-            const out = await deps.exec('powershell', ['-NoProfile', '-NonInteractive', '-Command', PS_FIND_EXE], { CL_PROC: processName });
-            return readExePath(out.split(/\r?\n/)[0] ?? '');
+            return readExePath((await deps.winExePath(processName)) ?? '');
         }
         if (deps.platform === 'darwin') {
             const out = await deps.exec('ps', ['-axo', 'comm='], {});

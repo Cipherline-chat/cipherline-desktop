@@ -89,6 +89,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -425,17 +426,37 @@ long TokenIntegrity(HANDLE token) {
     return static_cast<long>(*GetSidSubAuthority(sid, static_cast<DWORD>(n - 1)));
 }
 
+// WHY THIS IS CACHED. The main process asks this every 1.5 s while a push-to-talk watch runs. The answer for a given process
+// cannot change while it lives (a token's integrity level is fixed at creation), yet each uncached ask did OpenProcess +
+// OpenProcessToken on the focused app: a steady stream of token probes on someone else's process, which is what behavioural
+// security engines read as credential-stealer reconnaissance. Now:
+//   * our OWN token (integrity, elevated) is read once and kept;
+//   * the focused app's answer is kept per pid for kForegroundCacheMs, so the other process is opened ONCE when focus moves
+//     to it (and again at most every few minutes), never on every tick. The "run as administrator" hint behaves exactly as
+//     before: it needs the answer only when focus changes to a different app.
+// Only the main thread calls this (a napi call), so plain statics are safe.
+constexpr ULONGLONG kForegroundCacheMs = 5ull * 60 * 1000;
+bool g_selfRead = false;
+long g_selfIl = -1;
+bool g_selfElevated = false;
+DWORD g_fgPid = 0;
+const char* g_fgKind = "unknown";
+ULONGLONG g_fgAt = 0;
+
 napi_value GetForegroundElevation(napi_env env, napi_callback_info /*info*/) {
-    long selfIl = -1;
-    bool selfElevated = false;
-    HANDLE selfToken = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &selfToken)) {
-        selfIl = TokenIntegrity(selfToken);
-        TOKEN_ELEVATION e = {0};
-        DWORD len = 0;
-        if (GetTokenInformation(selfToken, TokenElevation, &e, sizeof(e), &len)) selfElevated = e.TokenIsElevated != 0;
-        CloseHandle(selfToken);
+    if (!g_selfRead) {
+        HANDLE selfToken = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &selfToken)) {
+            g_selfIl = TokenIntegrity(selfToken);
+            TOKEN_ELEVATION e = {0};
+            DWORD len = 0;
+            if (GetTokenInformation(selfToken, TokenElevation, &e, sizeof(e), &len)) g_selfElevated = e.TokenIsElevated != 0;
+            CloseHandle(selfToken);
+            g_selfRead = true;  // a failed read is retried on the next call
+        }
     }
+    const long selfIl = g_selfIl;
+    const bool selfElevated = g_selfElevated;
 
     const char* fg = "unknown";
     HWND hwnd = GetForegroundWindow();
@@ -446,6 +467,8 @@ napi_value GetForegroundElevation(napi_env env, napi_callback_info /*info*/) {
         fg = "unknown";
     } else if (pid == GetCurrentProcessId()) {
         fg = "self";
+    } else if (pid == g_fgPid && GetTickCount64() - g_fgAt < kForegroundCacheMs) {
+        fg = g_fgKind;  // the same app is still focused: its elevation cannot have changed, do not open it again
     } else {
         HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (proc) {
@@ -458,6 +481,12 @@ napi_value GetForegroundElevation(napi_env env, napi_callback_info /*info*/) {
                 fg = "denied";
             }
             CloseHandle(proc);
+        }
+        // Remember settled answers only; "unknown" (could not read) is asked again next time.
+        if (strcmp(fg, "unknown") != 0) {
+            g_fgPid = pid;
+            g_fgKind = fg;
+            g_fgAt = GetTickCount64();
         }
     }
 

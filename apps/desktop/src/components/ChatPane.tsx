@@ -117,7 +117,12 @@ import type { SenderVerdict } from '../utils/senderTrust';
 import { UnverifiedDeviceBanner } from './UnverifiedDeviceBanner';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
 import { frankForSend, frankingHeaders, hashFileForCommitment, type ReportedMessageRef } from '../utils/franking';
-import { classifySubmit, decideViewportAction, correctedScrollTop } from '../utils/feedScrollDecision';
+import {
+    classifySubmit, decideViewportAction, correctedScrollTop,
+    shouldFollow, followAfterScroll, countsAsUnseen, appendedRows, newMessagesLabel, type LastRowMark,
+} from '../utils/feedScrollDecision';
+import { NewMessagesBar } from './NewMessagesBar';
+import { prefersReducedMotion } from '../utils/prefersReducedMotion';
 import { isUnconfirmedSend, sendFailureReason, type SendPatch } from '../utils/pendingSend';
 import { assignRowKeys, createEntranceTracker, createRevealGate, messageRowKey, type EntranceTracker, type RevealGate } from '../utils/messageEntrance';
 import { deliveryQueue, withRateLimitRetry, SEND_POST_TIMEOUT_MS } from '../utils/deliveryQueue';
@@ -137,6 +142,7 @@ import EmojiPickerPopover from './emojiPickerLazy';
 import { searchEmojiWithCustom } from './composer/emojiSuggestions';
 import type { EmojiSelection } from './EmojiPicker';
 import { useServerEmojis, type ServerEmoji } from '../hooks/useServerEmojis';
+import { useEmojiResolver } from '../hooks/useEmojiResolver';
 import { isMyReaction } from './reactionOwnership';
 import { EmojiImage, EmojiPlaceholder, MissingEmojiPlaceholder } from './server/EmojiImage';
 import { resolveEmojiGlyphState } from './server/emojiGlyphState';
@@ -184,7 +190,7 @@ import { safeBlobUrl } from '../utils/safeMediaUrl';
 import {
     PhoneCall, Video, MoreVertical, Paperclip, Smile, Send, Sticker as StickerIcon,
     Edit2, Reply, Trash2, SmilePlus, Lock, Clock, Phone,
-    User, Users, UserPlus, UserMinus, Ban, X, CornerUpLeft, Save, ChevronDown,
+    User, Users, UserPlus, UserMinus, Ban, X, CornerUpLeft, Save,
     Link as LinkIcon, Bookmark, Pin, Archive,
     Settings, Bell, BellDot, BellOff, LogOut, Hash,
     AlertTriangle, RotateCcw, Image as ImageIcon,
@@ -579,7 +585,7 @@ function renderReactionGlyph(
         return <PersonalEmojiImage id={parsed.id} name={parsed.label} noServerContext={noServerContext} className="inline-block" style={glyphBox} />;
     }
     const found = resolveEmoji?.(parsed.id ?? '');
-    const state = resolveEmojiGlyphState(found, emojisLoading);
+    const state = resolveEmojiGlyphState(found, emojisLoading, parsed?.id ?? undefined);
     if (state === 'loading') return <EmojiPlaceholder className="inline-block" style={glyphBox} />;
     if (state === 'unavailable') {
         return (
@@ -1089,7 +1095,7 @@ export function renderTextWithMentions(
             );
         } else if (parsed && parsed.kind === 'emoji') {
             const found = resolveEmoji?.(parsed.id ?? '');
-            const state = resolveEmojiGlyphState(found, emojisLoading);
+            const state = resolveEmojiGlyphState(found, emojisLoading, parsed?.id ?? undefined);
             parts.push(
                 state === 'resolved' ? (
                     <EmojiImage
@@ -1238,7 +1244,7 @@ function renderJumboContent(
             continue;
         }
         const found = parsed?.kind === 'emoji' ? resolveEmoji?.(parsed.id ?? '') : undefined;
-        const state = resolveEmojiGlyphState(found, emojisLoading);
+        const state = resolveEmojiGlyphState(found, emojisLoading, parsed?.id ?? undefined);
         parts.push(
             state === 'resolved' ? (
                 <EmojiImage
@@ -1295,6 +1301,9 @@ export { messageTextMentionsUser, messageTextMentionsRole };
 
 /** Stable default for `historyGaps` (DMs/groups have none). */
 const NO_HISTORY_GAPS: HistoryGap[] = [];
+/** Wall clock for the feed's scroll bookkeeping. Only ever called from event
+ *  handlers, effects and ResizeObserver callbacks, never while rendering. */
+const feedNow = (): number => Date.now();
 const NO_KEY_RUNS: ReadonlyMap<string, number> = new Map();
 
 interface ChatPaneProps {
@@ -2295,7 +2304,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         for (const e of serverEmojis) m.set(e.emoji_id, e);
         return m;
     }, [serverEmojis]);
-    const resolveEmoji = useCallback((id: string) => emojiById.get(id), [emojiById]);
+    // Live list first, then this device's remembered refs, then a by-id lookup
+    // (retired emojis included): an id missing from the list is NOT "deleted".
+    const resolveEmoji = useEmojiResolver(emojiServerId, token, authUserId ?? user?.user_id ?? null, emojiById, serverEmojisLoading);
     // No server at all to check a custom-emoji token against (DM/group) — an
     // unresolved token here can't be honestly called "deleted" the way it can
     // in a server channel with a loaded emoji list, since it's simply outside
@@ -3238,6 +3249,32 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const isAtBottomRef   = useRef(true);
     const [showScrollBtn, setShowScrollBtn] = useState(false);
 
+    // ── Unseen messages while scrolled up (the top NewMessagesBar) ────────────
+    // Ids of rows that landed at the end of the feed while the reader was
+    // scrolled up, in arrival order, tagged with the chat they belong to (so a
+    // chat switch drops them by derivation, before any effect runs). The bar's
+    // count is how many of them are still in the list (a deleted one stops
+    // counting); clicking it jumps to the first. Decision + counting rules:
+    // utils/feedScrollDecision.ts (shouldFollow / countsAsUnseen / appendedRows).
+    const [unseenState, setUnseenState] = useState<{ chat: string | null; ids: string[] }>({ chat: null, ids: [] });
+    const clearUnseen = useCallback(() => {
+        setUnseenState(s => (s.ids.length ? { chat: null, ids: [] } : s));
+    }, []);
+    // The last row before the latest change (per chat), so a commit can tell
+    // rows APPENDED at the end apart from history inserted above.
+    const lastRowMarkRef = useRef<{ chat: string | null; mark: LastRowMark | null }>({ chat: null, mark: null });
+
+    // ── Reading anchor: hold the row being read still while scrolled up ───────
+    // The feed disables Chromium's own scroll anchoring (overflow-anchor: none,
+    // see the feed element), so nothing used to compensate when content above
+    // the reader changed height: an image decoding, a link card arriving, an
+    // edit or a reaction on a row above. This is that compensation, done by
+    // hand: the first visible row and its offset from the feed's top edge,
+    // re-captured on every user scroll, and re-measured after every commit and
+    // every content resize; scrollTop is corrected by exactly its drift.
+    // Inactive while following the bottom (the bottom snaps own that case).
+    const readAnchorRef = useRef<{ msgId: string; top: number } | null>(null);
+
     // Tracks the last scrollTop value we personally set or confirmed (via a snap,
     // a layout effect, or an onScroll event). Used to detect user-initiated scrolls
     // synchronously inside useLayoutEffect, before the async onScroll event fires.
@@ -3352,16 +3389,96 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // Recompute "are we at the bottom?" on every scroll event.
     // Simple distance check — no direction tracking needed (that caused races with
     // the old RAF loop updating prevScrollTopRef from its own scrollTop mutations).
-    const checkBottom = () => {
+    // `programmatic`: this scroll event is the echo of a scrollTop we set
+    // ourselves (a correction or a snap), not the reader moving.
+    const checkBottom = (programmatic = false) => {
         const el = feedRef.current;
         if (!el) return;
         const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
         // More than 120 px from bottom → user scrolled away, stop following.
-        if (dist > 120) followBottomRef.current = false;
         // Within 60 px → user is at (or returned to) the bottom, re-engage.
-        if (dist < 60)  followBottomRef.current = true;
+        // (utils/feedScrollDecision.ts followAfterScroll — hysteresis between.)
+        const wasFollowing = followBottomRef.current;
+        followBottomRef.current = followAfterScroll(wasFollowing, dist);
         isAtBottomRef.current = dist < 120;
         setShowScrollBtn(dist > 1500);
+        if (wasFollowing && !followBottomRef.current) {
+            // Scrolled away: stop the default window following new messages, so
+            // one arriving cannot push a row off the top of the window (and the
+            // reader's place with it).
+            pagination.freeze();
+        }
+        if (followBottomRef.current) {
+            // Back at the bottom: everything is seen, and the FLIP reveal's
+            // baseline is the feed as it is now (not as it was before the
+            // reader scrolled away, which would animate all the growth since).
+            readAnchorRef.current = null;
+            lastSeenScrollHeightRef.current = el.scrollHeight;
+            clearUnseen();
+        } else if (programmatic && readAnchorRef.current) {
+            // Our own correction's echo arrives a frame later, and the layout
+            // may have changed again in between (an image decoding). Capturing
+            // here would adopt that uncorrected layout as "where the reader
+            // is"; correct against the anchor we already hold instead.
+            holdReadAnchor();
+        } else {
+            captureReadAnchor();
+        }
+    };
+
+    /**
+     * Remember the row being read and its offset from the feed's top edge: the
+     * first row that STARTS inside the viewport. Not the first one merely
+     * peeking in at the top: that row is cut off, so it is not what the reader
+     * is reading, and if it is the one that changes (its image decoding) its
+     * top edge stays put while everything visible below it moves. A row taller
+     * than the whole viewport is the only one in view, so it is the fallback.
+     */
+    const captureReadAnchor = () => {
+        const feed = feedRef.current;
+        if (!feed) return;
+        const fr = feed.getBoundingClientRect();
+        let peeking: { msgId: string; top: number } | null = null;
+        for (const row of Array.from(feed.querySelectorAll<HTMLElement>('[id^="msg-"]'))) {
+            const r = row.getBoundingClientRect();
+            if (r.bottom <= fr.top) continue;
+            if (r.top >= fr.top && r.top < fr.bottom) {
+                readAnchorRef.current = { msgId: row.id.slice(4), top: r.top - fr.top };
+                return;
+            }
+            if (!peeking) peeking = { msgId: row.id.slice(4), top: r.top - fr.top };
+            if (r.top >= fr.bottom) break;
+        }
+        readAnchorRef.current = peeking;
+    };
+
+    /**
+     * Correct scrollTop so the reading-anchor row sits exactly where it was.
+     * Yields to everything that owns the viewport on purpose: following the
+     * bottom, a jump-to-message (and its smooth scroll), and the FLIP slide
+     * (a transform the row's measured position includes while it plays).
+     */
+    const holdReadAnchor = () => {
+        const el = feedRef.current;
+        const anchor = readAnchorRef.current;
+        if (!el || !anchor) return;
+        if (followBottomRef.current || pendingScrollMsgIdRef.current) return;
+        if (feedNow() < jumpScrollUntilRef.current || flipCleanupRef.current) return;
+        const row = findMsgRow(anchor.msgId);
+        if (!row) { captureReadAnchor(); return; }     // the row left the list: re-anchor, don't guess
+        const feedTop = el.getBoundingClientRect().top;
+        const next = correctedScrollTop({
+            scrollTop:    el.scrollTop,
+            maxScrollTop: el.scrollHeight - el.clientHeight,
+            rowTopBefore: anchor.top,
+            rowTopAfter:  row.getBoundingClientRect().top - feedTop,
+        });
+        if (next !== el.scrollTop) {
+            el.scrollTop = next;
+            lastKnownScrollTopRef.current = el.scrollTop;
+        }
+        // Where it really is now (a clamped correction could not go all the way).
+        anchor.top = row.getBoundingClientRect().top - feedTop;
     };
 
     // ── Snap to bottom on chat switch ────────────────────────────────────────
@@ -3378,8 +3495,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         lastSeenScrollHeightRef.current = el.scrollHeight;
         followBottomRef.current       = true;
         isAtBottomRef.current         = true;
+        readAnchorRef.current         = null;
         setShowScrollBtn(false);
-    }, [activeChat?.id]);
+        clearUnseen();
+    }, [activeChat?.id, clearUnseen]);
 
     // ── Snap to bottom after loading gate lifts ───────────────────────────────
     // chatLoading / membersFetching block message rendering while avatars
@@ -3403,41 +3522,147 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         lastSeenScrollHeightRef.current = el.scrollHeight;
         followBottomRef.current       = true;
         isAtBottomRef.current         = true;
+        readAnchorRef.current         = null;
         setShowScrollBtn(false);
-    }, [chatLoading, membersFetching, messagesFetching, keyWait.holdList]);
+        clearUnseen();
+    }, [chatLoading, membersFetching, messagesFetching, keyWait.holdList, clearUnseen]);
 
-    // ── Snap to bottom on every new message (any sender) ─────────────────────
-    // The existing pagination.displayed effect below ONLY snaps if
-    // followBottomRef is true — i.e. the user has to already be near the
-    // bottom. When the user has scrolled up, that path leaves them put. The
-    // user requested the symmetric behaviour to "send-snaps-me-to-bottom":
-    // any new message (theirs OR a peer's) should snap them to the bottom.
-    // This effect re-engages followBottomRef and force-snaps independent of
-    // the existing logic. Keyed on the last message's stable IDENTITY
-    // (utils/messageEntrance.ts) so we don't re-snap when the array reference
-    // changes for unrelated reasons (edits, reactions, attachment-key
-    // resolution, etc.) — nor when the SAME message is confirmed, swaps its
-    // client id for the server's, takes the server's time, or is re-sorted:
-    // keyed on `id::timestamp`, every one of those re-ran the reveal. A row
-    // that was already revealed as the last one is never revealed again.
-    // On a chat switch the gate only records (the chat-switch effect above is
-    // the canonical snap-on-mount).
+    // ── A new row landed at the end: follow it, or hold and count it ─────────
+    // This effect used to be "snap to bottom on every new message (any
+    // sender)": it re-engaged followBottomRef and ran the FLIP reveal for
+    // EVERY new last row, so a reader scrolled up in history was dragged to
+    // the bottom whenever anyone posted or a member joined (owner, 2026-11-26:
+    // "it jumps you down to the bottom … just have a small thing that says
+    // jump to new message … at the top"). Now (utils/feedScrollDecision.ts):
+    //   - the reader's OWN send follows to the bottom, wherever they were;
+    //   - anything else follows only a reader who was already following;
+    //   - otherwise the viewport does not move (the window is frozen and the
+    //     reading anchor holds the row being read), and the new rows that
+    //     count as messages feed the top NewMessagesBar.
+    // Keyed on the last message's stable IDENTITY (utils/messageEntrance.ts)
+    // so it does not re-run when the array reference changes for unrelated
+    // reasons (edits, reactions, attachment-key resolution) — nor when the
+    // SAME message is confirmed, swaps its client id for the server's, takes
+    // the server's time, or is re-sorted. On a chat switch the gate only
+    // records (the chat-switch effect above is the canonical snap-on-mount).
     const [revealGate] = useState<RevealGate>(createRevealGate);
+    const rowIsMine = (m: { sender_user_id?: string | null; sender_device_id?: string | null }): boolean =>
+        m.sender_user_id ? m.sender_user_id === user?.user_id : myDeviceIds.has(m.sender_device_id ?? '');
     useLayoutEffect(() => {
         const chatId = activeChat?.id ?? null;
         const last = messages[messages.length - 1];
         const lastMsgKey = last ? messageRowKey(last, deviceId, 'no-id') : null;
+        const prev = lastRowMarkRef.current;
+        const prevMark = prev.chat === chatId ? prev.mark : null;
+        lastRowMarkRef.current = {
+            chat: chatId,
+            mark: last && lastMsgKey ? { key: lastMsgKey, ts: typeof last.timestamp === 'number' ? last.timestamp : Date.parse(last.timestamp ?? '') } : null,
+        };
         if (!revealGate.check(chatId, lastMsgKey)) return;
 
         const el = feedRef.current;
         if (!el) return;
-        followBottomRef.current       = true;
-        isAtBottomRef.current         = true;
-        setShowScrollBtn(false);
-        // FLIP slide-up to reveal the new message instead of snapping.
-        revealNewMessage();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+        const arrived = appendedRows<any>(messages, prevMark, (m) => messageRowKey(m, deviceId, 'no-id'));
+        // An own send from THIS device (its optimistic row or its echo). A row
+        // from my other device is mine for counting, but I did not just send it here.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+        const ownSend = (arrived.length ? arrived : [last]).some((m: any) => m?.sender_device_id === deviceId);
+        const cause = ownSend ? 'own-send' : last?.content?.type === 'system' ? 'system-row' : 'incoming-message';
+        if (shouldFollow({ cause, wasFollowing: followBottomRef.current })) {
+            followBottomRef.current       = true;
+            isAtBottomRef.current         = true;
+            readAnchorRef.current         = null;
+            setShowScrollBtn(false);
+            clearUnseen();
+            // FLIP slide-up to reveal the new message instead of snapping.
+            revealNewMessage();
+            return;
+        }
+        // Scrolled up: stay put, count what arrived.
+        const fresh = arrived
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+            .filter((m: any) => typeof m?.id === 'string' && countsAsUnseen(m, rowIsMine(m)))
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+            .map((m: any) => m.id as string);
+        if (fresh.length) {
+            setUnseenState(s => {
+                const base = s.chat === chatId ? s.ids : [];
+                const add = fresh.filter(id => !base.includes(id));
+                return add.length ? { chat: chatId, ids: [...base, ...add] } : s;
+            });
+        }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [messages, activeChat?.id]);
+
+    // The bar's view of the unseen ids: only those still in the list (a deleted
+    // or hidden row stops counting), in feed order for "the first one".
+    const unseenView = useMemo(() => {
+        const chatId = activeChat?.id ?? null;
+        if (unseenState.chat !== chatId || unseenState.ids.length === 0) return null;
+        const want = new Set(unseenState.ids);
+        let count = 0;
+        let first: { id: string; ms: number } | null = null;
+        for (const m of messages) {
+            if (!want.has(m.id)) continue;
+            if (m.content?.type === 'system' && hiddenSystemRowIds.includes(m.id)) continue;
+            count++;
+            if (!first) first = { id: m.id, ms: typeof m.timestamp === 'number' ? m.timestamp : Date.parse(m.timestamp ?? '') };
+        }
+        return count ? { count, first: first! } : null;
+    }, [unseenState, messages, activeChat?.id, hiddenSystemRowIds]);
+    const newMessagesText = unseenView
+        ? newMessagesLabel(unseenView.count, unseenView.first.ms, ms => formatHourMinute(new Date(ms)))
+        : null;
+
+    /** "Jump to present": straight to the bottom, following again. */
+    const jumpToPresent = () => {
+        followBottomRef.current = true;
+        isAtBottomRef.current   = true;
+        readAnchorRef.current   = null;
+        setShowScrollBtn(false);
+        clearUnseen();
+        const el = feedRef.current;
+        if (el) {
+            el.scrollTop                  = el.scrollHeight;
+            lastKnownScrollTopRef.current = el.scrollHeight - el.clientHeight;
+            lastSnapBottomRef.current     = el.scrollHeight - el.clientHeight;
+            lastSeenScrollHeightRef.current = el.scrollHeight;
+        }
+    };
+
+    /**
+     * The bar's "Jump": to the FIRST unseen message, placed just under the top
+     * edge, so the reader reads what they missed in order. When everything new
+     * fits on screen, that position is past the end of the feed and the
+     * scroll lands on the bottom, which re-engages following (checkBottom).
+     * Jumping straight to the bottom instead would skip past the earliest
+     * unseen messages whenever more than a screenful arrived.
+     */
+    const jumpToFirstUnseen = () => {
+        const el = feedRef.current;
+        const id = unseenView?.first.id;
+        clearUnseen();
+        const row = id ? findMsgRow(id) : null;
+        if (!el || !row) { jumpToPresent(); return; }
+        const max = el.scrollHeight - el.clientHeight;
+        const target = el.scrollTop + (row.getBoundingClientRect().top - el.getBoundingClientRect().top) - 12;
+        if (target >= max - 1) { jumpToPresent(); }
+        else {
+            readAnchorRef.current = null;          // re-captured by the scroll's own events
+            const reduce = prefersReducedMotion();
+            // The smooth scroll owns the viewport while it runs.
+            if (!reduce) jumpScrollUntilRef.current = feedNow() + 700;
+            el.scrollTo({ top: Math.max(0, target), behavior: reduce ? 'auto' : 'smooth' });
+        }
+        row.classList.remove('cl-newmsg-landed');
+        void row.offsetWidth;                       // restart the wash if it is still playing
+        row.classList.add('cl-newmsg-landed');
+        window.setTimeout(() => row.classList.remove('cl-newmsg-landed'), 1500);
+        // The bar unmounts on click; land keyboard focus in the composer (where
+        // the reader replies from) rather than on <body>.
+        inputRef.current?.focus();
+    };
 
     // ── Follow-bottom: synchronous snap for new messages ─────────────────────
     // Fires when the message poll delivers new content (~every 5 s). Polls are
@@ -6204,12 +6429,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // ROW itself — captured at submit time in handleSendAll, re-measured here
     // once the new content has laid out — and correct scrollTop by its drift.
     //
-    // Declared after the "snap to bottom on every new message" layout effect on
-    // purpose: React runs layout effects in declaration order, so this one sees
-    // the final scrollTop. It deliberately yields to that effect via the
-    // followBottomRef guard — if a peer's message landed in the same commit as
-    // the edit, the documented snap-to-bottom wins and the anchor is dropped
-    // rather than scrolling the user back up and undoing it.
+    // Declared after the "new row landed at the end" layout effect on purpose:
+    // React runs layout effects in declaration order, so this one sees the
+    // final scrollTop. It yields to that effect via the followBottomRef guard:
+    // if something in the same commit legitimately pinned the bottom (an own
+    // send, or new content while the reader was following), the bottom wins
+    // and the anchor is dropped rather than scrolling the user back up.
     useLayoutEffect(() => {
         const anchor = editAnchorRef.current;
         if (!anchor) return;
@@ -6231,6 +6456,28 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // the next poll's layout effect doesn't read this as the user scrolling.
         lastKnownScrollTopRef.current = el.scrollTop;
     }, [messages]);
+
+    // ── Hold the reading anchor on every commit while scrolled up ────────────
+    // No dependency list on purpose: any commit can move rows above the reader
+    // (a row's text, an embed, a reaction strip, a save mark, a key-wait row
+    // resolving). Declared after the gap-fill, load-earlier and edit-anchor
+    // corrections, so it runs last and only ever sees what they did not
+    // already correct (a corrected row reads as zero drift). Cheap: one row
+    // lookup and two rect reads, and nothing at all while following.
+    useLayoutEffect(() => { holdReadAnchor(); });
+
+    // ...and on every size change that happens outside a commit: an image or
+    // video finishing decoding, a link card's thumbnail, a font swap. The
+    // observer fires after layout and before paint, so the correction lands in
+    // the same frame as the growth and the reader never sees the row move.
+    useEffect(() => {
+        const content = contentRef.current;
+        if (!content || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(() => holdReadAnchor());
+        ro.observe(content);
+        return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeChat?.id]);
 
     const handleAddReaction = (msgId: string, emoji: string) => {
         const msg = messages.find(m => m.id === msgId);
@@ -7344,6 +7591,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 data-chat-feed=""
                 onScroll={() => {
                     const el = feedRef.current;
+                    // Every scrollTop this component sets is recorded in
+                    // lastKnownScrollTopRef, so an event that lands exactly there is
+                    // the echo of our own write (a reader's scroll always moves it).
+                    const programmatic = !!el && Math.abs(el.scrollTop - lastKnownScrollTopRef.current) < 1;
                     // Sync lastKnownScrollTopRef on every scroll so the layout effect
                     // comparison stays accurate between React commit phases.
                     if (el) {
@@ -7357,7 +7608,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const row = anchor ? findMsgRow(anchor.msgId) : null;
                         if (anchor && row) anchor.top = row.getBoundingClientRect().top - el.getBoundingClientRect().top;
                     }
-                    checkBottom();
+                    checkBottom(programmatic);
                     if (el && el.scrollTop < 80 && !chatSearch.trim() && Date.now() >= jumpScrollUntilRef.current) {
                         if (pagination.hasMore) {
                             preservedScrollHeightRef.current = el.scrollHeight;
@@ -9024,6 +9275,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         : undefined}
                 />
             )}
+            {/* "3 new messages since 3:42 PM — Jump" / "You're viewing older
+                messages — Jump to present": top of the feed, inside the feed's
+                own wrapper so it never covers the header or the banners above. */}
+            <NewMessagesBar
+                newLabel={newMessagesText}
+                farFromBottom={showScrollBtn}
+                onJumpToNew={jumpToFirstUnseen}
+                onJumpToPresent={jumpToPresent}
+            />
             </div>
 
             {/* Right-click message menu — portalled to body by the shared
@@ -9031,30 +9291,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 item-building logic). */}
             {msgContextMenu.menu}
 
-            {/* Jump-to-bottom button — top-centre, only after scrolling far up */}
-            {showScrollBtn && (
-                <ClButton
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                        followBottomRef.current = true;
-                        isAtBottomRef.current   = true;
-                        setShowScrollBtn(false);
-                        const _jEl = feedRef.current;
-                        if (_jEl) {
-                            _jEl.scrollTop                = _jEl.scrollHeight;
-                            lastKnownScrollTopRef.current = _jEl.scrollHeight - _jEl.clientHeight;
-                            lastSnapBottomRef.current     = _jEl.scrollHeight - _jEl.clientHeight;
-                        }
-                    }}
-                    tooltip="Jump to latest"
-                    style={{ position: 'absolute', top: 64, left: '50%', transform: 'translateX(-50%)', zIndex: 40, borderRadius: 999, padding: '6px 12px', fontSize: 12, gap: 6 }}
-                    className="msg-menu-enter shadow-lg"
-                >
-                    <ChevronDown className="w-3.5 h-3.5" />
-                    Jump to latest
-                </ClButton>
-            )}
+            {/* (The old top-centre "Jump to latest" pill is NewMessagesBar's
+                "older messages" state now, inside the feed wrapper above.) */}
 
             {/* Input Controller - Floating */}
             <div ref={composerWrapRef} className="absolute bottom-4 left-4 right-4 shrink-0 flex flex-col pointer-events-none z-50">

@@ -1,10 +1,9 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Check, Copy, Eye, Import, Pencil, Plus, Share2, Trash2 } from 'lucide-react';
+import { Check, Copy, Import, Pencil, Plus, Share2, Trash2 } from 'lucide-react';
 import { ClButton, ClConfirm } from '../../cl';
 import { useAuth } from '../../../contexts/AuthContext';
-import { getActiveCustomThemeId, startThemePreview, useTheme, useThemePreference, useThemePreview } from '../../../theme/engine';
+import { getActiveCustomThemeId, realTheme, startThemePreview, stopThemePreview, useThemePreference, useThemePreview } from '../../../theme/engine';
 import { customThemeFromBase, customThemeFromTheme, deriveCustomTheme, type CustomThemeDef, type StoredCustomTheme } from '../../../theme/customTheme';
-import { chooseCustomTheme } from '../../../theme/activeThemeMirror';
 import { useCustomThemes } from '../../../theme/customThemeLibrary';
 import { CustomThemeEditor } from './CustomThemeEditor';
 import { CustomThemeExportDialog, CustomThemeImportDialog } from './CustomThemeShareDialog';
@@ -15,9 +14,15 @@ import '../../../styles/custom-themes.css';
  * Settings → Appearance → Theme → "Your themes": the custom theme library
  * (theme/customThemeLibrary.ts) as picker tiles under the built-in ones, plus
  * Create / Import, and Edit / Duplicate / Share / Delete on each tile.
- * Picking a tile applies it on this device (engine.setCustomTheme); the
- * library itself follows the account (backups + the `themes` sync slot).
- * Free for everyone (owner decision D5).
+ * Picking a tile (and Save in the editor, Save and use on an import) PREVIEWS
+ * it on the whole app (engine.startThemePreview): the bar's Keep makes it this
+ * device's theme (activeThemeMirror.chooseCustomTheme), and without Keep the
+ * real theme comes back by itself after 15 s. Colours are never contrast-
+ * corrected, so this is what stops a black-on-black theme stranding anyone.
+ * Editing the theme IN USE writes nothing until Keep (the library entry IS the
+ * device's theme); reverting reopens the editor with the edit so nothing is
+ * lost. The library itself follows the account (backups + the `themes` sync
+ * slot). Free for everyone (owner decision D5).
  */
 
 type Dialog =
@@ -35,31 +40,51 @@ export const CustomThemes: React.FC = () => {
     const uid = userId ?? user?.user_id ?? null;
     const lib = useCustomThemes(uid);
     const pref = useThemePreference();
-    const active = useTheme();
     const previewing = useThemePreview();
     const activeId = pref === 'custom' ? getActiveCustomThemeId() : null;
     const [dialog, setDialog] = useState<Dialog>(null);
     const minis = useMemo(() => new Map(lib.items.map((t) => [t.id, deriveCustomTheme(stripId(t), t.id)])), [lib.items]);
 
-    const pickTheme = (t: StoredCustomTheme) => { void chooseCustomTheme(uid, t.id, stripId(t)); };
+    /** A library theme on the whole app, waiting for Keep on the preview bar. */
+    const tryTheme = (id: string, def: CustomThemeDef) => { startThemePreview(def, { libraryId: id, source: 'settings' }); };
+    const pickTheme = (t: StoredCustomTheme) => {
+        // The theme in use: nothing to try (and while previewing, back to it = Revert).
+        if (t.id === activeId) { if (previewing) stopThemePreview(); return; }
+        tryTheme(t.id, stripId(t));
+    };
     // Keyboard, as the built-in tiles above (ThemePicker): one Tab stop for the
-    // tiles (the theme in use, else the first), arrow keys move AND use; each
-    // tile's Edit / Duplicate / Share / Delete stay ordinary Tab stops.
+    // tiles (the one on screen, else the first), arrow keys move focus only
+    // (a pick moves focus to the preview bar's Keep); each tile's Edit /
+    // Duplicate / Share / Delete stay ordinary Tab stops.
     const pickRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const activeIndex = lib.items.findIndex((t) => t.id === activeId);
+    const shownId = previewing ? previewing.libraryId : activeId;
+    const shownIndex = lib.items.findIndex((t) => t.id === shownId);
     const onPickKeyDown = (e: React.KeyboardEvent, i: number) => {
         const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
         if (!step || lib.items.length < 2) return;
         e.preventDefault();
         const n = lib.items.length;
-        const next = (i + step + n) % n;
-        pickTheme(lib.items[next]);
-        pickRefs.current[next]?.focus();
+        pickRefs.current[(i + step + n) % n]?.focus();
     };
-    const createAndUse = (def: CustomThemeDef): boolean => {
+    const createAndTry = (def: CustomThemeDef): boolean => {
         const entry = lib.create(def);
         if (!entry) return false;
-        void chooseCustomTheme(uid, entry.id, stripId(entry));
+        tryTheme(entry.id, stripId(entry));
+        return true;
+    };
+    const saveEdit = (theme: StoredCustomTheme, def: CustomThemeDef): boolean => {
+        if (theme.id === activeId) {
+            // The theme in use: its library entry IS the device's theme, so nothing
+            // is written until Keep. Reverting reopens the editor with the edit.
+            if (!lib.ready) return false;
+            startThemePreview(def, {
+                libraryId: theme.id, source: 'settings', pendingEdit: true,
+                onRevert: () => setDialog({ kind: 'edit', theme: { ...def, id: theme.id } }),
+            });
+            return true;
+        }
+        if (!lib.update(theme.id, def)) return false;
+        tryTheme(theme.id, def);
         return true;
     };
     const canAdd = lib.ready && !lib.full;
@@ -82,35 +107,25 @@ export const CustomThemes: React.FC = () => {
                     const isPreview = previewing?.libraryId === t.id;
                     const mini = minis.get(t.id)!;
                     return (
-                        <div key={t.id} className={`tp-opt ctl-tile${on ? ' tp-opt--on' : ''}${isPreview ? ' ctl-tile--preview' : ''}`} data-custom-theme-tile={t.id}>
+                        <div key={t.id} className={`tp-opt ctl-tile${on ? ' tp-opt--on' : ''}${isPreview ? ' tp-opt--preview ctl-tile--preview' : ''}`} data-custom-theme-tile={t.id}>
                             <button
                                 type="button"
                                 className="ctl-pick"
                                 ref={(el) => { pickRefs.current[i] = el; }}
-                                tabIndex={on || (activeIndex < 0 && i === 0) ? 0 : -1}
-                                aria-pressed={on}
+                                tabIndex={i === Math.max(0, shownIndex) ? 0 : -1}
+                                aria-pressed={t.id === shownId}
                                 onClick={() => pickTheme(t)}
                                 onKeyDown={(e) => onPickKeyDown(e, i)}
-                                aria-label={`Use ${t.name}`}
+                                aria-label={on ? `${t.name}, in use` : `Preview ${t.name}`}
                             >
                                 <span className="tp-pic">
                                     <CustomThemeMini theme={mini} />
                                     {on && <span className="tp-check"><Check size={13} strokeWidth={3} /></span>}
                                 </span>
                                 <span className="tp-label">{t.name}</span>
-                                <span className="tp-desc">{isPreview ? 'Previewing' : `${t.base === 'dark' ? 'Dark' : 'Light'} base${t.glow ? ' · glow' : ''}`}</span>
+                                <span className="tp-desc">{isPreview ? 'Previewing. Press Keep to use it.' : `${t.base === 'dark' ? 'Dark' : 'Light'} base${t.glow ? ' · glow' : ''}`}</span>
                             </button>
                             <div className="ctl-actions">
-                                <ClButton
-                                    variant="ghost"
-                                    size="sm"
-                                    icon
-                                    ariaLabel={`Preview ${t.name}`}
-                                    tooltip={on ? 'In use' : isPreview ? 'Previewing now' : 'Preview on the whole app'}
-                                    disabled={on}
-                                    ariaPressed={isPreview}
-                                    onClick={() => startThemePreview(stripId(t), { libraryId: t.id })}
-                                ><Eye size={14} /></ClButton>
                                 <ClButton variant="ghost" size="sm" icon ariaLabel={`Edit ${t.name}`} tooltip="Edit" onClick={() => setDialog({ kind: 'edit', theme: t })}><Pencil size={14} /></ClButton>
                                 <ClButton variant="ghost" size="sm" icon ariaLabel={`Duplicate ${t.name}`} tooltip="Duplicate" disabled={!canAdd} onClick={() => { lib.duplicate(t.id); }}><Copy size={14} /></ClButton>
                                 <ClButton variant="ghost" size="sm" icon ariaLabel={`Share ${t.name}`} tooltip="Share" onClick={() => setDialog({ kind: 'export', def: stripId(t) })}><Share2 size={14} /></ClButton>
@@ -122,14 +137,14 @@ export const CustomThemes: React.FC = () => {
                 <button
                     type="button"
                     className="ctl-new"
-                    onClick={() => setDialog({ kind: 'create', seed: active.customId ? customThemeFromBase(active.scheme) : customThemeFromTheme(active) })}
+                    onClick={() => { const real = realTheme(); setDialog({ kind: 'create', seed: real.customId ? customThemeFromBase(real.scheme) : customThemeFromTheme(real) }); }}
                     disabled={!canAdd}
                     title={addHint || undefined}
                     data-create-theme
                 >
                     <span className="ctl-new-ic" aria-hidden="true"><Plus size={18} strokeWidth={2.5} /></span>
                     <span className="tp-label">Create theme</span>
-                    <span className="tp-desc">{addHint || 'Nine colours, a live preview, readable by design.'}</span>
+                    <span className="tp-desc">{addHint || 'Pick any colours you like, with a live preview.'}</span>
                 </button>
             </div>
 
@@ -138,7 +153,7 @@ export const CustomThemes: React.FC = () => {
                     mode="create"
                     initial={dialog.seed}
                     onCancel={() => setDialog(null)}
-                    onSave={(def) => { const ok = createAndUse(def); if (ok) setDialog(null); return ok; }}
+                    onSave={(def) => { const ok = createAndTry(def); if (ok) setDialog(null); return ok; }}
                 />
             )}
             {dialog?.kind === 'edit' && (
@@ -148,8 +163,8 @@ export const CustomThemes: React.FC = () => {
                     onCancel={() => setDialog(null)}
                     onShare={() => setDialog({ kind: 'export', def: stripId(dialog.theme) })}
                     onSave={(def) => {
-                        const ok = lib.update(dialog.theme.id, def);
-                        if (ok) { void chooseCustomTheme(uid, dialog.theme.id, def); setDialog(null); }
+                        const ok = saveEdit(dialog.theme, def);
+                        if (ok) setDialog(null);
                         return ok;
                     }}
                 />
@@ -161,7 +176,7 @@ export const CustomThemes: React.FC = () => {
                     onImport={(def, useIt) => {
                         const entry = lib.create(def);
                         if (!entry) return false;
-                        if (useIt) void chooseCustomTheme(uid, entry.id, stripId(entry));
+                        if (useIt) tryTheme(entry.id, stripId(entry));
                         setDialog(null);
                         return true;
                     }}

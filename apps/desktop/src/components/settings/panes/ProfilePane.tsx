@@ -24,6 +24,7 @@ import { useAttachments } from '../../../hooks/useAttachments';
 import { useAvatarBroadcast } from '../../../hooks/useAvatarBroadcast';
 import { saveAvatarKey } from '../../../utils/avatarKeyStore';
 import { uploadAvatarBlob } from '../../../utils/avatarUpload';
+import { avatarUploadType, avatarUploadExt } from '../../../utils/imageCrop';
 import { fetchProfile, noteProfileEdited, type PublicProfile } from '../../../utils/profileCache';
 import { UsernameTagField } from './UsernameTagField';
 import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../../utils/imageCrop';
@@ -352,7 +353,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
             let id: string | null = null;
             if (file && kind === 'avatar') {
                 const avatarFile = file;
-                id = await uploadAvatarBlob(avatarFile, { uploadEncryptedFile, broadcastProfileAvatarKey }, 'avatar.jpg', avatarFile.type || 'image/jpeg');
+                const mime = avatarUploadType(avatarFile);
+                id = await uploadAvatarBlob(avatarFile, { uploadEncryptedFile, broadcastProfileAvatarKey }, `avatar.${avatarUploadExt(mime)}`, mime);
             } else if (file) {
                 const bannerFile = file;
                 const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(bannerFile, 'banner.jpg', bannerFile.type || 'image/jpeg');
@@ -744,6 +746,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                 shape={cropTarget?.kind === 'banner' ? 'rect' : 'circle'}
                 title={cropTarget?.kind === 'banner' ? 'Position your banner' : 'Position your avatar'}
                 allowAnimated
+                keepTransparency={cropTarget?.kind !== 'banner'}
                 onCancel={() => setCropTarget(null)}
                 onConfirm={(blob) => handleCropped(blob)}
             />

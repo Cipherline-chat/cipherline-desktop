@@ -109,6 +109,33 @@ export interface NearRefusal {
     lan: 'ok' | 'not_found' | 'denied' | 'firewall' | 'skipped';
 }
 
+/** This device's adapters, as counts (own-device transfer diagnostics; never a name or an address). */
+export interface NearAdapterCensus {
+    eligible: number; wifi: number; ethernet: number; unknown: number;
+    filtered: number; filteredVirtual: number; filteredVpn: number; filteredUnresolved: number;
+}
+
+/** Why a local-network leg did not hold, and how a session ended. The engine knows more than the wire says: the wire keeps the legacy
+ *  `NearRefusal.lan` words, so an older phone is never sent a cause it would drop. */
+export type NearCause =
+    | 'ok' | 'declined' | 'busy' | 'cancelled' | 'peer_cancelled' | 'different_network' | 'no_usable_network' | 'peer_no_usable_network'
+    | 'no_answer' | 'not_found' | 'denied' | 'firewall' | 'expired' | 'refused' | 'failed';
+
+/** Counts and closed words for the diagnostic report and the ending screens (`near-engine/src/state.rs::NearDiag`). Optional everywhere:
+ *  an older helper does not send it. */
+export interface NearDiag {
+    adapters?: NearAdapterCensus;
+    lanUsable?: boolean;
+    peerLan?: boolean;
+    lanPlan?: 'listen' | 'dial' | 'none';
+    sameSubnet?: boolean;
+    dialAttempts: number;
+    lanResult?: string;
+    lanFail?: NearCause;
+    /** A word this build does not know reads as the generic ending: never assume it is one of `NearCause`. */
+    cause?: NearCause | (string & {});
+}
+
 /** What a stopped transfer left (contract 11.10, "Keep what arrived"). */
 export interface NearPartial {
     recordsHeld: number;
@@ -146,6 +173,8 @@ export interface NearSnapshot {
     transfer?: NearTransferStatus;
     /** Set with `refused` / `failed` / `expired`. `code` is stable; `message` is for logs. */
     error?: { code: string; message: string };
+    /** Counts and words for the diagnostic report and the ending screens; absent from an older helper. */
+    diag?: NearDiag;
 }
 
 export interface NearAuth {

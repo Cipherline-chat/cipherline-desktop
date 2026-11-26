@@ -222,13 +222,15 @@ mod tests {
 
     #[test]
     fn config_validation() {
-        let ok = || Config { profile: "/home/u/.config/Cipherline/near".into(), staging_dir: "/home/u/.config/Cipherline/backup-staging".into(), version: "0.1.2".into(), device_label: "My PC".into(), platform: "linux".into(), attest_secret: None };
+        // An absolute path is platform-shaped: "/home/u/..." is relative on Windows (no drive letter).
+        let root = if cfg!(windows) { r"C:\Users\u\AppData\Roaming\Cipherline" } else { "/home/u/.config/Cipherline" };
+        let ok = || Config { profile: format!("{root}/near"), staging_dir: format!("{root}/backup-staging"), version: "0.1.2".into(), device_label: "My PC".into(), platform: "linux".into(), attest_secret: None };
         assert!(ok().validate().is_ok());
         let mut c = ok();
         c.profile = "relative/dir".into();
         assert!(c.validate().is_err());
         let mut c = ok();
-        c.staging_dir = "/a/../etc".into();
+        c.staging_dir = if cfg!(windows) { r"C:\a\..\etc".into() } else { "/a/../etc".into() };
         assert!(c.validate().is_err());
         let mut c = ok();
         c.platform = "plan9".into();

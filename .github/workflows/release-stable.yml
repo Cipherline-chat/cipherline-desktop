@@ -160,6 +160,17 @@ jobs:
             echo "::error title=Local history transfer::near-helper.exe was not built. A stable release without history transfer must never ship."
             exit 1
           fi
+      # REQUIRED: win-helper.exe is how the app reads games / Now Playing and verifies updates WITHOUT starting PowerShell (a stable
+      # release that falls back to nothing would refuse every later update). Signed on copy by electron-builder like near-helper.exe.
+      - name: Build the Windows system helper (required)
+        shell: bash
+        run: |
+          export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+          bash apps/desktop/scripts/build-win-helper.sh
+          if [ ! -s apps/desktop/build/Release/win-helper.exe ]; then
+            echo "::error title=Windows helper::win-helper.exe was not built. A stable Windows release without it must never ship."
+            exit 1
+          fi
       # Azure Artifact Signing's PowerShell module runs `dotnet tool install sign ...`.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -182,12 +193,12 @@ jobs:
       # build.win.signExts says otherwise, and an unsigned audio_capture.node is blocked by Smart App Control
       # (screen-share audio dies). Fails on any file that is not Valid; stable builds are never unsigned, so there is
       # no skip path here. -RequireFile near-helper.exe: the history-transfer helper must be packaged
-      # (win-unpacked\resources\near-helper.exe) and signed by Cipherline LLC (safety note 6).
+      # (win-unpacked\resources\near-helper.exe), and so must win-helper.exe, signed by Cipherline LLC (safety note 6).
       - name: Verify Windows code signature (every shipped PE file)
         shell: powershell
         run: |
           # -ExecutionPolicy Bypass: do not depend on the runner's machine policy to run a checked-in script.
-          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/desktop/scripts/verify-windows-signatures.ps1 -ReleaseDir apps/desktop/release -RequireFile near-helper.exe
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/desktop/scripts/verify-windows-signatures.ps1 -ReleaseDir apps/desktop/release -RequireFile near-helper.exe,win-helper.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke test (Windows unpacked)
         shell: bash

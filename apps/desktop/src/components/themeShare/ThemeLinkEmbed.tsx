@@ -13,11 +13,13 @@
  * app's tokens); the mini preview is painted from the SHARED theme's own
  * variables (CustomThemePreview), so what you see is what you would get.
  *
- * Actions: Preview (the theme on the WHOLE app for a while, with the
- * bottom-left "Previewing" bar: ThemePreviewBar; nothing is stored), Save, Save
- * and use. Saving goes through the library's own create (re-validated there
- * too); using goes through activeThemeMirror.chooseCustomTheme (the normal
- * way, which also ends a preview).
+ * Actions: Preview (the theme on the WHOLE app with the "Previewing" bar:
+ * ThemePreviewBar, Keep / Revert, reverts by itself after 15 s; nothing is
+ * stored), Save, Save and use. Saving goes through the library's own create
+ * (re-validated there too); "use" saves, then PREVIEWS the saved theme: only
+ * Keep on the bar makes it the device's theme (activeThemeMirror via
+ * themePreviewActions.keepPreviewedTheme), so a shared theme can never strand
+ * anyone in unreadable colours.
  */
 import React, { useMemo, useState } from 'react';
 import { Eye, Link2Off, Palette } from 'lucide-react';
@@ -27,7 +29,6 @@ import { useContextMenu } from '../../hooks/useContextMenu';
 import { deriveCustomTheme, KNOB_LABELS, type CustomThemeDef, type StoredCustomTheme } from '../../theme/customTheme';
 import { useCustomThemes } from '../../theme/customThemeLibrary';
 import { getActiveCustomThemeId, startThemePreview, useThemePreference, useThemePreview } from '../../theme/engine';
-import { chooseCustomTheme } from '../../theme/activeThemeMirror';
 import { THEME_CARD_SWATCHES, buildThemeLink, parseThemeLink, sameThemeLook } from '../../theme/themeLink';
 import { ThemePreviewThumb } from '../settings/panes/CustomThemePreview';
 import '../../styles/theme-share.css';
@@ -71,18 +72,21 @@ const ThemeLinkCard: React.FC<{ def: CustomThemeDef }> = ({ def }) => {
 
     const saved = lib.items.find((t) => sameThemeLook(t, def)) ?? null;
     const inUse = !!saved && pref === 'custom' && getActiveCustomThemeId() === saved.id;
-    const thisPreviewing = !!previewing && sameThemeLook(previewing.def, def);
+    const thisPreviewing = !!previewing?.def && sameThemeLook(previewing.def, def);
     const refusal = !lib.ready ? 'Your themes are still loading.' : lib.full ? 'You have 24 themes. Delete one to add another.' : null;
 
+    // "Use" never applies a theme blind: it previews it, and Keep on the preview
+    // bar (ThemePreviewBar) makes it stick. Without Keep it reverts by itself.
+    const tryIt = (entry: StoredCustomTheme) => { startThemePreview(stripId(entry), { libraryId: entry.id }); };
     const save = (use: boolean): StoredCustomTheme | null => {
         if (saved) {
-            if (use) { void chooseCustomTheme(uid, saved.id, stripId(saved)); setStatus({ kind: 'ok', text: `Now using ${saved.name}.` }); }
+            if (use) { tryIt(saved); setStatus({ kind: 'ok', text: `Press Keep to use ${saved.name}.` }); }
             return saved;
         }
         const entry = lib.create(def);
         if (!entry) { setStatus({ kind: 'err', text: refusal ?? 'Could not save this theme.' }); return null; }
-        if (use) void chooseCustomTheme(uid, entry.id, stripId(entry));
-        setStatus({ kind: 'ok', text: use ? `Saved and using ${entry.name}.` : `Saved to your themes as ${entry.name}.` });
+        if (use) tryIt(entry);
+        setStatus({ kind: 'ok', text: use ? `Saved as ${entry.name}. Press Keep to use it.` : `Saved to your themes as ${entry.name}.` });
         return entry;
     };
 

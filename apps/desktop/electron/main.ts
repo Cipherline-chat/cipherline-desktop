@@ -295,7 +295,11 @@ import { UncleanLedgerStore, UNCLEAN_LEDGER_FILE, judgeUncleanExit, suppressedCo
 import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
 import { createNearBridge, NEAR_ACTIONS } from './near-bridge';
+import { createNearTrail } from './near-diag';
 import { resolveNearHelper } from './near-helper-path';
+import { resolveWinHelper } from './win-helper-path';
+import { WinHelperClient } from './win-helper';
+import { setWinHelperBinary, setWinSys, winHelperBinary, winSys } from './win-sys';
 import { applyAvatarKey } from './avatar-key-policy';
 import { isNativeShareEncoderEnabled } from './native-share-encoder';
 import { registerNativeShareIpc } from './native-share-ipc';
@@ -340,6 +344,24 @@ installStdioGuard();
 // env value it has always been. What changed is only the packaged case, where
 // the variable is now ignored.
 const IS_PACKAGED = app.isPackaged;
+
+// Windows: every question the app asks the OS (running programs, window state, Now Playing, update signature, the per-app GPU
+// preference) is answered by ONE signed Rust helper, win-helper.exe (apps/desktop-host/win-helper), never by PowerShell, cmd,
+// tasklist, wmic or reg.exe: a hidden script host is what behavioural security engines call malware. Missing / crashed helper =
+// "nothing detected" (fail soft; the update-signature check fails CLOSED instead, see authenticode-verify.ts).
+const winHelperClient = process.platform === 'win32' ? new WinHelperClient() : null;
+if (process.platform === 'win32') {
+  setWinHelperBinary(() => resolveWinHelper({
+    isPackaged: IS_PACKAGED,
+    envHelper: process.env.CIPHERLINE_WIN_HELPER,
+    resourcesPath: process.resourcesPath,
+    devTargetDir: path.join(__dirname, '../../desktop-host/win-helper/target'),
+    // an empty file is never a helper (scripts/build-win-helper.sh packages nothing when the build failed)
+    exists: (p) => { try { return fs.statSync(p).size > 0; } catch { return false; } },
+  })?.path ?? null);
+  setWinSys(winHelperClient);
+  app.on('will-quit', () => winHelperClient?.stop());
+}
 const DEV_SERVER_URL: string | undefined =
   IS_PACKAGED ? undefined : (process.env.VITE_DEV_SERVER_URL || undefined);
 // E-7: the env var alone does not select smoke mode in a packaged build — see
@@ -2955,12 +2977,8 @@ app.whenReady().then(async () => {
         exePath: process.execPath,
         markerExists: () => fs.existsSync(markerPath),
         writeMarker: () => fs.writeFileSync(markerPath, '', { mode: 0o600 }),
-        reg: (args) => new Promise((resolve) => {
-          const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
-          execFile(reg, args, { windowsHide: true, timeout: 10_000 }, (err) => {
-            resolve(err ? (typeof err.code === 'number' ? err.code : 1) : 0);
-          });
-        }),
+        preferenceExists: (exe) => winSys().gpuPreferenceExists(exe),
+        setHighPerformance: (exe) => winSys().setHighPerformanceGpu(exe),
       }).then(async (outcome) => {
         if (outcome === 'skipped') return;
         let active = 'unknown';
@@ -3822,6 +3840,8 @@ app.whenReady().then(async () => {
       },
       send: (channel, payload) => { try { mainWindow?.webContents.send(channel, payload); } catch { /* window gone */ } },
       log: (line) => console.warn(`[near] ${line}`),
+      // the own-device transfer trail in "Report a problem" (perf_log `near:*` rows; counts and words only, see near-diag.ts)
+      trail: createNearTrail({ event: (name, ms, detail) => freezeMonitor.event(name, ms, detail) }),
     });
     for (const action of NEAR_ACTIONS) {
       ipcMain.handle(`near:${action}`, (_e, ...args: unknown[]) => nearBridge.invoke(action, args));
@@ -7412,12 +7432,12 @@ app.whenReady().then(async () => {
     autoUpdater.logger = updaterLog;
 
     // Windows: replace electron-updater's Authenticode check with the same
-    // check under a realistic timeout — see authenticode-verify.ts for why the
+    // check (win-helper.exe verify -> WinVerifyTrust, no PowerShell) under a realistic timeout — see authenticode-verify.ts for why the
     // default's hard 20 s, run while a scanner is busy with the brand-new
     // ~130 MB installer, is the leading suspect for staging.157's fallback.
     // parseDn is resolved from electron-updater's own location so the DN
     // matching is upstream's. If anything here fails, the default verifier
-    // stays in place (never "no verifier").
+    // is replaced by one that refuses (never "no verifier").
     if (process.platform === 'win32') {
       try {
         const updaterDir = path.dirname(require.resolve('electron-updater'));
@@ -7431,15 +7451,23 @@ app.whenReady().then(async () => {
             execFile: (file, args, options, cb) => {
               execFile(file, args, options, (err, stdout, stderr) => cb(err, String(stdout), String(stderr)));
             },
+            helperPath: winHelperBinary,
             parseDn,
             normalizePath: path.win32.normalize,
             baseEnv: process.env,
             log: updaterLog,
-            onSkipped: (why) => freezeMonitor.event('updater:verify-skipped', 0, toDiagnosticDetail(scrubUpdaterText(why))),
           });
       } catch (e) {
-        console.error('[Main/Updater] could not install the Authenticode verifier; keeping electron-updater\'s default:', (e as Error)?.message || e);
-        freezeMonitor.event('updater:verifier-default', 0);
+        // NOT electron-updater's default verifier: that one starts PowerShell (the pattern this build removed). Fail CLOSED
+        // instead: every update is refused as "check unavailable" (retryable) until a build that can verify arrives.
+        console.error('[Main/Updater] could not install the Authenticode verifier; updates will be refused:', (e as Error)?.message || e);
+        freezeMonitor.event('updater:verifier-unavailable', 0);
+        (autoUpdater as unknown as { verifyUpdateCodeSignature: (names: string[], file: string) => Promise<string | null> })
+          .verifyUpdateCodeSignature = async () => {
+            const err = new Error('Could not check the update\'s signature: the verifier is unavailable') as Error & { code: string };
+            err.code = 'ERR_UPDATER_SIGNATURE_CHECK_UNAVAILABLE';
+            throw err;
+          };
       }
     }
 
@@ -7553,6 +7581,12 @@ app.whenReady().then(async () => {
           'If every client sees this, check that the release published <manifest>.sig with a key listed in ' +
           'electron/update-manifest-keys.ts.',
         );
+      }
+      if (kind === 'helper') {
+        // The signature CHECKER (win-helper.exe) could not run (missing / blocked by security software / crashed / timed out). The
+        // update was NOT applied and there is no automatic retry; the user is told what to do and Retry (or the next check) runs it again.
+        // The reason word (missing|blocked|timeout|crash|no_output) is in the diagnostics line (updater:error, reason=...).
+        console.error('[Main/Updater] the update signature checker (win-helper.exe) could not run; the update was not applied.');
       }
       if (kind === 'signature') {
         // The installer was examined and is NOT signed by Cipherline LLC (or
@@ -8150,6 +8184,7 @@ app.whenReady().then(async () => {
       execFile(file, args, { env: { ...process.env, ...env }, timeout: 8000, windowsHide: true, maxBuffer: 64 * 1024 },
         (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
     }),
+    winExePath: (name) => winSys().exePath(name),
     exists: (p) => fs.promises.access(p).then(() => true, () => false),
     fileIcon: (p) => app.getFileIcon(p, { size: 'large' }) as Promise<ImageLike>,
     thumbnail: process.platform === 'win32' || process.platform === 'darwin'

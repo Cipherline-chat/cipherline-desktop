@@ -5,6 +5,8 @@
  * Windows Steam library harness as game-detector.defaults.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setWinSys } from './win-sys';
+import { csvWinSys } from './test-win-sys';
 import { join } from 'path';
 
 const LIB = 'D:/SteamLibrary';
@@ -19,9 +21,7 @@ const tl = (...names: string[]) => names.map(n => `"${n}.exe","1234","Console","
 
 vi.mock('child_process', () => ({
     execFile: (file: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
-        if (file === 'tasklist') cb(null, { stdout: tasklist, stderr: '' });
-        else if (file === 'powershell') cb(null, { stdout: 'ACTIVE\r\n', stderr: '' });
-        else cb(null, { stdout: '', stderr: '' });
+        cb(null, { stdout: '', stderr: '' });
     },
 }));
 
@@ -53,6 +53,7 @@ function install(appid: string, name: string, dir: string, exes: string[]) {
 }
 
 beforeEach(async () => {
+    setWinSys(csvWinSys(() => tasklist));
     Object.defineProperty(process, 'platform', { value: 'win32' });
     files.clear(); dirs.clear();
     files.set(join(STEAM, 'steamapps', 'libraryfolders.vdf'), `"libraryfolders" { "0" { "path" "${LIB}" } }`);

@@ -16,11 +16,15 @@
  * stale-while-revalidate list per server, refreshed on
  * `server:stickers_updated`.
  */
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../apiPath';
-import { createServerListCache } from '../emojiListCache';
+import { createServerListCache, fetchListWithRetry } from '../emojiListCache';
 import { prefetchServerEmojis } from '../serverEmojiLoader';
+import {
+    assetRefsVersion, isAssetMissing, isAssetResolvePending, noteDisplayed, peekAssetRef, refFromSticker,
+    requestResolve, subscribeAssetRefs, type AssetRef,
+} from '../serverAssetRefs';
 
 /** Mirrors the API's ServerStickerDto (apps/api/src/servers/server-emojis.service.ts). */
 export interface ServerSticker {
@@ -63,9 +67,12 @@ export async function refreshServerStickers(serverId: string, token: string): Pr
         // 403 = no longer a member; 404 = an API that predates stickers. Either
         // way there is nothing to show for this server.
         const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-        if (status === 403 || status === 404) stickerListCache.set(serverId, []);
-        stickerListCache.markSettled(serverId);
-        if (status !== 403 && status !== 404) throw err;
+        if (status === 403 || status === 404) { stickerListCache.set(serverId, []); return; }
+        // Only an AUTHORITATIVE answer settles the list. A network error / 429 /
+        // 5xx throws and leaves it unknown (placeholder, retried) - settling it
+        // here turned every sticker of that server into "not available" for the
+        // rest of the session.
+        throw err;
     }
 }
 
@@ -142,18 +149,30 @@ export function useStickerCacheVersion(): number {
 }
 
 /** One fetch per server at a time, however many messages ask. */
-const inflight = new Map<string, Promise<void>>();
-function ensureServerStickers(serverId: string, token: string): void {
-    if (stickerListCache.has(serverId) || inflight.has(serverId)) return;
-    const p = refreshServerStickers(serverId, token).catch(() => {}).finally(() => { inflight.delete(serverId); });
-    inflight.set(serverId, p);
+export function ensureServerStickers(serverId: string, token: string): Promise<void> {
+    if (stickerListCache.has(serverId)) return Promise.resolve();
+    return fetchListWithRetry(`sticker:${serverId}`, () => refreshServerStickers(serverId, token), () => !stickerListCache.has(serverId));
+}
+
+/** An archived (remembered / by-id resolved) ref as the sticker row the renderer draws. */
+function stickerFromRef(r: AssetRef): ServerSticker {
+    return {
+        sticker_id: r.id, server_id: r.server_id, name: r.name, description: null, tags: [],
+        attachment_id: r.attachment_id, key_b64: r.key_b64, nonce_b64: r.nonce_b64, animated: r.animated,
+        created_by: null, created_at: '',
+    };
 }
 
 /**
  * One server sticker for the RENDER path (a sticker message): `undefined`
- * while that server's list is loading, `null` when the sticker is gone (or the
- * list could not be read), else the row. Fetches the server's list at most
- * once (deduplicated); the list then stays live via server:stickers_updated.
+ * while it is being looked up, `null` ONLY when it cannot be resolved anywhere,
+ * else the row. Fetches the server's list at most once (deduplicated); the list
+ * then stays live via server:stickers_updated.
+ *
+ * A sticker missing from the list is NOT deleted (owner 2026-11-26: once sent it
+ * keeps rendering): the device's remembered ref is used, else the server is asked
+ * by id (retired stickers are served), and only an authoritative "no such id"
+ * gives `null`.
  */
 export function useServerSticker(serverId: string | null | undefined, stickerId: string, token: string | null): ServerSticker | null | undefined {
     const hit = useSyncExternalStore(stickerListCache.subscribe, () => {
@@ -162,10 +181,20 @@ export function useServerSticker(serverId: string | null | undefined, stickerId:
         if (!list) return stickerListCache.isSettled(serverId) ? null : undefined;
         return list.find(s => s.sticker_id === stickerId) ?? null;
     });
+    useSyncExternalStore(subscribeAssetRefs, assetRefsVersion);
     useEffect(() => {
-        if (serverId && token && hit === undefined) ensureServerStickers(serverId, token);
+        if (serverId && token && hit === undefined) void ensureServerStickers(serverId, token);
     }, [serverId, token, hit]);
-    return hit;
+
+    const archived = peekAssetRef(stickerId);
+    const fromArchive = useMemo(() => (archived && archived.kind === 'sticker' ? stickerFromRef(archived) : null), [archived]);
+    if (hit) { noteDisplayed(refFromSticker(hit)); return hit; }
+    if (fromArchive) return fromArchive;
+    if (hit === undefined) return undefined; // list still unknown (and nothing remembered): placeholder
+    // The list has loaded without it, and the device never saw it.
+    if (!serverId || !token || isAssetMissing(stickerId)) return null;
+    requestResolve('sticker', serverId, stickerId, token);
+    return isAssetResolvePending(stickerId) ? undefined : null;
 }
 
 /** Look one sticker up (render path). Null until that server's list is known. */

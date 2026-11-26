@@ -14,6 +14,8 @@
  * game-detector.launcher.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setWinSys } from './win-sys';
+import { csvWinSys } from './test-win-sys';
 import { join } from 'path';
 
 const LIB = 'D:/SteamLibrary';
@@ -30,9 +32,7 @@ const tl = (...names: string[]) => names.map(n => `"${n}.exe","1234","Console","
 
 vi.mock('child_process', () => ({
     execFile: (file: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
-        if (file === 'tasklist') cb(null, { stdout: tasklist, stderr: '' });
-        else if (file === 'powershell') cb(null, { stdout: 'ACTIVE\r\n', stderr: '' }); // not a suspended UWP ghost
-        else cb(null, { stdout: '', stderr: '' });
+        cb(null, { stdout: '', stderr: '' });
     },
 }));
 
@@ -62,6 +62,7 @@ const HOUR = 3_600_000;
 const MIN = 60_000;
 
 beforeEach(async () => {
+    setWinSys(csvWinSys(() => tasklist));
     Object.defineProperty(process, 'platform', { value: 'win32' });
     files.clear(); dirs.clear();
     files.set(join(STEAM, 'steamapps', 'libraryfolders.vdf'), `"libraryfolders" { "0" { "path" "${LIB}" } }`);

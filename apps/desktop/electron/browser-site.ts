@@ -5,7 +5,7 @@
 // URL, no origin. So every browser tab is "a browser". What a browser DOES show
 // locally is the page title in its window title, and a page title carries the
 // site ("<video> - YouTube - Google Chrome", "Netflix - Google Chrome",
-// "<stream> - Twitch"). The Windows helper (media-session.ts WINDOWS_SCRIPT)
+// "<stream> - Twitch"). The Windows helper (win-helper `media`, apps/desktop-host/win-helper)
 // lists the top-level window titles of the PLAYING browser's own processes, and
 // this pure module matches them against the playing session's title.
 //

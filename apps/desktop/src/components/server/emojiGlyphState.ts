@@ -19,6 +19,8 @@
  *                     render; callers decide the exact wording for that
  *                     case (see `MissingEmojiPlaceholder`'s `noServerContext`).
  */
+import { isAssetResolvePending } from '../../utils/assetResolvePending';
+
 export type EmojiGlyphState = 'resolved' | 'loading' | 'unavailable';
 
 export function resolveEmojiGlyphState(
@@ -27,7 +29,12 @@ export function resolveEmojiGlyphState(
     found: unknown,
     /** Whether the owning server's emoji list is still loading. */
     emojisLoading: boolean | undefined,
+    /** The token's id. While a by-id lookup for it is in flight (useEmojiResolver
+     *  asks the server for ids the list lacks, retired ones included) it is
+     *  'loading', never 'unavailable': a miss in the list is not a deletion. */
+    id?: string,
 ): EmojiGlyphState {
     if (found) return 'resolved';
-    return emojisLoading ? 'loading' : 'unavailable';
+    if (emojisLoading) return 'loading';
+    return id && isAssetResolvePending(id) ? 'loading' : 'unavailable';
 }

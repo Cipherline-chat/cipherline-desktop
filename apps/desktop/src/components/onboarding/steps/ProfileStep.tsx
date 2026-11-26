@@ -424,6 +424,7 @@ export const ProfileStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedM
                 outputHeight={cropTarget?.kind === 'banner' ? BANNER_OUTPUT.height : AVATAR_OUTPUT.height}
                 shape={cropTarget?.kind === 'banner' ? 'rect' : 'circle'}
                 title={cropTarget?.kind === 'banner' ? 'Position your banner' : 'Position your avatar'}
+                keepTransparency={cropTarget?.kind !== 'banner'}
                 onCancel={() => setCropTarget(null)}
                 onConfirm={onCropped}
             />

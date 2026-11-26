@@ -7,11 +7,13 @@
 // and runs only once sharing is on. This file is deliberately NOT built on that
 // reader, so consent is not a matter of remembering to throw things away:
 //
-//   Windows  A separate, one-shot PowerShell script (WINDOWS_STATE_SCRIPT) that
+//   Windows  A separate, one-shot `win-helper.exe music-state` (the signed Rust
+//            helper; apps/desktop-host/win-helper `media::music_state`) that
 //            asks WinRT for each session's app id, playback status and playback
-//            type. It never calls TryGetMediaPropertiesAsync or
-//            GetTimelineProperties and never lists windows, so title, artist,
-//            album, cover, position and window titles are not read at all.
+//            type. It never reads media properties, the timeline or a cover and
+//            never lists windows, so title, artist, album, cover, position and
+//            window titles are not read at all (pinned by
+//            win-helper-source.test.ts).
 //   Linux    org.freedesktop.DBus.Properties.Get of the single PlaybackStatus
 //            property, on allow-listed players only. Never GetAll: that returns
 //            the Metadata (title, artist) too.
@@ -33,7 +35,7 @@
 // unknown app does not count either. So someone who only ever plays music in a
 // browser is not asked; the switch in Settings is still there.
 //
-// Cost: Windows, one short-lived powershell.exe per check (no helper is kept
+// Cost: Windows, one short-lived win-helper.exe per check (no helper is kept
 // alive: at this interval it would have exited between checks anyway, see
 // HELPER_IDLE_MS). Linux, one short D-Bus connection and 1 + n calls. The renderer
 // checks at most every LISTENING_ASK_CHECK_MS, only on input with the window
@@ -44,11 +46,12 @@
 
 import { execFile } from 'child_process';
 import * as fs from 'fs';
-import { classifySession, classifySource, encodePowerShell } from './media-session';
+import { classifySession, classifySource } from './media-session';
+import { winHelperBinary } from './win-sys';
 
 /** The most often a real read can happen, whatever the renderer asks; an earlier ask gets the last answer. */
 export const MUSIC_PROBE_MIN_GAP_MS = 60_000;
-/** Windows PowerShell loading WinRT from cold is slow on a busy machine. */
+/** Loading WinRT from cold can be slow on a busy machine. */
 const PROBE_TIMEOUT_MS = 8_000;
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 /** Windows' GlobalSystemMediaTransportControlsSessionPlaybackStatus: 4 = Playing. */
@@ -67,36 +70,7 @@ export function isMusicApp(app: string, ptype?: number): boolean {
     return classifySession({ app, title: '-', artist: '-', album: null, ptype })?.kind === 'listening';
 }
 
-/**
- * Windows PowerShell 5.1, one answer then exit. Reads ONLY the app id, status
- * and playback type of sessions that are playing. A test pins that no call that
- * could read a title, cover, position or window appears in this text.
- */
-export const WINDOWS_STATE_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation` + '`' + String.raw`1' })[0]
-$MgrT = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
-$task = $asTask.MakeGenericMethod($MgrT).Invoke($null, @($MgrT::RequestAsync()))
-if (-not $task.Wait(3000)) { exit 0 }
-$list = New-Object System.Collections.ArrayList
-foreach ($s in $task.Result.GetSessions()) {
-  if ($list.Count -ge 16) { break }
-  try {
-    $info = $s.GetPlaybackInfo()
-    if ([int]$info.PlaybackStatus -eq 4) {
-      $e = @{ app = [string]$s.SourceAppUserModelId; status = 4 }
-      try { if ($info.PlaybackType -ne $null) { $e.ptype = [int]$info.PlaybackType } } catch { }
-      [void]$list.Add($e)
-    }
-  } catch { }
-}
-[Console]::Out.WriteLine((ConvertTo-Json -InputObject @{ sessions = $list.ToArray() } -Compress -Depth 3))
-`;
-
-/** One line from WINDOWS_STATE_SCRIPT -> is a music app playing? Anything odd is no. */
+/** One line from `win-helper.exe music-state` -> is a music app playing? Anything odd is no. */
 export function windowsStatePlaysMusic(line: string): boolean {
     let o: unknown;
     try { o = JSON.parse(line); } catch { return false; }
@@ -181,8 +155,10 @@ export class MusicPresenceProbe {
     private readWindows(): Promise<boolean> {
         return new Promise((resolve) => {
             try {
-                // No -ExecutionPolicy: it governs script FILES only, never an -EncodedCommand. stderr is never looked at.
-                this.execFileFn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodePowerShell(WINDOWS_STATE_SCRIPT)], {
+                // `win-helper.exe music-state`: app id, status and playback type of playing sessions, then exit. Never a script host.
+                const bin = winHelperBinary();
+                if (!bin) { this.unsupported = true; resolve(false); return; }
+                this.execFileFn(bin, ['music-state'], {
                     timeout: PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024,
                 }, (err, stdout) => {
                     if (err?.code === 'ENOENT') this.unsupported = true;

@@ -148,7 +148,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                     type="button"
                     onClick={() => setOpen(v => !v)}
                     title={currentGame ? `Playing ${currentGame}` : `Status: ${cfg.label}`}
-                    className="w-10 h-10 p-0 border-none rounded-full overflow-hidden bg-cl-surface cursor-pointer ring-1 ring-white/10 hover:ring-white/25 transition-[box-shadow]"
+                    className="w-10 h-10 p-0 border-none rounded-full overflow-hidden bg-cl-surface has-[img]:bg-transparent cursor-pointer ring-1 ring-white/10 hover:ring-white/25 transition-[box-shadow]"
                 >
                     <EncryptedAvatar
                         attachmentId={avatarAttachmentId}

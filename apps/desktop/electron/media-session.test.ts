@@ -1,12 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
-    artDataUri, browserKind, classifySession, helperArt, classifySource, dataUriAspect, encodePowerShell, imageAspect, localArt, MAC_MUSIC_ART_SCRIPT, MAC_SPOTIFY_ART_SCRIPT, macScriptIssue, MediaSessionReader,
-    parseMacOutput, pickMpris, pickWindowsSession, playerLabel, remoteArtUrl, spotifyCoverId, WINDOWS_SCRIPT, type MprisBus,
+    artDataUri, browserKind, classifySession, helperArt, classifySource, dataUriAspect, imageAspect, localArt, MAC_MUSIC_ART_SCRIPT, MAC_SPOTIFY_ART_SCRIPT, macScriptIssue, MediaSessionReader,
+    parseMacOutput, pickMpris, pickWindowsSession, playerLabel, remoteArtUrl, spotifyCoverId, type MprisBus,
 } from './media-session';
+import { setWinHelperBinary } from './win-sys';
+
+beforeEach(() => setWinHelperBinary(() => 'C:\\Program Files\\Cipherline\\resources\\win-helper.exe'));
 
 const JPEG_B64 = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('jfif-bytes-here')]).toString('base64');
 const JPEG = Buffer.from(JPEG_B64, 'base64');
@@ -45,7 +48,7 @@ describe('classifySource / playerLabel', () => {
     });
 });
 
-// Recorded from Windows PowerShell 5.1 (WINDOWSSVR, 2026-10-26) running WINDOWS_SCRIPT against a fake
+// Recorded from Windows PowerShell 5.1 (WINDOWSSVR, 2026-10-26) running the old PowerShell reader (now win-helper `media`, same JSON) against a fake
 // session manager: a current Chrome session, a playing Spotify whose cover threw, a paused Media Player,
 // and a session whose GetPlaybackInfo() threw. Exactly the JSON the helper printed.
 const RECORDED = '{"ok":true,"sessions":[{"artist":"A channel","album":"Mezzanine","dur":330000,"pos":31000,"upd":1793025047167,"app":"Chrome","status":4,"title":"Some video","albumArtist":""},{"artist":"Massive Attack","album":"Mezzanine","dur":330000,"pos":31000,"upd":1793025047174,"app":"Spotify.exe","status":4,"title":"Teardrop","albumArtist":""},{"app":"Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic","status":5},{"err":1,"app":"Broken.App"}],"cur":"Chrome"}';
@@ -491,63 +494,7 @@ describe('Spotify album-cover id (the one cover detail that may be published, fo
     });
 });
 
-describe('the Windows helper script', () => {
-    it('is Windows PowerShell 5.1 WinRT code that lists every session on request and exits on EOF', () => {
-        expect(WINDOWS_SCRIPT).toContain("ParameterType.Name -eq 'IAsyncOperation`1'");
-        expect(WINDOWS_SCRIPT).toContain('GlobalSystemMediaTransportControlsSessionManager');
-        expect(WINDOWS_SCRIPT).toContain('foreach ($s in $mgr.GetSessions())');
-        expect(WINDOWS_SCRIPT).toContain('[Console]::In.ReadLine()');
-        expect(WINDOWS_SCRIPT).toMatch(/if \(\$req -eq \$null -or \$req -eq 'q'\) \{ break \}/);
-        // Nothing in it talks to the network or writes to disk.
-        expect(WINDOWS_SCRIPT).not.toMatch(/Invoke-WebRequest|Invoke-RestMethod|Net\.WebClient|Out-File|Set-Content|Start-Process/i);
-        expect(Buffer.from(encodePowerShell('ab'), 'base64').toString('utf16le')).toBe('ab');
-    });
-
-    it('retries a cover that is not there yet (browsers fetch the artwork after the title) instead of giving up on the track', () => {
-        // A track is marked done only once a non-empty cover was read, or after 6 tries, or when it is too big.
-        expect(WINDOWS_SCRIPT).not.toMatch(/\$sent\[\$e\.app\] -ne \$key\) \{\s*\$sent\[\$e\.app\] = \$key/);
-        expect(WINDOWS_SCRIPT).toContain('if ($ms.Length -gt 0) { $e.art = [Convert]::ToBase64String($ms.ToArray()); $sent[$e.app] = $key }');
-        expect(WINDOWS_SCRIPT).toContain('if ($n -ge 6) { $sent[$e.app] = $key }');
-        expect(WINDOWS_SCRIPT).toContain("if ($size -gt 4194304) { $e.artErr = 'too_big'; $sent[$e.app] = $key }");
-        expect(WINDOWS_SCRIPT).toMatch(/\$tries\.Count -gt 64\) \{ \$sent = @\{\}; \$tries = @\{\} \}/);
-    });
-
-    it('OWNER\'S PC: reads the cover through reflection on the WinRT stream interfaces (the direct calls never worked on PowerShell 5.1)', () => {
-        // OpenReadAsync hands back a bare __ComObject: `$st.Size` is empty and
-        // [WindowsRuntimeStreamExtensions]::AsStreamForRead($st) throws "Cannot find an overload".
-        expect(WINDOWS_SCRIPT).not.toMatch(/\$st\.Size/);
-        expect(WINDOWS_SCRIPT).not.toContain('::AsStreamForRead(');
-        // The verified workaround (owner's Windows 11 PC: "size via reflection: 218023", "starts with 89 50 4E 47"),
-        // with both types loaded once at the top, outside the request loop.
-        const head = WINDOWS_SCRIPT.slice(0, WINDOWS_SCRIPT.indexOf('while ($true)'));
-        expect(head).toContain('$RasT = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]');
-        expect(head).toContain('$InT = [Windows.Storage.Streams.IInputStream, Windows.Storage.Streams, ContentType = WindowsRuntime]');
-        expect(head).toContain("$SizeP = $RasT.GetProperty('Size')");
-        expect(head).toContain("$asRead = [System.IO.WindowsRuntimeStreamExtensions].GetMethod('AsStreamForRead', [Type[]]@($InT))");
-        expect(WINDOWS_SCRIPT).toContain('$size = [int64]$SizeP.GetValue($st)');
-        expect(WINDOWS_SCRIPT).toContain('$ns = $asRead.Invoke($null, @($st))');
-        expect(WINDOWS_SCRIPT).toContain('$ns.CopyTo($ms)');
-        // Still capped at 4 MB, and every stream is disposed whatever happened (finally).
-        expect(WINDOWS_SCRIPT).toMatch(/\} finally \{\s*if \(\$ms -ne \$null\) \{ try \{ \$ms\.Dispose\(\) \} catch \{ \} \}\s*if \(\$ns -ne \$null\) \{ try \{ \$ns\.Dispose\(\) \} catch \{ \} \}\s*if \(\$st -ne \$null\) \{ try \{ \[void\]\$DisposeM\.Invoke\(\$st, \$null\) \} catch \{ \} \}/);
-    });
-
-    it('reports why a cover could not be had, per session (artErr), with no titles anywhere but the answer line', () => {
-        for (const code of ['none', 'open_timeout', 'read_failed', 'too_big', 'empty']) expect(WINDOWS_SCRIPT).toContain(`$e.artErr = '${code}'`);
-        expect(WINDOWS_SCRIPT).toContain("if ($st -eq $null) { $e.artErr = 'open_timeout' }");
-        expect(WINDOWS_SCRIPT).toContain("} catch { $e.artErr = 'read_failed' } finally {");
-        // "none" only while the track is not done, so a browser whose artwork arrives late still gets it.
-        expect(WINDOWS_SCRIPT).toContain("if ($p -ne $null -and $p.Thumbnail -eq $null -and $sent[$e.app] -ne $key) { $e.artErr = 'none' }");
-        // Nothing is written anywhere but stdout (no Write-Host / Write-Error / transcript of titles).
-        expect(WINDOWS_SCRIPT).not.toMatch(/Write-Host|Write-Error|Write-Verbose|Start-Transcript|Add-Content/i);
-    });
-
-    it('braces balance in the script (a typo there is a parse error that kills the helper on every Windows PC)', () => {
-        const code = WINDOWS_SCRIPT.replace(/'[^'\n]*'/g, "''").replace(/"[^"\n]*"/g, '""').replace(/#.*$/gm, '');
-        for (const [open, close] of [['{', '}'], ['(', ')'], ['[', ']']]) {
-            expect(code.split(open).length, `${open}${close}`).toBe(code.split(close).length);
-        }
-    });
-
+describe('the Windows helper: reader side', () => {
     it('a browser cover over 512 KB (Chromium re-encodes artwork as PNG) is shrunk, not dropped', () => {
         const bigPng = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(900 * 1024, 7)]);
         const small = JPEG;
@@ -598,7 +545,7 @@ describe('the Windows helper script', () => {
     });
 });
 
-/** A fake powershell child that answers each stdin line with the next canned line (null = stay silent). */
+/** A fake win-helper `media` child that answers each stdin line with the next canned line (null = stay silent). */
 function fakeChild(lines: Array<string | null>) {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
@@ -619,7 +566,7 @@ function fakeChild(lines: Array<string | null>) {
 describe('MediaSessionReader (Windows)', () => {
     const answer = (o: object = {}, extra: object[] = []) => JSON.stringify({ ok: true, cur: '', sessions: [{ app: 'Spotify.exe', status: 4, title: 'Teardrop', artist: 'Massive Attack', album: 'M', dur: 300_000, pos: 0, upd: 0, ...o }, ...extra] });
 
-    it('one hidden powershell.exe (encoded command, no shell, no execution-policy flag), reused; cover kept per track', async () => {
+    it('one hidden win-helper.exe media child (never a script host), reused; cover kept per track', async () => {
         const { child, requests } = fakeChild([answer({ art: JPEG_B64 }), answer(), answer({ title: 'Angel' }), answer()]);
         const spawnFn = vi.fn(() => child as never);
         let t = 0;
@@ -636,10 +583,8 @@ describe('MediaSessionReader (Windows)', () => {
         expect((d as { playing: { art: string } }).playing.art).toMatch(/^data:image\/jpeg/);
         expect(spawnFn).toHaveBeenCalledTimes(1);
         const [cmd, args, opts] = spawnFn.mock.calls[0] as unknown as [string, string[], { windowsHide: boolean }];
-        expect(cmd).toBe('powershell.exe');
-        expect(args).toContain('-EncodedCommand');
-        expect(args).toContain('-NoProfile');
-        expect(args).not.toContain('-ExecutionPolicy');
+        expect(cmd).toBe('C:\\Program Files\\Cipherline\\resources\\win-helper.exe');
+        expect(args).toEqual(['media']);
         expect(opts.windowsHide).toBe(true);
         expect(requests).toEqual(['a', 'r', 'r', 'r']);
         r.stop();
@@ -703,11 +648,19 @@ describe('MediaSessionReader (Windows)', () => {
         }
     });
 
-    it('a helper that cannot start reads as unsupported (no_powershell), and is not retried', async () => {
+    it('no helper binary at all (not shipped / not built) reads as unsupported and spawns nothing', async () => {
+        setWinHelperBinary(() => null);
+        const spawnFn = vi.fn();
+        const r = new MediaSessionReader('win32', vi.fn(), spawnFn as never, () => 0);
+        await expect(r.read(false)).resolves.toEqual({ supported: false, reason: 'no_helper' });
+        expect(spawnFn).not.toHaveBeenCalled();
+    });
+
+    it('a helper that cannot start reads as unsupported (no_helper), and is not retried', async () => {
         const spawnFn = vi.fn(() => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); });
         let t = 0;
         const r = new MediaSessionReader('win32', vi.fn(), spawnFn as never, () => (t += 10_000));
-        await expect(r.read(false)).resolves.toEqual({ supported: false, reason: 'no_powershell' });
+        await expect(r.read(false)).resolves.toEqual({ supported: false, reason: 'no_helper' });
         await r.read(false);
         expect(spawnFn).toHaveBeenCalledTimes(1);
     });

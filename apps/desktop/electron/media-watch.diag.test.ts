@@ -17,7 +17,7 @@ describe('media diagnostics are content-free', () => {
         { supported: true, playing: null, issue: { kind: 'win_unavailable' } },
         { supported: true, playing: null, issue: { kind: 'excluded', why: 'browser', player: 'Chrome' } },
         { supported: true, playing: null, issue: { kind: 'excluded', why: 'watching', player: 'VLC' } },
-        { supported: false, reason: 'no_powershell' },
+        { supported: false, reason: 'no_helper' },
     ];
     it('every line passes the Performance log pattern and names no title, artist, source or player', () => {
         for (const r of reads) {
@@ -35,7 +35,7 @@ describe('media diagnostics are content-free', () => {
             'supported=1 playing=none issue=win_unavailable',
             'supported=1 playing=none issue=excluded_browser',
             'supported=1 playing=none issue=excluded_watching',
-            'supported=0 reason=no_powershell',
+            'supported=0 reason=no_helper',
         ]);
     });
     it('the schedule line carries only the two switches', () => {

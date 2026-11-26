@@ -8,7 +8,7 @@
  * `main_exception`, message `write EPIPE`):
  *   - Linux: `console.error` -> process.stderr after the terminal / launcher
  *     that started the app closed its end of the pipe;
- *   - Windows: `MediaSessionReader.readWindows` -> the powershell helper's
+ *   - Windows: `MediaSessionReader.readWindows` -> the win-helper.exe media child's
  *     stdin after the helper exited.
  * A try/catch around `write()` cannot catch either. The fix is a standing
  * 'error' listener on the stream.

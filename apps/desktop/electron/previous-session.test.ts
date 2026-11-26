@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     PrevSessionWriter, buildFileText, consumePreviousSessionFile, parsePreviousSessionFile, previousSessionFromFile,
-    MAX_PREV_SESSION_BYTES, MAX_PREV_SESSION_READ_BYTES, PREV_SESSION_FILE, PREV_SESSION_MAX_ROWS, PREV_SESSION_MIN_GAP_MS, PREV_SESSION_WRITE_MS,
+    MAX_PREV_SESSION_BYTES, MAX_PREV_SESSION_READ_BYTES, PREV_SESSION_FILE, PREV_SESSION_MAX_ROWS, PREV_SESSION_NEAR_ROWS, PREV_SESSION_MIN_GAP_MS, PREV_SESSION_WRITE_MS,
     type PerfEntryLike, type PrevSessionFs, type PrevSessionState,
 } from './previous-session';
 import { SessionLifecycle } from './session-lifecycle';
@@ -362,5 +362,32 @@ describe('persisted with the pending record', () => {
         tampered[0].previous_session.rows.push({ t_s: -1, source: 'main', ms: 1, activity: '/home/alice/x' });
         tampered[0].previous_session.started_at = 'nope';
         expect(parsePendingCrashes(tampered)[0].previous_session).toBeUndefined();
+    });
+});
+
+describe('the transfer trail survives a crash', () => {
+    it('keeps the newest `near:` rows even when newer rows of other kinds fill the window, without growing past the two caps', () => {
+        const now = T0 + 1000;
+        const trail = ['near:state role=sender state=awaiting_approval', 'near:prompt_shown method=password', 'near:capabilities usable=0 peer_usable=1 plan=none elig=0 filt=2', 'near:outcome role=sender state=refused cause=no_usable_network code=no_proximity'];
+        const entries = [
+            ...trail.map((a, i) => entry(900 - i, a, { source: 'event', ms: 0 }, now)),
+            ...Array.from({ length: 300 }, (_, i) => entry(300 - i, `browser ${i}.0% 140MB | total 1100MB`, { source: 'metrics', ms: 0 }, now)),
+        ];
+        const rows = parsePreviousSessionFile(buildFileText({ version: '0.1.0', startedAt: T0, now, state: {}, entries, scrubber: scrubber() }))!.rows;
+        expect(rows).toHaveLength(PREV_SESSION_MAX_ROWS + trail.length);
+        expect(rows.slice(0, trail.length).map((r) => r.activity)).toEqual(trail);
+        expect(rows[rows.length - 1].activity).toContain('browser 299');
+        // a flood of trail rows adds at most PREV_SESSION_NEAR_ROWS beyond the newest window
+        const flood = Array.from({ length: 100 }, (_, i) => entry(900 - i, `near:state role=sender state=awaiting_approval n${i}`, { source: 'event', ms: 0 }, now));
+        const capped = parsePreviousSessionFile(buildFileText({ version: '0.1.0', startedAt: T0, now, state: {}, entries: [...flood, ...entries.slice(trail.length)], scrubber: scrubber() }))!.rows;
+        expect(capped.filter((r) => r.activity.startsWith('near:'))).toHaveLength(PREV_SESSION_NEAR_ROWS);
+    });
+
+    it('a MAC address in a row is scrubbed before it is written', () => {
+        const now = T0 + 1000;
+        const text = buildFileText({ version: '0.1.0', startedAt: T0, now, state: {}, entries: [entry(5, 'near:capabilities mac=aa:bb:cc:dd:ee:ff 192.168.1.20', { source: 'event', ms: 0 }, now)], scrubber: scrubber() });
+        expect(text).not.toContain('aa:bb:cc:dd:ee:ff');
+        expect(text).not.toContain('192.168.1.20');
+        expect(parsePreviousSessionFile(text)!.rows[0].activity).toBe('near:capabilities mac=<mac> <ip>');
     });
 });

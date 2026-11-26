@@ -45,6 +45,7 @@ pub fn detect() -> Platform {
         radio,
         biometric,
         ifaces: cl_near_engine::platform_interfaces(),
+        census: cl_near_engine::platform_census(),
         os,
         lan_policy: cl_near::lan::LanPolicy::Strict,
         timing: Timing::default(),

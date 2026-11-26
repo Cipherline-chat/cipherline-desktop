@@ -133,6 +133,7 @@
  "src/components/settings/ui/ColourPicker.tsx": 12,
  "src/components/settings/ui/HueSlider.tsx": 3,
  "src/components/signup/ReferrerFriendOffer.tsx": 3,
+ "src/components/themeShare/themePreviewBarParts.ts": 6,
  "src/components/useMyEmojiAddButton.ts": 7,
  "src/contexts/CallContext.tsx": 1,
  "src/index.css": 22,

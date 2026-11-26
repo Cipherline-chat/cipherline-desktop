@@ -32,6 +32,9 @@ export interface UpdateRequiredScreenProps {
     onOpenWebsite: () => void;
 }
 
+/** Shown when the update signature checker (win-helper.exe) is missing or blocked: the update was NOT applied (see updater-state.ts). */
+export const HELPER_BLOCKED_LINE = 'Cipherline couldn’t verify this update because part of the app (win-helper.exe) was blocked or is missing — often by security software. Allow Cipherline in your security software, or reinstall from cipherline.chat/download.';
+
 interface Primary { label: string; disabled?: boolean }
 
 function describe(p: UpdateRequiredScreenProps): { line: string; error?: boolean; progress?: number | null; primary: Primary } {
@@ -48,6 +51,9 @@ function describe(p: UpdateRequiredScreenProps): { line: string; error?: boolean
         case 'failed':
             if (u.cause === 'cancelled') {
                 return { line: 'The update wasn’t installed because the password prompt was cancelled.', error: true, primary: { label: 'Try again' } };
+            }
+            if (u.cause === 'helper') {
+                return { line: HELPER_BLOCKED_LINE, error: true, primary: { label: 'Try again' } };
             }
             return {
                 line: u.stage === 'verify'

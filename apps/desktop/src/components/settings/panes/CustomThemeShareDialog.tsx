@@ -267,7 +267,7 @@ export const CustomThemeImportDialog: React.FC<{
     /** Opened from a theme link (chat card, deep link): no paste box, a larger preview, this title. */
     fromLink?: { title: string };
 }> = ({ onClose, onImport, initialText = '', fromLink }) => {
-    // Preview: the theme on the WHOLE app (the top-right bar saves or stops it;
+    // Preview: the theme on the WHOLE app (the preview bar keeps or reverts it;
     // nothing is stored). The dialog closes so the app itself is what you see.
     const [text, setText] = useState(initialText);
     const [fileError, setFileError] = useState('');

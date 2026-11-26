@@ -513,3 +513,5 @@ button.pcd-chip:active { transform: scale(.97); }
   .pbm-row--md .pbm:hover, .pbm-row--md .pbm:focus-visible, .pcd-avatar-btn[data-zoom="true"]:hover,
   .pcd-ach-item:hover .pam, .pcd-grid-btn:hover .pam, .pcd-grid-btn[aria-pressed="true"] .pam { transform: none; }
 }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.pcd-avatar-btn:has(img), .pcd-row-av:has(img) { background: transparent; }

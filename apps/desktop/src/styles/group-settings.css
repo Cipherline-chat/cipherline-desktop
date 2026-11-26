@@ -51,3 +51,5 @@
 @media (prefers-reduced-motion: reduce){
   .cl-group-pic-btn,.cl-group-pic-btn-overlay,.gset-member{transition:none}
 }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.cl-group-pic-btn:has(img) { background: transparent; }

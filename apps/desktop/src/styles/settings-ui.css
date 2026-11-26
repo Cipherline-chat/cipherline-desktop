@@ -206,3 +206,5 @@
 .as-group-head p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--cl-muted); max-width: 62ch; }
 /* ConnectionsPane's cards already carry .sd-card's bottom margin; its own flex gap would double it here. */
 .as-group .ig-pane { gap: 0; }
+/* A picked image may have transparent pixels (kept as PNG by the cropper): once an <img> is in the frame the placeholder fill comes off so it shows through to the surface behind. The fill stays for the empty/loading state. */
+.su-avatar-face:has(img) { background: transparent; }
